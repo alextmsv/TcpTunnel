@@ -1,0 +1,15 @@
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.exe.config
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.exe
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.pdb
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.AssemblyReference.cache
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.SuggestedBindingRedirects.cache
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.CoreCompileInputs.cache
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.exe
+D:\Development\Projects\CSharp\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.pdb
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.pdb
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.CoreCompileInputs.cache
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.pdb
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.exe.config
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.exe
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.exe
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.AssemblyReference.cache
