@@ -1,20 +1,16 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Windows.Forms;
 using System.IO;
 using System.Threading;
+using Open.Nat;
 using System.Diagnostics;
-using System.Threading.Tasks;
 using System.Net;
 using System.Net.Sockets;
-
 namespace TCPTunnel
 {
     public class NetWorker
     {
         private static Broadcaster broadcaster = new Broadcaster();
-
         public static void DoConnect(string address, int port)
         {
             TcpClient client = new TcpClient();
@@ -54,10 +50,27 @@ namespace TCPTunnel
                 return;
             }
         }
-        
+        async static void openPort(int port)
+        {
+            var discoverer = new NatDiscoverer();
+            var device = await discoverer.DiscoverDeviceAsync();
+            var ip = await device.GetExternalIPAsync();
+            try
+            {
+                await device.DeletePortMapAsync(new Mapping(Protocol.Tcp, port, port));
+            }
+            catch (MappingException ex)
+            {
+                Program.matrix(ex.ErrorText+", сервер закрыт для посторонних интернет соединений, кроме локальных. (Отключите Брандмауэр(Firewall))");
+                Console.ReadKey();
+            }
+            await device.CreatePortMapAsync(new Mapping(Protocol.Tcp, port, port));
+        }
         public static void doCreateServer(int port)
         {
             TcpListener server = new TcpListener(IPAddress.Any, port);
+            openPort(port);
+            Thread.Sleep(300);
             server.Start();
             Program.matrix("Сервер запущен!");
             Console.Write("\r\n");

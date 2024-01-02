@@ -13,3 +13,5 @@ D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.ex
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\TCPTunnel.exe
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.exe
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.AssemblyReference.cache
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\Open.Nat.dll
+D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\Open.Nat.xml
