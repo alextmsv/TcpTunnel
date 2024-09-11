@@ -1,8 +1,6 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
 using System.Net.Sockets;
 
 namespace TCPTunnel
@@ -32,7 +30,8 @@ namespace TCPTunnel
                 }
                 catch (Exception ex)
                 {
-                    Program.matrix("Проблема с отправкой broadcast сообщения! " + ex.Message);
+                    Program.matrix($"Проблема с отправкой broadcast сообщения :(\n{ex.Message}\n");
+
                 }
             }
         }
