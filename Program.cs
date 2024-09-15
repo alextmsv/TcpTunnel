@@ -32,12 +32,13 @@ namespace TCPTunnel
             const int delay = 700;
             Console.Write(message);
             int startPosition = Console.CursorLeft;
-            if(!NetWorker.ping(ip, port))
-            {
-                Console.Clear();
-                matrix("Сервер не отвечает на запросы, возможно у вас проблемы с интернетом, \nлибо сервер отключен");
-                restart(publicArgs);
-            }
+            //if(!NetWorker.ping(ip, port))
+            //{
+            //    Console.Clear();
+            //    matrix("Сервер не отвечает на запросы, возможно у вас проблемы с интернетом, \nлибо сервер отключен");
+            //    restart(publicArgs);
+            //}
+
             while (!NetWorker.connected)
             {
                 for (int i = 0; i <= maxDots; i++)
@@ -46,18 +47,16 @@ namespace TCPTunnel
                     Console.Write(new string('.', i));
                     Thread.Sleep(delay);
                     Console.SetCursorPosition(startPosition, Console.CursorTop);
-                    NetWorker.DoConnect(ip, port);
                     Console.Write(new string(' ', maxDots));
-                    if (NetWorker.connected) 
-                        break;
                 }
+                NetWorker.DoConnect(ip, port);
             }
         }
-        //public static string ReadLineWithPrompt(string prompt)
-        //{
-        //    Console.Write(prompt);
-        //    return Console.ReadLine();
-        //}
+        public static string ReadLineWithPrompt(string prompt)
+        {
+            Console.Write(prompt);
+            return Console.ReadLine();
+        }
         public static void bye()
         {
             Console.WriteLine("\r\n");

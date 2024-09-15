@@ -50,6 +50,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Broadcaster.cs" />
+    <Compile Include="Client.cs" />
     <Compile Include="ConnectionContext.cs" />
     <Compile Include="Menu.cs" />
     <Compile Include="NetWorker.cs" />

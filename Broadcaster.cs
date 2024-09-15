@@ -7,31 +7,35 @@ namespace TCPTunnel
 {
     public class Broadcaster
     {
-        
-        private List<TcpClient> clients = new List<TcpClient>();
 
-        public void AddClient(TcpClient client)
+        private List<Client> clients = new List<Client>();
+
+        public void AddClient(Client client)
         {
             clients.Add(client);
         }
 
-        public void Broadcast(string message)
+        public void Broadcast(Client sender, string message)
         {
             for (int i = 0; i < clients.Count; i++)
             {
-                TcpClient client = clients[i];
-                if (!client.Connected) 
+                Client client = clients[i];
+                TcpClient pipe = client.TcpClient;
+
+                if (!pipe.Connected) 
                     continue;
 
                 try
                 {
-                    BinaryWriter writer = new BinaryWriter(client.GetStream());
-                    writer.Write(message);
+                    BinaryWriter writer = new BinaryWriter(pipe.GetStream());
+                    if (sender != null)
+                        writer.Write(sender.nickname + " [" + sender.ipAddress + "]: " + message);
+                    else
+                        writer.Write(message);
                 }
                 catch (Exception ex)
                 {
                     Program.matrix($"Проблема с отправкой broadcast сообщения :(\n{ex.Message}\n");
-
                 }
             }
         }

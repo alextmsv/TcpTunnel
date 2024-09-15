@@ -6,15 +6,21 @@ using Open.Nat;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+
 namespace TCPTunnel
 {
     public class NetWorker
     {
         private static Broadcaster broadcaster = new Broadcaster();
+        private const string DO_AUTH_MESSAGE = "DoAuth()";
+        private static bool isBusy = false;
         public static bool connected = false;
         public static string nickname = "";
+
+
         public static void TryConnect()
         {
+            if (nickname.Length <= 0) nickname = filterNick(Program.ReadLineWithPrompt("Введите свой псевдоним: "));
             Program.matrix("Введите IP адрес сервера [localhost]: ");
             string ip = Console.ReadLine();
             if (String.IsNullOrEmpty(ip))
@@ -25,14 +31,17 @@ namespace TCPTunnel
             if (!Int32.TryParse(Console.ReadLine(), out serverPort))
                 serverPort = 9095;
 
-            //Program.matrix(">>> Попытка подключения к серверу: " + ip + ":" + serverPort);
             Program.waiting(">>> Попытка подключения к серверу: " + ip + ":" + serverPort, ip, serverPort);
+            //NetWorker.DoConnect(ip, serverPort);
             Console.Clear();
-            DoConnect(ip, serverPort);
+            //DoConnect(ip, serverPort);
         }
-        public static void DoConnect(string address, int port, string nickName = "")
+        public static void DoConnect(string address, int port)
         {
-            nickName = nickname;
+            if (isBusy) 
+                return;
+
+            if (!isBusy) isBusy = true;
             TcpClient client = new TcpClient();
             try
             {
@@ -47,31 +56,17 @@ namespace TCPTunnel
                 return;
             }
             ConnectionContext publicName = new ConnectionContext();
-            string ip = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
             Thread clientThread = new Thread(ClientThread);
             clientThread.Start(client);
-            if (nickname.Length == 0)
-            {
-                Program.matrix("Введите свой псевдоним: ");
-                nickname = Console.ReadLine();
-            }
-            Program.bufferClear();
-            while ((nickname.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1) || nickname.Length > 20 || nickname.Length < 3)
-            {
-                Program.matrix("Некорректный псевдоним");
-                Console.Clear();
-                Program.matrix("Введите свой псевдоним: ");
-                nickname = Console.ReadLine();
-            } 
             using (BinaryWriter writer = new BinaryWriter(client.GetStream()))
             {
-                writer.Write($"{nickname}   присоединился к хабу.");
+                //writer.Write($"{nickname}  присоединился к хабу.");
                 while (client.Connected)
                 {
                     string message = Console.ReadLine();
-                    //string message = Program.ReadLineWithPrompt($"[{nickname}]:");
                     Program.bufferClear();
-                    writer.Write($"[{nickname}]: {message}    ({new WebClient().DownloadString("https://api.ipify.org")})"); //Временно
+                    //writer.Write($"[{nickname}]: {message}    ()"); //Временно
+                    writer.Write(message);
                 }
                 Program.matrix("Пользователь отключился от сервера!");
                 return;
@@ -92,7 +87,6 @@ namespace TCPTunnel
         {
             var discoverer = new NatDiscoverer();
             var device = await discoverer.DiscoverDeviceAsync();
-            var ip = await device.GetExternalIPAsync();
             try
             {
                 await device.DeletePortMapAsync(new Mapping(Protocol.Tcp, port, port));
@@ -128,13 +122,10 @@ namespace TCPTunnel
             Process.Start(Application.ExecutablePath);
             while (true)
             {
-                TcpClient client = server.AcceptTcpClient();
-                ConnectionContext context = new ConnectionContext();
-                context.client = client;
-                context.broadcaster = broadcaster;
+                Client client = new Client(server.AcceptTcpClient());
                 broadcaster.AddClient(client);
                 Thread clientThread = new Thread(ServerThread);
-                clientThread.Start(context);
+                clientThread.Start(client);
             }
         }
         public static bool ping(string ip, int port, int timeout = 2000) //добавить время ответа
@@ -167,20 +158,45 @@ namespace TCPTunnel
             }
 
         }
-        public static void ServerThread(object contextParam)
+        public static void ServerThread(object incomingClient)
         {
-            ConnectionContext context = (ConnectionContext)contextParam;
-            TcpClient client = context.client;
-            BinaryReader reader = new BinaryReader(client.GetStream());
+            Client client = (Client)incomingClient;
+            TcpClient pipe = client.TcpClient;
+            NetworkStream sink = pipe.GetStream();
+
+            if (String.IsNullOrWhiteSpace(client.nickname))
+            {
+                BinaryWriter writer = new BinaryWriter(sink);
+                writer.Write(DO_AUTH_MESSAGE);
+            }
+
+            BinaryReader reader = new BinaryReader(sink);
             try
             {
-                while (client.Connected)
+                while (pipe.Connected)
                 {
-                    if (client.Available > 0)
+                    if (pipe.Available > 0)
                     {
                         string message = reader.ReadString();
-                        Console.WriteLine($"<<< {message}");
-                        broadcaster.Broadcast(message);
+                        if (String.IsNullOrWhiteSpace(client.nickname))
+                        {
+                            if (message.StartsWith("REPLY:"))
+                            {
+                                string raw = message.Replace("REPLY:", "");
+                                string[] parsed = raw.Split(new char[] { '|' }, 2);
+                                string nickname = parsed[0];
+                                string ip = parsed[1];
+                                client.nickname = nickname;
+                                client.ipAddress = ip;
+                                broadcaster.Broadcast(null, $"{nickname} подключился к хабу!");
+                                continue;
+                            }
+                        }
+
+                        string sender_nickname = client.nickname;
+                        string sender_ip = client.ipAddress;
+                        Console.WriteLine($"<<< {sender_nickname} [{sender_ip}]: {message}");
+                        broadcaster.Broadcast(client, message);
                     }
                     else
                     {
@@ -206,6 +222,14 @@ namespace TCPTunnel
                     if (client.Available > 0)
                     {
                         string message = reader.ReadString();
+                        if (DO_AUTH_MESSAGE.Equals(message))
+                        {
+                            string ip = new WebClient().DownloadString("https://api.ipify.org");
+                            BinaryWriter writer = new BinaryWriter(client.GetStream());
+                            writer.Write($"REPLY: {nickname}|{ip}");
+                            continue;
+                        }
+
                         Console.WriteLine("<<< " + message);
                     }
                     else
