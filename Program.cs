@@ -65,46 +65,23 @@ namespace TCPTunnel
             Console.ReadKey();
             Environment.Exit(0);
         }
-        public static void matrix(string text, bool stay = true)
+        public static void matrix(string text, int sleep = 20)
         {
-            
             for (int i = 0; i < text.Length; i++)
             {
+                Thread.Sleep(sleep/2);
                 Console.Write(text[i]);
-                Thread.Sleep(20);
-            }
-            if (!stay)
-            {
-
-                for (int i = text.Length - 1; i >= 0; i--)
-                {
-                    Console.SetCursorPosition(i, Console.CursorTop);
-                    Console.Write(" ");
-                    Thread.Sleep(15);
-                    Program.bufferClear();
-                }
+                Thread.Sleep(sleep/2);
             }
 
         }
+        //public static void matrixRemove(){}
         public static void bufferClear()
         {
             int currentTop = Console.CursorTop;
             Console.SetCursorPosition(0, Math.Abs(currentTop - 1));
             Console.Write(new string(' ', Console.BufferWidth));
             Console.SetCursorPosition(0, Math.Abs(currentTop - 1));
-        }
-        public static void keyNavigation()
-        {
-
-        }
-        public static void centerText(string text)
-        {
-            int width = Console.WindowWidth;
-            if (text.Length < width)
-            {
-                text = text.PadLeft((width - text.Length) / 2 + text.Length, ' ');
-            }
-            Console.WriteLine(text);
         }
     }
 }

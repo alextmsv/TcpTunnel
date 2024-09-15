@@ -71,11 +71,22 @@ namespace TCPTunnel
                     string message = Console.ReadLine();
                     //string message = Program.ReadLineWithPrompt($"[{nickname}]:");
                     Program.bufferClear();
-                    writer.Write($"[{nickname}]: {message}    ({Dns.GetHostByName(Dns.GetHostName()).AddressList[1]})");
+                    writer.Write($"[{nickname}]: {message}    ({new WebClient().DownloadString("https://api.ipify.org")})"); //Временно
                 }
                 Program.matrix("Пользователь отключился от сервера!");
                 return;
             }
+        }
+        public static string filterNick(string name)
+        {
+            while ((name.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1) || name.Length > 20 || name.Length < 3)
+            {
+                Program.matrix("Некорректный псевдоним");
+                Console.Clear();
+                Program.matrix("Введите свой псевдоним: ");
+                name = Console.ReadLine();
+            }
+            return name;
         }
         async static void openPort(int port)
         {
@@ -126,7 +137,7 @@ namespace TCPTunnel
                 clientThread.Start(context);
             }
         }
-        public static bool ping(string ip, int port, int timeout = 2000)
+        public static bool ping(string ip, int port, int timeout = 2000) //добавить время ответа
         {
             try
             {

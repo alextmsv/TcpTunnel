@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Diagnostics;
 
 namespace TCPTunnel
 {
@@ -9,25 +10,25 @@ namespace TCPTunnel
         
         public static int top = Console.CursorTop;
         public static int left = Console.CursorLeft;
-        int centerX = 24;
-        int centerY = 7;
-        public void mainMatrix(string text)
+        const int centerX = (71-1)/2;
+        const int centerY = (16-1)/2;
+        public void mainMatrix(string text, int x = centerX, int y = centerY, int time = 1)
         {
-            for (int i = 0; i < text.Length; i++)
+            Console.SetCursorPosition(Math.Abs(x-(text.Length/2)), y);
+            Program.matrix(text);
+            Thread.Sleep(time*1000); // Перевод в секунды
+            for (int j = text.Length - 1; j >= 0; j--)
             {
-                Console.Write(text[i]);
+                Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
+                Console.Write(new string(' ', text.Length));
+                Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
+                Console.Write(text.Substring(0, j));
                 Thread.Sleep(20);
             }
-            Console.Clear();
-            for (int j = text.Length - 1; j <= text.Length - 1; j--)
-            {
-                if (j < 0 || j - 1 < 0) break;
-                text = text.TrimEnd(text[j]);
-                Console.SetCursorPosition(centerX, centerY);
-                Console.WriteLine(text);
-                Thread.Sleep(20);
-                Program.bufferClear();
-            }
+            Console.SetCursorPosition(x, y);
+            Console.Write(new string(' ', text.Length));
+            Console.SetCursorPosition(x, y);
+
         }
         public static object[] splitIPByArg(List<string> list, string argument)
         {
@@ -75,7 +76,8 @@ namespace TCPTunnel
                 }
                 if (args.Contains("-nickname"))
                 {
-                    NetWorker.nickname = args[args.IndexOf("-nickname") + 1];
+                    string testnick = args[args.IndexOf("-nickname") + 1];
+                    NetWorker.nickname = NetWorker.filterNick(testnick);
                 }
                 if (args.Contains("-ping"))
                 {
@@ -101,13 +103,19 @@ namespace TCPTunnel
                 }
                 if (args.Contains("-skip")) goto main;
             }
-            Console.SetCursorPosition(centerX, centerY);
-            mainMatrix("Добро пожаловать в чат");
+            mainMatrix("Добро пожаловать в чат", centerX, centerY);
             main:
                 Program.bufferClear();
                 Console.Title = "Меню";
                 Console.Clear();
-                string[] choice = { "Создать сервер", "Войти на сервер", "Выход" };
+
+            string[] choice =
+            {
+                    "Создать сервер",
+                    "Войти на сервер",
+                    (NetWorker.nickname == "") ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
+                    "Выход" 
+                };
                 Console.SetCursorPosition(0, 0);
                 for(int i = 0; i<choice.Length; i++)
                 {
@@ -128,22 +136,24 @@ namespace TCPTunnel
                         Console.WriteLine(choice[i]);
                         Console.ResetColor();
                     }
-                    switch (Console.ReadKey(true).Key.ToString())
+                    switch (Console.ReadKey(true).Key)
                     {
-                        case "DownArrow":
+                    case ConsoleKey.RightArrow:
+                        case ConsoleKey.DownArrow:
                             if (arrow < choice.Length - 1) arrow++;
                             continue;
-
-                        case "UpArrow":
+                    case ConsoleKey.LeftArrow:
+                        case ConsoleKey.UpArrow:
                             if (arrow > 0) arrow--;
                             continue;
 
-                        case "Escape":
+                        case ConsoleKey.Escape:
                         default:
-                            Program.bufferClear();
+
                             Console.Title = choice[Math.Abs(arrow)];
                             break;
                     }
+                    
                     if (arrow == 0)
                     {
                         NetWorker.tryCreateServer();
@@ -152,7 +162,45 @@ namespace TCPTunnel
                         NetWorker.TryConnect();
                         isMenu = false;
                     }
-                    Program.bye();
+                    else if (arrow == 2)
+                    {
+                        Stopwatch stopwatch = new Stopwatch();
+                        stopwatch.Start();
+                        bool shitname = false;  
+                        Console.Clear();
+                        mainMatrix("Добро пожаловать в процедуру смены ника в TCPTunnel");
+                        Console.SetCursorPosition(0, Console.CursorTop);
+                        Program.matrix("В свободном поле вы сможете задать себе ник: ");
+                        string testname = Console.ReadLine();
+                        Console.Write($"{testname}");
+                        Program.matrix("...\n", 1000);
+                        if (testname.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1)
+                        {
+                            shitname = true;
+                            Program.matrix("Ваш ник содержит недопустимые символы\n");
+                        }
+                        if (testname.Length > 20 || testname.Length < 3)
+                        {
+                            shitname = true;
+                            Program.matrix("Ваш ник не в диапазоне от 3 до 20 символов\n");
+                        }
+                        if (shitname)
+                        {
+                            Program.matrix("Попробуй еще раз");
+                            Console.ReadKey();
+                            goto main;
+                        }
+                        stopwatch.Stop();
+                        NetWorker.nickname = testname;
+                        Program.matrix("Хорошее имя");
+                        if(stopwatch.Elapsed.TotalSeconds > 25) 
+                        {
+                            Program.matrix(", долго придумывал))))", 200); 
+                        }
+                        Console.ReadKey(); 
+                        goto main;
+                    }
+                Program.bye();
                 }
 
         } 
