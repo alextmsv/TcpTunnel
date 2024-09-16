@@ -6,128 +6,62 @@ using Open.Nat;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace TCPTunnel
 {
     public class NetWorker
     {
-        private static Broadcaster broadcaster = new Broadcaster();
-        private const string DO_AUTH_MESSAGE = "DoAuth()";
-        private static bool isBusy = false;
+        public const string DO_AUTH_MESSAGE = "DoAuth()";
+        public static Broadcaster broadcaster = new Broadcaster();
+        
         public static bool connected = false;
         public static string nickname = "";
-
-
-        public static void TryConnect()
+        public static string filterNick(string name, bool force = false)
         {
-            if (nickname.Length <= 0) nickname = filterNick(Program.ReadLineWithPrompt("Введите свой псевдоним: "));
-            Program.matrix("Введите IP адрес сервера [localhost]: ");
-            string ip = Console.ReadLine();
-            if (String.IsNullOrEmpty(ip))
-                ip = "localhost";
-
-            Program.matrix("Введите порт сервера [9095]: ");
-            int serverPort;
-            if (!Int32.TryParse(Console.ReadLine(), out serverPort))
-                serverPort = 9095;
-
-            Program.waiting(">>> Попытка подключения к серверу: " + ip + ":" + serverPort, ip, serverPort);
-            //NetWorker.DoConnect(ip, serverPort);
-            Console.Clear();
-            //DoConnect(ip, serverPort);
-        }
-        public static void DoConnect(string address, int port)
-        {
-            if (isBusy) 
-                return;
-
-            if (!isBusy) isBusy = true;
-            TcpClient client = new TcpClient();
-            try
+            char[] illegalChars = @"!@#$%^&*()[]{}+, /\| ".ToCharArray();
+            bool check = (name.IndexOfAny(illegalChars) != -1) || name.Length > 20 || name.Length < 3;
+            while (check && force == false)
             {
-                client.Connect(address, port);
-                connected = true;
+                Program.matrix("Некорректный псевдоним", 20, ConsoleColor.DarkRed);
                 Console.Clear();
-                Program.bufferClear();
-            }
-            catch
-            {
-                Program.matrix("Не удалось подключиться к " + address);
-                return;
-            }
-            ConnectionContext publicName = new ConnectionContext();
-            Thread clientThread = new Thread(ClientThread);
-            clientThread.Start(client);
-            using (BinaryWriter writer = new BinaryWriter(client.GetStream()))
-            {
-                //writer.Write($"{nickname}  присоединился к хабу.");
-                while (client.Connected)
-                {
-                    string message = Console.ReadLine();
-                    Program.bufferClear();
-                    //writer.Write($"[{nickname}]: {message}    ()"); //Временно
-                    writer.Write(message);
-                }
-                Program.matrix("Пользователь отключился от сервера!");
-                return;
-            }
-        }
-        public static string filterNick(string name)
-        {
-            while ((name.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1) || name.Length > 20 || name.Length < 3)
-            {
-                Program.matrix("Некорректный псевдоним");
-                Console.Clear();
-                Program.matrix("Введите свой псевдоним: ");
+                Program.matrix("Введите свой псевдоним: ", 20, ConsoleColor.DarkYellow);
                 name = Console.ReadLine();
+            }
+            if(check && force == true )
+            {
+                name = new WebClient().DownloadString("https://api.ipify.org");
+                Program.matrix($"\nНик не соответствовал требованиям, \nпоэтому мы изменили его за вас на ваш IP адрес :trollface: ({name})\n", 10);
             }
             return name;
         }
-        async static void openPort(int port)
+        public async static void openPort(int port)
         {
             var discoverer = new NatDiscoverer();
             var device = await discoverer.DiscoverDeviceAsync();
+
             try
             {
                 await device.DeletePortMapAsync(new Mapping(Protocol.Tcp, port, port));
+                await device.CreatePortMapAsync(new Mapping(Protocol.Tcp, port, port));
             }
             catch (MappingException ex)
             {
-                Program.matrix(ex.ErrorText+", сервер закрыт для посторонних. (Отключите Брандмауэр(Firewall) в анти-вирусе. ИЛИ Вы пытаетесь запустить 2 сервера одновременно");
-                Console.ReadKey();
-            }
-            await device.CreatePortMapAsync(new Mapping(Protocol.Tcp, port, port));
-        }
-        public static void tryCreateServer()
-        {
-            Program.matrix("Введите порт сервера: ");
-            int port;
-            if (!Int32.TryParse(Console.ReadLine(), out port))
-                port = 9095;
-            Program.matrix($"Порт = {port}");
-            Thread.Sleep(20);
-            Console.SetCursorPosition(Menu.left + 1, Menu.top);
-            Console.Write(port);
-            Console.Clear();
-            doCreateServer(port);
-        }
-        public static void doCreateServer(int port)
-        {
-            TcpListener server = new TcpListener(IPAddress.Any, port);
-            openPort(port);
-            Thread.Sleep(300);
-            server.Start();
-            Program.matrix("Сервер запущен!");
-            Console.Write("\r\n");
-            Process.Start(Application.ExecutablePath);
-            while (true)
-            {
-                Client client = new Client(server.AcceptTcpClient());
-                broadcaster.AddClient(client);
-                Thread clientThread = new Thread(ServerThread);
-                clientThread.Start(client);
+                Program.matrix(ex.ErrorText);
+                Program.matrix("\nКто то занял порт, либо ваш антивирус не разрешает использовать UPnP\n");
+                //if (port < 65535)
+                //{
+                //    Program.matrix("\nИзменяю текущий порт на 1 единицу выше.......\n", 50);
+                //    Console.Clear();
+                //    openPort(port + 1);
+                //}
+                //else
+                //{
+                //    Program.matrix("\nНе удалось открыть порт. Все порты заняты. Попробуйте отключить ваш антивирус\n");
+                //}
             }
         }
+
         public static bool ping(string ip, int port, int timeout = 2000) //добавить время ответа
         {
             try
@@ -153,7 +87,7 @@ namespace TCPTunnel
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An unexpected error occurred: {ex.Message}");
+                Console.WriteLine($"Упс... {ex.Message}");
                 return false;
             }
 
@@ -186,7 +120,7 @@ namespace TCPTunnel
                                 string[] parsed = raw.Split(new char[] { '|' }, 2);
                                 string nickname = parsed[0];
                                 string ip = parsed[1];
-                                client.nickname = nickname;
+                                client.nickname = filterNick(nickname, true);
                                 client.ipAddress = ip;
                                 broadcaster.Broadcast(null, $"{nickname} подключился к хабу!");
                                 continue;
@@ -195,7 +129,7 @@ namespace TCPTunnel
 
                         string sender_nickname = client.nickname;
                         string sender_ip = client.ipAddress;
-                        Console.WriteLine($"<<< {sender_nickname} [{sender_ip}]: {message}");
+                        Console.WriteLine($">>> [{client.nickname}]:{message} ({client.ipAddress})");
                         broadcaster.Broadcast(client, message);
                     }
                     else
@@ -211,37 +145,6 @@ namespace TCPTunnel
             }
         }
 
-        public static void ClientThread(object clientParam)
-        {
-            TcpClient client = (TcpClient)clientParam;
-            try
-            {
-                BinaryReader reader = new BinaryReader(client.GetStream());
-                while (client.Connected)
-                {
-                    if (client.Available > 0)
-                    {
-                        string message = reader.ReadString();
-                        if (DO_AUTH_MESSAGE.Equals(message))
-                        {
-                            string ip = new WebClient().DownloadString("https://api.ipify.org");
-                            BinaryWriter writer = new BinaryWriter(client.GetStream());
-                            writer.Write($"REPLY: {nickname}|{ip}");
-                            continue;
-                        }
-
-                        Console.WriteLine("<<< " + message);
-                    }
-                    else
-                    {
-                        Thread.Sleep(100);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Program.matrix("Не удалось обработать сообщение: " + ex.Message);
-            }
-        }
+        
     }
 }

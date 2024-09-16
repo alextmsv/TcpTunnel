@@ -29,7 +29,7 @@ namespace TCPTunnel
                 {
                     BinaryWriter writer = new BinaryWriter(pipe.GetStream());
                     if (sender != null)
-                        writer.Write(sender.nickname + " [" + sender.ipAddress + "]: " + message);
+                        writer.Write($"[{sender.nickname}]:{message} ({sender.ipAddress})");
                     else
                         writer.Write(message);
                 }

@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Linq;
 using System.Collections.Generic;
 using System.Threading;
 using System.Diagnostics;
-using System.Runtime.ExceptionServices;
 
 namespace TCPTunnel
 {
@@ -13,6 +11,7 @@ namespace TCPTunnel
         public static int left = Console.CursorLeft;
         const int centerX = (71 - 1) / 2;
         const int centerY = (16 - 1) / 2;
+        bool skipped = false;
         public void mainMatrix(string text, int x = centerX, int y = centerY, int time = 1)
         {
             Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
@@ -63,6 +62,7 @@ namespace TCPTunnel
         public void main(List<string> args)
         {
             args.Add("-skip");
+            Console.ForegroundColor = ConsoleColor.White;
             Console.WindowWidth = 71;
             Console.WindowHeight = 16;
             if (args.Count > 0)
@@ -77,9 +77,9 @@ namespace TCPTunnel
                     if (args[args.IndexOf("-create")] + 1 is string)
                     {
                         int.TryParse(args[args.IndexOf("-create")] + 1, out int port);
-                        NetWorker.doCreateServer(port);
+                        ServerInterface.doCreateServer(port);
                     }
-                    else NetWorker.tryCreateServer();
+                    else ServerInterface.tryCreateServer();
                 }
                 if (args.Contains("-nickname"))
                 {
@@ -96,7 +96,7 @@ namespace TCPTunnel
                     }
                     else Program.matrix($"Сервер {ip}:{port} мёртв.");
                     Console.ReadKey();
-                    Console.Clear();
+                    ConsoleGraphic.Clear(); ;
                 }
                 if (args.Contains("-connect"))
                 {
@@ -104,27 +104,34 @@ namespace TCPTunnel
                     {
                         string ip = splitIPByArg(args, "-connect")[0].ToString();
                         int port = Convert.ToInt32(splitIPByArg(args, "-connect")[1]);
-                        NetWorker.DoConnect(ip, port);
+                        UserInterface.DoConnect(ip, port);
                     }
                     Console.WriteLine("Вы допустили ошибку в параметре -connect");
                 }
-                if (args.Contains("-skip")) goto main;
+                if (args.Contains("-skip"))
+                {
+                    skipped = true;
+                    goto main;
+                }
             }
             mainMatrix("Добро пожаловать в чат", centerX, centerY);
         main:
             Program.bufferClear();
             Console.Title = "Меню";
-            Console.Clear();
-
+            if (skipped) ConsoleGraphic.Clear(0, 0);
+            else ConsoleGraphic.Clear();
             string[] choice = {
-        "Создать сервер",
-        "Войти на сервер",
-        (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
-        "Выход"
-      };
-            Console.SetCursorPosition(0, 0);
+                "Создать сервер",
+                "Войти на сервер",
+                (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
+                "Выход"
+             };
+            left += 10;
+            top += 1;
+            
             for (int i = 0; i < choice.Length; i++)
             {
+                Console.SetCursorPosition(left, top+i);
                 Program.matrix(choice[i]);
                 Console.Write("\r\n");
             }
@@ -133,7 +140,6 @@ namespace TCPTunnel
             bool isMenu = true;
             while (isMenu)
             {
-                Console.SetCursorPosition(0, 0);
                 for (int i = 0; i < choice.Length; i++)
                 {
                     if (i == arrow)
@@ -141,6 +147,7 @@ namespace TCPTunnel
                         Console.BackgroundColor = Console.ForegroundColor;
                         Console.ForegroundColor = ConsoleColor.Black;
                     }
+                    Console.SetCursorPosition(left, top+i);
                     Console.WriteLine(choice[i]);
                     Console.ResetColor();
                 }
@@ -164,11 +171,11 @@ namespace TCPTunnel
 
                 if (arrow == 0)
                 {
-                    NetWorker.tryCreateServer();
+                    ServerInterface.tryCreateServer();
                 }
                 else if (arrow == 1)
                 {
-                    NetWorker.TryConnect();
+                    UserInterface.TryConnect();
                     isMenu = false;
                 }
                 else if (arrow == 2)
@@ -176,13 +183,13 @@ namespace TCPTunnel
                     Stopwatch stopwatch = new Stopwatch();
                     stopwatch.Start();
                     bool shitname = false;
-                    Console.Clear();
+                    ConsoleGraphic.Clear(); ;
                     mainMatrix("Добро пожаловать в процедуру смены ника в TCPTunnel");
                     Console.SetCursorPosition(0, Console.CursorTop);
-                    Program.matrix("В свободном поле вы сможете задать себе ник: ");
+                    Program.matrix("В свободном поле вы сможете задать себе ник:");
                     string testname = Console.ReadLine();
                     Console.Write($"{testname}");
-                    Program.matrix("...\n", 1000);
+                    Program.matrix("...\n", 500);
                     if (testname.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1)
                     {
                         shitname = true;

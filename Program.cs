@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using System.Windows.Forms;
 namespace TCPTunnel
 {
     internal class Program
@@ -32,12 +33,6 @@ namespace TCPTunnel
             const int delay = 700;
             Console.Write(message);
             int startPosition = Console.CursorLeft;
-            //if(!NetWorker.ping(ip, port))
-            //{
-            //    Console.Clear();
-            //    matrix("Сервер не отвечает на запросы, возможно у вас проблемы с интернетом, \nлибо сервер отключен");
-            //    restart(publicArgs);
-            //}
 
             while (!NetWorker.connected)
             {
@@ -49,7 +44,7 @@ namespace TCPTunnel
                     Console.SetCursorPosition(startPosition, Console.CursorTop);
                     Console.Write(new string(' ', maxDots));
                 }
-                NetWorker.DoConnect(ip, port);
+                UserInterface.DoConnect(ip, port);
             }
         }
         public static string ReadLineWithPrompt(string prompt)
@@ -64,17 +59,20 @@ namespace TCPTunnel
             Console.ReadKey();
             Environment.Exit(0);
         }
-        public static void matrix(string text, int sleep = 20)
+        public static void matrix(string text, int sleep = 20, ConsoleColor color = ConsoleColor.White)
         {
+            Console.ForegroundColor = color;
             for (int i = 0; i < text.Length; i++)
             {
-                Thread.Sleep(sleep/2);
+                Thread.Sleep(sleep / 2);
                 Console.Write(text[i]);
-                Thread.Sleep(sleep/2);
+                Thread.Sleep(sleep / 2);
             }
-
+            Console.ResetColor();
         }
-        //public static void matrixRemove(){}
+        //public static void matrixRemove(){
+            
+        //}
         public static void bufferClear()
         {
             int currentTop = Console.CursorTop;
