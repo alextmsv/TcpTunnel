@@ -59,11 +59,14 @@ namespace TCPTunnel
             Console.ReadKey();
             Environment.Exit(0);
         }
-        public static void matrix(string text, int sleep = 20, ConsoleColor color = ConsoleColor.White)
+        public static void matrix(string text, int sleep = 20, ConsoleColor color = ConsoleColor.White, bool shift = true)
         {
+            int top = Console.CursorTop;
+            int left = shift ? Console.CursorLeft+1 : Console.CursorLeft;
             Console.ForegroundColor = color;
             for (int i = 0; i < text.Length; i++)
             {
+                Console.SetCursorPosition(left+i, top);
                 Thread.Sleep(sleep / 2);
                 Console.Write(text[i]);
                 Thread.Sleep(sleep / 2);

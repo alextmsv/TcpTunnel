@@ -8,9 +8,12 @@ namespace TCPTunnel
 {
     public class UserInterface : NetWorker
     {
+        static ConsoleGraphic graphic = new ConsoleGraphic();
         private static bool isBusy = false;
         public static void ClientThread(object clientParam)
         {
+            Console.CursorTop = Menu.top + 10;
+            Console.CursorLeft = Menu.left + 1;
             TcpClient client = (TcpClient)clientParam;
             try
             {
@@ -50,17 +53,19 @@ namespace TCPTunnel
             string ip = Console.ReadLine();
             if (String.IsNullOrEmpty(ip))
                 ip = "localhost";
-
+            
             Program.matrix("Введите порт сервера [9091]: ");
             int serverPort;
             if (!Int32.TryParse(Console.ReadLine(), out serverPort))
                 serverPort = 9091;
 
             Program.waiting(">>> Попытка подключения к серверу: " + ip + ":" + serverPort, ip, serverPort);
-            Console.Clear();
+
         }
         public static void DoConnect(string address, int port)
         {
+            Console.CursorTop = Menu.top + 10;
+            Console.CursorLeft = Menu.left + 1;
             if (isBusy)
                 return;
 
@@ -70,7 +75,7 @@ namespace TCPTunnel
             {
                 client.Connect(address, port);
                 connected = true;
-                Console.Clear();
+                graphic.Clear();
                 Program.bufferClear();
             }
             catch

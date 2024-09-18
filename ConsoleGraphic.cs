@@ -1,47 +1,50 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace TCPTunnel
 {
     public class ConsoleGraphic
     {
 
-        private static void drawCorner(int x, int y, char cornerChar, int time = 20)
+        private static void DrawCorner(int x, int y, char cornerChar, int time = 20)
         {
             Console.SetCursorPosition(x, y);
-            Program.matrix(cornerChar.ToString(), time, ConsoleColor.Blue);
+            Program.matrix(cornerChar.ToString(), time, ConsoleColor.Blue, false);
         }
-
-        private static void drawLine(int startX, int startY, int length, char lineChar, bool isHorizontal = true, int time = 20)
+        private static void DrawLine(int startX, int startY, int length, char lineChar, bool isHorizontal = true, int time = 20)
         {
             for (int i = 0; i < length; i++)
             {
                 Console.SetCursorPosition(startX + (isHorizontal ? i : 0), startY + (isHorizontal ? 0 : i));
-                Program.matrix(lineChar.ToString(), time, ConsoleColor.Magenta);
+                Program.matrix(lineChar.ToString(), time, ConsoleColor.Magenta, false);
             }
         }
-
-        private static void drawRectangle(int x, int y, int width, int height, int linetime, int cornertime)
+        private static void DrawRectangle(int x, int y, int width, int height, int linetime, int cornertime)
         {
             char horizontalLine = '-';
             char verticalLine = '|';
             char corner = '+';
-            drawLine(x, y, width, horizontalLine, true, linetime);
-            drawLine(x, y + height - 1, width, horizontalLine, true, linetime);
-            drawLine(x, y, height, verticalLine, false, linetime);
-            drawLine(x + width - 1, y, height, verticalLine, false, linetime);
-            drawCorner(x, y, corner, cornertime);
-            drawCorner(x + width - 1, y, corner, cornertime);
-            drawCorner(x, y + height - 1, corner, cornertime);
-            drawCorner(x + width - 1, y + height - 1, corner, cornertime);
-
+            DrawLine(x, y, width, horizontalLine, true, linetime);
+            DrawLine(x, y + height - 1, width, horizontalLine, true, linetime);
+            DrawLine(x, y, height, verticalLine, false, linetime);
+            DrawLine(x + width - 1, y, height, verticalLine, false, linetime);
+            DrawCorner(x, y, corner, cornertime);
+            DrawCorner(x + width - 1, y, corner, cornertime);
+            DrawCorner(x, y + height - 1, corner, cornertime);
+            DrawCorner(x + width - 1, y + height - 1, corner, cornertime);
         }
-        public static void Clear(int ltime = 3, int ctime = 10)
+        public void Clear(int ltime = 2, int ctime = 5)
         {
             Console.Clear();
-            drawRectangle(0, 0, 71, 16, ltime, ctime);
+            DrawRectangle(0, 0, Console.WindowWidth, Console.WindowHeight, ltime, ctime);
+            int top = Console.CursorTop;
+            int left = Console.CursorLeft;
+            Console.SetCursorPosition(Console.WindowWidth-21, Console.WindowHeight-4);
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write("By alextmsv");
+            Console.ResetColor();
+            Console.SetCursorPosition(left, top);
         }
     }
 }

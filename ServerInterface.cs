@@ -9,6 +9,9 @@ namespace TCPTunnel
 {
     public class ServerInterface : NetWorker
     {
+        static ConsoleGraphic graphic = new ConsoleGraphic();
+        public static int top = Console.CursorTop;
+        public static int left = Console.CursorLeft;
         public static void tryCreateServer()
         {
             Program.matrix("Введите порт сервера: ");
@@ -19,7 +22,7 @@ namespace TCPTunnel
             Thread.Sleep(20);
             Console.SetCursorPosition(Menu.left + 1, Menu.top);
             Console.Write(port);
-            Console.Clear();
+            graphic.Clear();
             doCreateServer(port);
         }
         public static void doCreateServer(int port)
@@ -28,6 +31,7 @@ namespace TCPTunnel
             openPort(port);
             Thread.Sleep(300);
             server.Start();
+            Console.SetCursorPosition(1, Menu.top);
             Program.matrix("Сервер запущен!\r\n");
             Process.Start(Application.ExecutablePath);
             while (true)

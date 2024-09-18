@@ -12,6 +12,10 @@ namespace TCPTunnel
 {
     public class NetWorker
     {
+        static ConsoleGraphic graphic = new ConsoleGraphic();
+        public static int top = Console.CursorTop;
+        public static int left = Console.CursorLeft;
+
         public const string DO_AUTH_MESSAGE = "DoAuth()";
         public static Broadcaster broadcaster = new Broadcaster();
         
@@ -24,7 +28,7 @@ namespace TCPTunnel
             while (check && force == false)
             {
                 Program.matrix("Некорректный псевдоним", 20, ConsoleColor.DarkRed);
-                Console.Clear();
+                graphic.Clear();
                 Program.matrix("Введите свой псевдоним: ", 20, ConsoleColor.DarkYellow);
                 name = Console.ReadLine();
             }
