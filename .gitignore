@@ -1,0 +1,42 @@
+# Visual Studio workspace and user settings
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# NuGet packages and generated restore files
+packages/
+*.nuget.props
+*.nuget.targets
+project.assets.json
+project.nuget.cache
+
+# Compiler and test artifacts
+*.pdb
+*.cache
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+~$*
+
+# IDEs and operating system metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
