@@ -19,8 +19,8 @@
       "RelativeMoniker": "D:0:0:{C2F1BABF-47AE-4181-830B-814EA0751EF0}|TCPTunnel.csproj|solutionrelative:client.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|F:\\Projects\\C#\\TcpTunnel\\connectioncontext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:connectioncontext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|F:\\Projects\\C#\\TcpTunnel\\ConnectionContext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:ConnectionContext.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     }
   ],
   "DocumentGroupContainers": [
@@ -40,7 +40,7 @@
               "RelativeDocumentMoniker": "Menu.cs",
               "ToolTip": "F:\\Projects\\C#\\TcpTunnel\\Menu.cs",
               "RelativeToolTip": "Menu.cs",
-              "ViewState": "AgIAAIcAAAAAAAAAAAAAwIsAAABEAAAAAAAAAA==",
+              "ViewState": "AgIAAIcAAAAAAAAAAAAAwJMAAAAXAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-08-04T14:27:53.046Z",
               "EditorCaption": ""
