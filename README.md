@@ -99,7 +99,7 @@ TCPTunnel.exe [options]
 Example:
 
 ```powershell
-TCPTunnel.exe -nickname Alex -connect cool.tcptunnel.hub:9091 -graphics on
+TCPTunnel.exe -nickname VodkaMan -connect cool.tcptunnel.hub:9091 -graphics on
 ```
 
 ## Internet connectivity and NAT
