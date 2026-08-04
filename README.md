@@ -2,7 +2,7 @@
 
 # TCPTunnel
 
-### A lightweight multiplayer TCP chat for Windows terminals
+### A lightweight RUSSIAN multiplayer TCP chat for Windows terminals
 
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.7.2-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet-framework/net472)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows)](#requirements)
@@ -172,6 +172,7 @@ TCPTunnel
 
 ## Roadmap
 
+- [ ] Add english language support
 - [ ] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations
