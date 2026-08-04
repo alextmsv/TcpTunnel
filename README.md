@@ -18,7 +18,7 @@
 TCPTunnel is a nostalgic console chat brought back to life with a stable asynchronous TCP core, an animated terminal interface, automatic UPnP port mapping, and a portable single-file application binary.
 
 > [!IMPORTANT]
-> Chat traffic is currently sent as **plain TCP without encryption**. Do not use TCPTunnel for confidential conversations on untrusted networks.
+> Chat traffic is currently sent as **plain TCP without encryption**. Do not use TCPTunnel for confidential conversations on untrusted networks, encryption in my plans!
 
 ## Highlights
 
@@ -41,6 +41,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 3. Select **Create server**.
 4. Choose a TCP port or press <kbd>Enter</kbd> to use `9091`.
 5. Share your public IP address and port with the other participants.
+6. Have fun!
 
 The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`.
 
@@ -50,6 +51,7 @@ The Hub runs in the background of the same process, while the host connects loca
 2. Select **Connect to server**.
 3. Enter the host name or IP address.
 4. Enter the server port.
+5. Have fun! x2
 
 ### Chat commands
 
