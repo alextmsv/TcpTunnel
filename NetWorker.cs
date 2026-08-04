@@ -11,11 +11,15 @@ namespace TCPTunnel
     public class NetWorker
     {
         private const int AuthenticationTimeoutMilliseconds = 7000;
+        private const int NatDiscoveryTimeoutSeconds = 5;
+        private const int RenewableMappingLifetimeSeconds = 3600;
 
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
         private static readonly SemaphoreSlim natLock = new SemaphoreSlim(1, 1);
         private static NatDevice mappedDevice;
         private static Mapping activeMapping;
+        private static string activeMappingProtocol;
+        private static Task mappingRenewalTask = Task.CompletedTask;
 
         public const string DO_AUTH_MESSAGE = "DoAuth()";
         public const string AUTH_OK_MESSAGE = "AuthOk()";
@@ -65,31 +69,22 @@ namespace TCPTunnel
                 try
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var discoverer = new NatDiscoverer();
-                    NatDevice device;
-                    using (var discoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                    {
-                        discoveryCancellation.CancelAfter(TimeSpan.FromSeconds(8));
-                        device = await discoverer
-                            .DiscoverDeviceAsync(PortMapper.Upnp | PortMapper.Pmp, discoveryCancellation)
-                            .ConfigureAwait(false);
-                    }
-                    cancellationToken.ThrowIfCancellationRequested();
 
-                    Mapping mapping = new Mapping(Protocol.Tcp, port, port);
-                    try { await device.DeletePortMapAsync(mapping).ConfigureAwait(false); }
-                    catch (MappingException) { }
+                    string upnpError = await TryCreatePortMappingAsync(
+                        PortMapper.Upnp,
+                        port,
+                        cancellationToken).ConfigureAwait(false);
+                    if (upnpError == null)
+                        return $"{activeMappingProtocol}: TCP-порт {port} успешно проброшен.";
 
-                    await device.CreatePortMapAsync(mapping).ConfigureAwait(false);
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        try { await device.DeletePortMapAsync(mapping).ConfigureAwait(false); } catch { }
-                        cancellationToken.ThrowIfCancellationRequested();
-                    }
+                    string pmpError = await TryCreatePortMappingAsync(
+                        PortMapper.Pmp,
+                        port,
+                        cancellationToken).ConfigureAwait(false);
+                    if (pmpError == null)
+                        return $"{activeMappingProtocol}: TCP-порт {port} успешно проброшен; lease продлевается автоматически.";
 
-                    mappedDevice = device;
-                    activeMapping = mapping;
-                    return $"UPnP: TCP-порт {port} успешно проброшен.";
+                    return "Автопроброс не удался. UPnP: " + upnpError + "; NAT-PMP: " + pmpError;
                 }
                 finally
                 {
@@ -99,13 +94,133 @@ namespace TCPTunnel
             catch (OperationCanceledException)
             {
                 return cancellationToken.IsCancellationRequested
-                    ? "UPnP: настройка отменена."
-                    : "UPnP: роутер не найден за 8 секунд.";
+                    ? "Автопроброс: настройка отменена."
+                    : "Автопроброс: роутер не ответил вовремя.";
             }
             catch (Exception ex)
             {
-                return "UPnP недоступен: " + ex.Message;
+                return "Автопроброс недоступен: " + DescribeNatException(ex);
             }
+        }
+
+        private static async Task<string> TryCreatePortMappingAsync(
+            PortMapper mapper,
+            int port,
+            CancellationToken cancellationToken)
+        {
+            string protocolName = mapper == PortMapper.Upnp ? "UPnP" : "NAT-PMP";
+            NatDevice device;
+
+            try
+            {
+                var discoverer = new NatDiscoverer();
+                using (var discoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    discoveryCancellation.CancelAfter(TimeSpan.FromSeconds(NatDiscoveryTimeoutSeconds));
+                    device = await discoverer
+                        .DiscoverDeviceAsync(mapper, discoveryCancellation)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return "устройство не найдено за " + NatDiscoveryTimeoutSeconds + " секунд";
+            }
+            catch (Exception ex)
+            {
+                return DescribeNatException(ex);
+            }
+
+            int[] lifetimes = mapper == PortMapper.Upnp
+                ? new[] { 0, RenewableMappingLifetimeSeconds }
+                : new[] { RenewableMappingLifetimeSeconds };
+            string lastError = null;
+
+            foreach (int lifetime in lifetimes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Mapping mapping = new Mapping(Protocol.Tcp, port, port, lifetime, "TCPTunnel");
+
+                try
+                {
+                    await device.CreatePortMapAsync(mapping).ConfigureAwait(false);
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        try { await device.DeletePortMapAsync(mapping).ConfigureAwait(false); } catch { }
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    mappedDevice = device;
+                    activeMapping = mapping;
+                    activeMappingProtocol = protocolName;
+                    if (lifetime > 0)
+                        mappingRenewalTask = RenewPortMappingAsync(device, mapping, cancellationToken);
+                    return null;
+                }
+                catch (OperationCanceledException)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    lastError = "истёк таймаут создания правила";
+                }
+                catch (Exception ex)
+                {
+                    lastError = DescribeNatException(ex);
+                }
+            }
+
+            return lastError ?? "роутер отклонил правило";
+        }
+
+        private static async Task RenewPortMappingAsync(
+            NatDevice device,
+            Mapping mapping,
+            CancellationToken cancellationToken)
+        {
+            int nextDelaySeconds = Math.Max(60, mapping.Lifetime / 2);
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(nextDelaySeconds), cancellationToken).ConfigureAwait(false);
+                    await natLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        if (!Object.ReferenceEquals(mappedDevice, device) || !Object.ReferenceEquals(activeMapping, mapping))
+                            return;
+
+                        await device.CreatePortMapAsync(mapping).ConfigureAwait(false);
+                        nextDelaySeconds = Math.Max(60, mapping.Lifetime / 2);
+                    }
+                    catch
+                    {
+                        nextDelaySeconds = 60;
+                    }
+                    finally
+                    {
+                        natLock.Release();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+
+        private static string DescribeNatException(Exception exception)
+        {
+            Exception current = exception;
+            while (current != null)
+            {
+                MappingException mappingException = current as MappingException;
+                if (mappingException != null && mappingException.ErrorCode != 0)
+                    return $"ошибка {mappingException.ErrorCode}: {mappingException.ErrorText}";
+                current = current.InnerException;
+            }
+
+            return exception.Message;
         }
 
         public async static Task<string> TryClosePortAsync()
@@ -114,21 +229,22 @@ namespace TCPTunnel
             try
             {
                 if (mappedDevice == null || activeMapping == null)
-                    return "UPnP: активного проброса нет.";
+                    return "Автопроброс: активного правила нет.";
 
                 try
                 {
                     await mappedDevice.DeletePortMapAsync(activeMapping).ConfigureAwait(false);
-                    return $"UPnP: TCP-порт {activeMapping.PublicPort} закрыт.";
+                    return $"{activeMappingProtocol ?? "NAT"}: TCP-порт {activeMapping.PublicPort} закрыт.";
                 }
                 catch (Exception ex)
                 {
-                    return "UPnP: не удалось удалить проброс: " + ex.Message;
+                    return "Автопроброс: не удалось удалить правило: " + DescribeNatException(ex);
                 }
                 finally
                 {
                     mappedDevice = null;
                     activeMapping = null;
+                    activeMappingProtocol = null;
                 }
             }
             finally

@@ -29,7 +29,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
-| 🔌 | UPnP | Attempts to map and remove the selected TCP port automatically when supported by the router. |
+| 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
 | 📦 | Single EXE | `Open.Nat.dll` is embedded into `TCPTunnel.exe`; no adjacent application DLLs are required. |
 
 ## Quick start
@@ -102,7 +102,7 @@ TCPTunnel.exe -nickname Alex -connect 203.0.113.10:9091 -graphics off
 
 ## Internet connectivity and NAT
 
-TCPTunnel attempts to create a UPnP mapping for the selected TCP port. This works only when UPnP is enabled and supported by the router.
+TCPTunnel first attempts to create a UPnP mapping for the selected TCP port, then falls back to a renewable NAT-PMP lease. This works only when at least one of these protocols is enabled and supported by the router.
 
 If other people cannot connect, check the following:
 

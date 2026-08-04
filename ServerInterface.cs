@@ -17,7 +17,7 @@ namespace TCPTunnel
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
-        public static string PortMappingStatus { get; private set; } = "UPnP ещё не запускался.";
+        public static string PortMappingStatus { get; private set; } = "Автопроброс портов ещё не запускался.";
 
         public static void tryCreateServer()
         {
@@ -45,7 +45,7 @@ namespace TCPTunnel
             }
 
             ConsoleGraphic.WriteContentLine($"Хаб запущен на TCP-порту {port}.");
-            ConsoleGraphic.WriteContentLine("Локальный клиент подключается к 127.0.0.1; UPnP настраивается в фоне.");
+            ConsoleGraphic.WriteContentLine("Локальный клиент подключается к 127.0.0.1; проброс порта настраивается в фоне.");
             StartPortMapping(port, serverCancellation.Token);
 
             return UserInterface.DoConnect("127.0.0.1", port, 1);
@@ -156,7 +156,7 @@ namespace TCPTunnel
                     if (cancellationToken.IsCancellationRequested)
                         return;
 
-                    PortMappingStatus = "UPnP: поиск роутера...";
+                    PortMappingStatus = "Автопроброс: сначала UPnP, затем NAT-PMP...";
                     PortMappingStatus = await TryOpenPortAsync(port, cancellationToken).ConfigureAwait(false);
                 });
             }
