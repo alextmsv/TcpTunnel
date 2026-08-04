@@ -1,5 +1,5 @@
 # Visual Studio workspace and user settings
-.vs/
+.vs*
 *.suo
 *.user
 *.userosscache
