@@ -12,23 +12,31 @@ namespace TCPTunnel
         public static int left = Console.CursorLeft;
         const int centerX = (71 - 1) / 2;
         const int centerY = (16 - 1) / 2;
+        const int selectionAnimationDelay = 4;
         bool skipped = false;
-        public void mainMatrix(string text, int x = centerX, int y = centerY, int time = 1)
+        public void mainMatrix(
+            string text,
+            int x = centerX,
+            int y = centerY,
+            int time = 1,
+            int symbolDelay = 20,
+            int eraseDelay = 20)
         {
-            Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
-            Program.matrix(text);
+            int startX = Math.Max(ConsoleGraphic.ContentLeft, x - text.Length / 2);
+            Console.SetCursorPosition(startX, y);
+            Program.matrix(text, symbolDelay, ConsoleColor.White, false);
             Thread.Sleep(time * 1000); // Перевод в секунды
             for (int j = text.Length - 1; j >= 0; j--)
             {
-                Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
+                Console.SetCursorPosition(startX, y);
                 Console.Write(new string(' ', text.Length));
-                Console.SetCursorPosition(Math.Abs(x - (text.Length / 2)), y);
+                Console.SetCursorPosition(startX, y);
                 Console.Write(text.Substring(0, j));
-                Thread.Sleep(20);
+                Thread.Sleep(eraseDelay);
             }
-            Console.SetCursorPosition(x, y);
+            Console.SetCursorPosition(startX, y);
             Console.Write(new string(' ', text.Length));
-            Console.SetCursorPosition(x, y);
+            Console.SetCursorPosition(startX, y);
 
         }
         public static object[] splitIPByArg(List<string> list, string argument)
@@ -62,51 +70,63 @@ namespace TCPTunnel
 
         public void main(List<string> args)
         {
-            Console.SetWindowSize(71, 16);
+            ConsoleGraphic.ConfigureConsole(71, 16);
+            ApplyGraphicsArguments(args);
             args.Add("-skip");
             Console.ForegroundColor = ConsoleColor.White;
             if (args.Count > 0)
             {
                 if (args.Contains("-hi"))
                 {
-                    Console.WriteLine("sup)");
+                    ConsoleGraphic.WriteContentLine("sup)");
                     Thread.Sleep(500);
-                }
-                if (args.Contains("-create"))
-                {
-                    if (args[args.IndexOf("-create")] + 1 is string)
-                    {
-                        int.TryParse(args[args.IndexOf("-create")] + 1, out int port);
-                        ServerInterface.doCreateServer(port);
-                    }
-                    else ServerInterface.tryCreateServer();
                 }
                 if (args.Contains("-nickname"))
                 {
-                    string testnick = args[args.IndexOf("-nickname") + 1];
-                    NetWorker.nickname = NetWorker.filterNick(testnick);
+                    int nicknameIndex = args.IndexOf("-nickname");
+                    if (nicknameIndex + 1 < args.Count)
+                        NetWorker.nickname = NetWorker.filterNick(args[nicknameIndex + 1]);
+                }
+                if (args.Contains("-create"))
+                {
+                    int createIndex = args.IndexOf("-create");
+                    int port;
+                    if (createIndex + 1 < args.Count && Int32.TryParse(args[createIndex + 1], out port))
+                        ServerInterface.doCreateServer(port);
+                    else
+                        ServerInterface.tryCreateServer();
                 }
                 if (args.Contains("-ping"))
                 {
-                    string ip = splitIPByArg(args, "-ping")[0].ToString();
-                    int port = Convert.ToInt32(splitIPByArg(args, "-ping")[1]);
-                    if (NetWorker.ping(ip, port) == true)
+                    object[] endpoint = splitIPByArg(args, "-ping");
+                    if (endpoint == null)
                     {
-                        Program.matrix($"Сервер {ip}:{port} работает!.");
+                        ConsoleGraphic.WriteContentLine("Параметр -ping ожидает адрес в формате host:port.");
                     }
-                    else Program.matrix($"Сервер {ip}:{port} мёртв.");
-                    Console.ReadKey();
-                    graphic.Clear();
+                    else
+                    {
+                        string ip = endpoint[0].ToString();
+                        int port = Convert.ToInt32(endpoint[1]);
+                        Program.matrix(NetWorker.ping(ip, port)
+                            ? $"Сервер {ip}:{port} работает!."
+                            : $"Сервер {ip}:{port} мёртв.");
+                        Console.ReadKey();
+                        graphic.Clear();
+                    }
                 }
                 if (args.Contains("-connect"))
                 {
-                    if (splitIPByArg(args, "-connect").Length > 0)
+                    object[] endpoint = splitIPByArg(args, "-connect");
+                    if (endpoint != null)
                     {
-                        string ip = splitIPByArg(args, "-connect")[0].ToString();
-                        int port = Convert.ToInt32(splitIPByArg(args, "-connect")[1]);
+                        string ip = endpoint[0].ToString();
+                        int port = Convert.ToInt32(endpoint[1]);
                         UserInterface.DoConnect(ip, port);
                     }
-                    Console.WriteLine("Вы допустили ошибку в параметре -connect");
+                    else
+                    {
+                        ConsoleGraphic.WriteContentLine("Параметр -connect ожидает адрес в формате host:port.");
+                    }
                 }
                 if (args.Contains("-skip"))
                 {
@@ -118,50 +138,40 @@ namespace TCPTunnel
         main:
             Program.bufferClear();
             Console.Title = "--------------------------------------Меню----------------------------------------------";
-            Console.SetCursorPosition(Console.WindowWidth - 21, Console.WindowHeight - 4);
-            Program.matrix("By alextmsv", 100, ConsoleColor.DarkGray);
             if (skipped) graphic.Clear(0, 0);
             else graphic.Clear();
             string[] choice = {
-                "Создать сервер",
+                ServerInterface.IsRunning ? "Войти в свой хаб" : "Создать сервер",
                 "Войти на сервер",
                 (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
+                "ConsoleGraphics: " + (ConsoleGraphic.Enabled ? "включена" : "выключена"),
                 "Выход"
              };
-            left += 10;
-            top += 1;
-            
-            //for (int i = 0; i < choice.Length; i++)
-            //{
-            //    Console.SetCursorPosition(left-2*i, top+i);
-            //    Program.matrix(choice[i]);
-            //    Console.Write("\r\n");
-            //}
+            left = 10;
+            top = 1;
 
             int arrow = 0;
             bool isMenu = true;
+
+            for (int i = 0; i < choice.Length; i++)
+                DrawChoice(choice[i], i, i == arrow, false);
+
             while (isMenu)
             {
-                for (int i = 0; i < choice.Length; i++)
-                {
-                    if (i == arrow)
-                    {
-                        Console.BackgroundColor = ConsoleColor.Cyan;
-                        Console.ForegroundColor = Console.BackgroundColor;
-                    }
-                    Console.SetCursorPosition(left - 2*i, top + i);
-                    Program.matrix(choice[i], 2);
-                    Console.ResetColor();
-                }
-                switch (Console.ReadKey(true).Key)
+                ConsoleKey key = Console.ReadKey(true).Key;
+                int previousArrow = arrow;
+
+                switch (key)
                 {
                     case ConsoleKey.RightArrow:
                     case ConsoleKey.DownArrow:
-                        if (arrow < choice.Length - 1) arrow++;
+                        arrow = (arrow + 1) % choice.Length;
+                        AnimateSelection(choice, previousArrow, arrow);
                         continue;
                     case ConsoleKey.LeftArrow:
                     case ConsoleKey.UpArrow:
-                        if (arrow > 0) arrow--;
+                        arrow = (arrow - 1 + choice.Length) % choice.Length;
+                        AnimateSelection(choice, previousArrow, arrow);
                         continue;
 
                     case ConsoleKey.Escape:
@@ -170,24 +180,34 @@ namespace TCPTunnel
                         Console.Title = $"-----------------------------------{choice[Math.Abs(arrow)]}----------------------------------------------";
                         break;
                 }
-                Program.matrix("\n", 1);
                 if (arrow == 0)
                 {
-                    ServerInterface.tryCreateServer();
+                    PrepareActionScreen(choice[arrow]);
+                    if (ServerInterface.IsRunning)
+                        UserInterface.DoConnect("127.0.0.1", ServerInterface.ListeningPort, 1);
+                    else
+                        ServerInterface.tryCreateServer();
+                    goto main;
                 }
                 else if (arrow == 1)
                 {
+                    PrepareActionScreen(choice[arrow]);
                     UserInterface.TryConnect();
-                    isMenu = false;
+                    goto main;
                 }
                 else if (arrow == 2)
                 {
-                    int top = Console.CursorTop;
                     Stopwatch stopwatch = new Stopwatch();
                     stopwatch.Start();
-                    bool shitname = false;
-                    graphic.Clear(1, 1); ;
-                    mainMatrix("Добро пожаловать в процедуру смены ника в TCPTunnel");
+                    PrepareActionScreen(choice[arrow]);
+                    int top = Console.CursorTop;
+                    mainMatrix(
+                        "Добро пожаловать в процедуру смены ника в TCPTunnel",
+                        centerX,
+                        centerY,
+                        0,
+                        3,
+                        3);
                     Console.SetCursorPosition(2, top++);
                     Program.matrix("В свободном поле вы сможете задать себе ник: ");
                     string testname = Console.ReadLine();
@@ -195,18 +215,9 @@ namespace TCPTunnel
                     Console.ForegroundColor = ConsoleColor.DarkGray;
                     Console.Write(testname);
                     Program.matrix("...\n", 500, ConsoleColor.DarkGray);
-                    if (testname.IndexOfAny(@"!@#$%^&*()[]{}+, /\| ".ToCharArray()) != -1)
+                    if (!NetWorker.IsNicknameValid(testname))
                     {
-                        shitname = true;
-                        Program.matrix("Ваш ник содержит недопустимые символы\n");
-                    }
-                    if (testname.Length > 20 || testname.Length < 3)
-                    {
-                        shitname = true;
-                        Program.matrix("Ваш ник не в диапазоне от 3 до 20 символов\n");
-                    }
-                    if (shitname)
-                    {
+                        Program.matrix("Ник должен содержать от 3 до 20 символов без пробелов и спецсимволов\n");
                         Program.matrix("Попробуй еще раз");
                         Console.ReadKey();
                         goto main;
@@ -214,18 +225,86 @@ namespace TCPTunnel
                     stopwatch.Stop();
                     NetWorker.nickname = testname;
                     Console.SetCursorPosition(2, top+=2);
-                    Program.matrix("Хорошее имя\n",50,ConsoleColor.Green);
+                    Program.matrix("Хорошее имя\n", 8, ConsoleColor.Green);
                     if (stopwatch.Elapsed.TotalSeconds > 25)
                     {
-                        Program.matrix(", долго придумывал))))", 150);
+                        Program.matrix(", долго придумывал))))", 10);
                     }
-                    Console.ReadKey();
-                    Console.Clear();
+                    Thread.Sleep(1500);
                     goto main;
                 }
-                Program.bye();
+                else if (arrow == 3)
+                {
+                    ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled;
+                    skipped = true;
+                    goto main;
+                }
+                else
+                {
+                    PrepareActionScreen(choice[arrow]);
+                    Program.bye();
+                }
             }
 
+        }
+
+        private static void AnimateSelection(string[] choices, int previousIndex, int currentIndex)
+        {
+            DrawChoice(choices[previousIndex], previousIndex, false, true);
+            DrawChoice(choices[currentIndex], currentIndex, true, true);
+        }
+
+        private static void DrawChoice(string text, int index, bool selected, bool animate)
+        {
+            Console.SetCursorPosition(left - 2 * index, top + index);
+            if (selected)
+            {
+                Console.BackgroundColor = ConsoleColor.Cyan;
+                Console.ForegroundColor = ConsoleColor.Black;
+            }
+            else
+            {
+                Console.ResetColor();
+            }
+
+            foreach (char symbol in text)
+            {
+                Console.Write(symbol);
+                if (animate)
+                    Thread.Sleep(selectionAnimationDelay);
+            }
+
+            Console.ResetColor();
+        }
+
+        private void PrepareActionScreen(string title)
+        {
+            Console.Title = $"-----------------------------------{title}----------------------------------------------";
+            graphic.Clear(0, 0);
+        }
+
+        private static void ApplyGraphicsArguments(List<string> args)
+        {
+            if (args.Contains("-no-graphics"))
+                ConsoleGraphic.Enabled = false;
+
+            int graphicsIndex = args.IndexOf("-graphics");
+            if (graphicsIndex < 0 || graphicsIndex + 1 >= args.Count)
+                return;
+
+            string value = args[graphicsIndex + 1];
+            if (value.Equals("on", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("1", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsoleGraphic.Enabled = true;
+            }
+            else if (value.Equals("off", StringComparison.OrdinalIgnoreCase) ||
+                     value.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                     value.Equals("0", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsoleGraphic.Enabled = false;
+            }
         }
 
     }

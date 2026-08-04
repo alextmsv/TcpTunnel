@@ -16,3 +16,10 @@ D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.cs
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\Open.Nat.dll
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\bin\Debug\Open.Nat.xml
 D:\Exchange Folder\Projects\TCPTunnel\TCPTunnel\TCPTunnel\obj\Debug\TCPTunnel.csproj.Up2Date
+F:\Projects\C#\TcpTunnel\bin\Debug\TCPTunnel.exe.config
+F:\Projects\C#\TcpTunnel\bin\Debug\TCPTunnel.exe
+F:\Projects\C#\TcpTunnel\bin\Debug\TCPTunnel.pdb
+F:\Projects\C#\TcpTunnel\obj\Debug\TCPTunnel.csproj.AssemblyReference.cache
+F:\Projects\C#\TcpTunnel\obj\Debug\TCPTunnel.csproj.CoreCompileInputs.cache
+F:\Projects\C#\TcpTunnel\obj\Debug\TCPTunnel.exe
+F:\Projects\C#\TcpTunnel\obj\Debug\TCPTunnel.pdb

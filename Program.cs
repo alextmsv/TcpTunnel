@@ -1,74 +1,79 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
-using System.Windows.Forms;
 namespace TCPTunnel
 {
     internal class Program
     {
-        public static string[] publicArgs { get; private set; }
-        public static Menu menu = new Menu();
+        public static readonly Menu menu = new Menu();
+
         static void Main(string[] args)
         {
-            publicArgs = args;
-            List<string> arguments = new List<string>();
-            foreach (string arg in args)
-            {
-                arguments.Add(arg);
-            }
-            menu.main(arguments);
-        }
-        
-        public static void restart(string[] args)
-        {
-            string exePath = Process.GetCurrentProcess().MainModule.FileName;
-            string arguments = string.Join(" ", args);
-            Process.Start(exePath, arguments);
-            Environment.Exit(0);
-        }
-        public static void waiting(string message, string ip, int port)
-        {
-            const int maxDots = 3;
-            const int delay = 700;
-            Console.Write(message);
-            int startPosition = Console.CursorLeft;
+            EmbeddedAssemblyResolver.Register();
 
-            while (!NetWorker.connected)
+            if (Array.Exists(args, argument => String.Equals(argument, "-self-test", StringComparison.OrdinalIgnoreCase)))
             {
-                for (int i = 0; i <= maxDots; i++)
-                {
-                    Console.SetCursorPosition(startPosition, Console.CursorTop);
-                    Console.Write(new string('.', i));
-                    Thread.Sleep(delay);
-                    Console.SetCursorPosition(startPosition, Console.CursorTop);
-                    Console.Write(new string(' ', maxDots));
-                }
-                UserInterface.DoConnect(ip, port);
+                Console.WriteLine(EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat()
+                    ? "TCPTunnel self-test: OK"
+                    : "TCPTunnel self-test: Open.Nat недоступна");
+                return;
             }
+
+            Run(args);
         }
-        public static string ReadLineWithPrompt(string prompt)
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void Run(string[] args)
         {
-            Console.Write(prompt);
-            return Console.ReadLine();
+            AppDomain.CurrentDomain.ProcessExit += delegate { ServerInterface.StopServer(); };
+            Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)
+            {
+                eventArgs.Cancel = true;
+                ServerInterface.StopServer();
+                Environment.Exit(0);
+            };
+
+            menu.main(new List<string>(args));
         }
+
         public static void bye()
         {
-            Console.WriteLine("\r\n");
+            ConsoleGraphic.WriteContentLine(String.Empty);
             Program.matrix("До свидания");
             Console.ReadKey();
+            ServerInterface.StopServer();
             Environment.Exit(0);
         }
         public static void matrix(string text, int sleep = 20, ConsoleColor color = ConsoleColor.White, bool shift = true)
         {
-            int top = Console.CursorTop;
-            int left = shift ? Console.CursorLeft+1 : Console.CursorLeft;
+            if (String.IsNullOrEmpty(text))
+                return;
+
+            int left = shift ? Console.CursorLeft + 1 : Console.CursorLeft;
+            if (left >= Console.BufferWidth)
+                left = ConsoleGraphic.Enabled ? 1 : 0;
+            Console.SetCursorPosition(left, Console.CursorTop);
+
             Console.ForegroundColor = color;
-            for (int i = 0; i < text.Length; i++)
+            foreach (char symbol in text)
             {
-                Console.SetCursorPosition(left+i, top);
                 Thread.Sleep(sleep / 2);
-                Console.Write(text[i]);
+
+                if (symbol == '\r')
+                    continue;
+
+                if (symbol == '\n')
+                {
+                    Console.WriteLine();
+                    if (ConsoleGraphic.Enabled && Console.CursorLeft == 0)
+                        Console.SetCursorPosition(1, Console.CursorTop);
+                    continue;
+                }
+
+                if (ConsoleGraphic.Enabled && shift && Console.CursorLeft >= Console.WindowWidth - 1)
+                    Console.SetCursorPosition(1, Console.CursorTop + 1);
+
+                Console.Write(symbol);
                 Thread.Sleep(sleep / 2);
             }
             Console.ResetColor();
@@ -79,9 +84,16 @@ namespace TCPTunnel
         public static void bufferClear()
         {
             int currentTop = Console.CursorTop;
-            Console.SetCursorPosition(0, Math.Abs(currentTop - 1));
-            Console.Write(new string(' ', Console.BufferWidth));
-            Console.SetCursorPosition(0, Math.Abs(currentTop - 1));
+            int left = ConsoleGraphic.Enabled ? 1 : 0;
+            int minimumTop = ConsoleGraphic.Enabled ? 1 : 0;
+            int targetTop = Math.Max(minimumTop, currentTop - 1);
+            int width = ConsoleGraphic.Enabled
+                ? Math.Max(0, Console.WindowWidth - 2)
+                : Console.BufferWidth;
+
+            Console.SetCursorPosition(left, targetTop);
+            Console.Write(new string(' ', width));
+            Console.SetCursorPosition(left, targetTop);
         }
     }
 }

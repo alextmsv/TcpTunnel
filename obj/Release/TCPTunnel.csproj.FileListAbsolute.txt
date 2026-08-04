@@ -1,0 +1,7 @@
+F:\Projects\C#\TcpTunnel\bin\Release\TCPTunnel.exe.config
+F:\Projects\C#\TcpTunnel\bin\Release\TCPTunnel.exe
+F:\Projects\C#\TcpTunnel\bin\Release\TCPTunnel.pdb
+F:\Projects\C#\TcpTunnel\obj\Release\TCPTunnel.csproj.AssemblyReference.cache
+F:\Projects\C#\TcpTunnel\obj\Release\TCPTunnel.csproj.CoreCompileInputs.cache
+F:\Projects\C#\TcpTunnel\obj\Release\TCPTunnel.exe
+F:\Projects\C#\TcpTunnel\obj\Release\TCPTunnel.pdb

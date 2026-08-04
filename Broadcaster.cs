@@ -1,42 +1,101 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Net.Sockets;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace TCPTunnel
 {
-    public class Broadcaster
+    public sealed class Broadcaster
     {
+        private readonly object clientsLock = new object();
+        private readonly List<Client> clients = new List<Client>();
+        private readonly SemaphoreSlim broadcastLock = new SemaphoreSlim(1, 1);
 
-        private List<Client> clients = new List<Client>();
-
-        public void AddClient(Client client)
+        public void AddConnection(Client client)
         {
-            clients.Add(client);
+            lock (clientsLock)
+            {
+                clients.Add(client);
+            }
         }
 
-        public void Broadcast(Client sender, string message)
+        public bool TryAuthenticate(Client client, string nickname)
         {
-            for (int i = 0; i < clients.Count; i++)
+            lock (clientsLock)
             {
-                Client client = clients[i];
-                TcpClient pipe = client.TcpClient;
+                bool nicknameTaken = clients.Any(existing =>
+                    existing.IsAuthenticated &&
+                    !Object.ReferenceEquals(existing, client) &&
+                    String.Equals(existing.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
 
-                if (!pipe.Connected) 
-                    continue;
+                if (nicknameTaken)
+                    return false;
 
-                try
+                client.Nickname = nickname;
+                client.IsAuthenticated = true;
+                return true;
+            }
+        }
+
+        public bool RemoveClient(Client client)
+        {
+            bool removed;
+            lock (clientsLock)
+            {
+                removed = clients.Remove(client);
+            }
+
+            client.Close();
+            return removed;
+        }
+
+        public async Task BroadcastAsync(Client sender, string message, CancellationToken cancellationToken)
+        {
+            await broadcastLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                Client[] recipients;
+                lock (clientsLock)
                 {
-                    BinaryWriter writer = new BinaryWriter(pipe.GetStream());
-                    if (sender != null)
-                        writer.Write($"[{sender.nickname}]:{message} ({sender.ipAddress})");
-                    else
-                        writer.Write(message);
+                    recipients = clients
+                        .Where(client => client.IsAuthenticated && !Object.ReferenceEquals(client, sender))
+                        .ToArray();
                 }
-                catch (Exception ex)
-                {
-                    Program.matrix($"Проблема с отправкой broadcast сообщения :(\n{ex.Message}\n");
-                }
+
+                Task[] deliveries = recipients
+                    .Select(recipient => SendSafelyAsync(recipient, message, cancellationToken))
+                    .ToArray();
+                await Task.WhenAll(deliveries).ConfigureAwait(false);
+            }
+            finally
+            {
+                broadcastLock.Release();
+            }
+        }
+
+        public void DisconnectAll()
+        {
+            Client[] snapshot;
+            lock (clientsLock)
+            {
+                snapshot = clients.ToArray();
+                clients.Clear();
+            }
+
+            foreach (Client client in snapshot)
+                client.Close();
+        }
+
+        private async Task SendSafelyAsync(Client recipient, string message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await recipient.SendAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                RemoveClient(recipient);
             }
         }
     }
