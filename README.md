@@ -2,7 +2,7 @@
 
 # TCPTunnel
 
-### A lightweight multiplayer TCP chat for Windows terminals
+### A lightweight multiplayer TCP chat for Windows cmd terminals
 
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.7.2-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet-framework/net472)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows)](#requirements)
@@ -88,10 +88,10 @@ TCPTunnel.exe [options]
 
 | Option | Example | Description |
 |---|---|---|
-| `-nickname <name>` | `-nickname Alex` | Set the nickname before opening the menu. |
+| `-nickname <name>` | `-nickname HeWhoMustNotBeNamed` | Set the nickname before opening the menu. |
 | `-create <port>` | `-create 9091` | Start a Hub and connect to it locally. |
-| `-connect <host:port>` | `-connect 192.168.1.20:9091` | Connect directly to a Hub. |
-| `-ping <host:port>` | `-ping example.com:9091` | Check whether a TCP endpoint is reachable. |
+| `-connect <host:port>` | `-connect cool.tcptunnel.hub:9091` | Connect directly to a Hub. |
+| `-ping <host:port>` | `-ping cool.tcptunnel.hub:9091` | Check whether a TCP endpoint is reachable. |
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics. |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. |
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
@@ -99,7 +99,7 @@ TCPTunnel.exe [options]
 Example:
 
 ```powershell
-TCPTunnel.exe -nickname Alex -connect 203.0.113.10:9091 -graphics off
+TCPTunnel.exe -nickname VodkaMan -connect cool.tcptunnel.hub:9091 -graphics on
 ```
 
 ## Internet connectivity and NAT
@@ -130,6 +130,9 @@ Modern Windows installations commonly include a compatible .NET Framework runtim
 2. Select the **Release** configuration.
 3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd>.
 4. Find the portable executable at `bin\Release\TCPTunnel.exe`.
+
+
+   or just go [releases](https://github.com/alextmsv/TcpTunnel/releases/latest) lol
 
 ### Command line
 
@@ -169,6 +172,7 @@ TCPTunnel
 
 ## Roadmap
 
+- [ ] Add english language support
 - [ ] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations
