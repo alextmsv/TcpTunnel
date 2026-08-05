@@ -75,7 +75,7 @@ flowchart LR
 ```
 
 The Hub authenticates each nickname, receives length-prefixed UTF-8 messages, and broadcasts them to all other authenticated clients in a consistent order.
-Even if you hosting an other hub, you can connect to anyone and checking by doing ```/status ``` there to see a status of YOUR hub
+Even if you hosting an other hub, you can connect to anyone and checking by doing ```/status``` there to see a status of YOUR hub
 
 ### Protocol limits
 
