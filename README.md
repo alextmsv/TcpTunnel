@@ -93,8 +93,8 @@ TCPTunnel.exe [options]
 | `-create <port>` | `-create 9091` | Start a Hub and connect to it locally. |
 | `-connect <host:port>` | `-connect cool.tcptunnel.hub:9091` | Connect directly to a Hub. |
 | `-ping <host:port>` | `-ping cool.tcptunnel.hub:9091` | Check whether a TCP endpoint is reachable. |
-| `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics. |
-| `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. |
+| `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
+| `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
 
 Example:
