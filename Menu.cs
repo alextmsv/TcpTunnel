@@ -149,6 +149,7 @@ namespace TCPTunnel
             }
             mainMatrix("Добро пожаловать в чат", centerX, centerY);
         main:
+            ConsoleGraphic.SetReservedBottomRows(0);
             Program.bufferClear();
             Console.Title = "--------------------------------------Меню----------------------------------------------";
             if (skipped) graphic.Clear(0, 0);
@@ -212,40 +213,11 @@ namespace TCPTunnel
                 }
                 else if (arrow == 2)
                 {
-                    Stopwatch stopwatch = new Stopwatch();
-                    stopwatch.Start();
                     PrepareActionScreen(choice[arrow]);
-                    int top = Console.CursorTop;
-                    mainMatrix(
-                        "Добро пожаловать в процедуру смены ника в TCPTunnel",
-                        centerX,
-                        centerY,
-                        0,
-                        3,
-                        3);
-                    Console.SetCursorPosition(2, top++);
-                    Program.matrix("В свободном поле вы сможете задать себе ник: ");
-                    string testname = Console.ReadLine();
-                    Console.SetCursorPosition(2, top++);
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.Write(testname);
-                    Program.matrix("...\n", 500, ConsoleColor.DarkGray);
-                    if (!NetWorker.IsNicknameValid(testname))
-                    {
-                        Program.matrix("Ник должен содержать от 3 до 20 символов без пробелов и спецсимволов\n");
-                        Program.matrix("Попробуй еще раз");
-                        Console.ReadKey();
-                        goto main;
-                    }
-                    stopwatch.Stop();
-                    NetWorker.nickname = testname;
-                    Console.SetCursorPosition(2, top+=2);
-                    Program.matrix("Хорошее имя\n", 8, ConsoleColor.Green);
-                    if (stopwatch.Elapsed.TotalSeconds > 25)
-                    {
-                        Program.matrix(", долго придумывал))))", 10);
-                    }
-                    Thread.Sleep(1500);
+                    if (ConsoleGraphic.Enabled)
+                        ChangeNicknameGraphical();
+                    else
+                        ChangeNicknamePlain();
                     goto main;
                 }
                 else if (graphicsOptionsAvailable && arrow == 3)
@@ -261,6 +233,97 @@ namespace TCPTunnel
                 }
             }
 
+        }
+
+        private void ChangeNicknamePlain()
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int inputTop = Console.CursorTop;
+            mainMatrix(
+                "Добро пожаловать в процедуру смены ника в TCPTunnel",
+                centerX,
+                centerY,
+                0,
+                3,
+                3);
+            Console.SetCursorPosition(2, inputTop++);
+            Program.matrix("В свободном поле вы сможете задать себе ник: ");
+            string testname = Console.ReadLine();
+            Console.SetCursorPosition(2, inputTop++);
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write(testname);
+            Program.matrix("...\n", 500, ConsoleColor.DarkGray);
+            if (!NetWorker.IsNicknameValid(testname))
+            {
+                Program.matrix("Ник должен содержать от 3 до 20 символов без пробелов и спецсимволов\n");
+                Program.matrix("Попробуй еще раз");
+                Console.ReadKey();
+                return;
+            }
+
+            stopwatch.Stop();
+            NetWorker.nickname = testname;
+            Console.SetCursorPosition(2, inputTop += 2);
+            Program.matrix("Хорошее имя\n", 8, ConsoleColor.Green);
+            if (stopwatch.Elapsed.TotalSeconds > 25)
+                Program.matrix(", долго придумывал))))", 10);
+
+            Thread.Sleep(1500);
+        }
+
+        private void ChangeNicknameGraphical()
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int titleRow = ConsoleGraphic.ContentTop + 1;
+            int hintRow = ConsoleGraphic.ContentTop + 3;
+            int inputRow = ConsoleGraphic.ContentTop + 5;
+
+            ConsoleGraphic.WriteCenteredLine("CHANGE IDENTITY", titleRow, ConsoleColor.Cyan, true, 3);
+            ConsoleGraphic.WriteCenteredLine(
+                "Введите новый псевдоним",
+                hintRow,
+                ConsoleColor.DarkGray);
+            ConsoleGraphic.WriteCenteredLine("> ", inputRow, ConsoleColor.Cyan);
+
+            string testname = Console.ReadLine();
+            for (int dots = 1; dots <= 3; dots++)
+            {
+                ConsoleGraphic.WriteBottomStatus(
+                    "Проверка имени" + new string('.', dots),
+                    ConsoleColor.Yellow);
+                Thread.Sleep(70);
+            }
+
+            if (!NetWorker.IsNicknameValid(testname))
+            {
+                ConsoleGraphic.WriteCenteredLine(
+                    "От 3 до 20 символов, без пробелов и спецсимволов",
+                    hintRow + 2,
+                    ConsoleColor.Red);
+                ConsoleGraphic.WriteBottomStatus("Некорректный псевдоним", ConsoleColor.Red);
+                Console.ReadKey(true);
+                return;
+            }
+
+            stopwatch.Stop();
+            NetWorker.nickname = testname;
+            graphic.Clear(0, 0);
+            ConsoleGraphic.WriteCenteredLine("IDENTITY UPDATED", titleRow, ConsoleColor.Cyan, true, 3);
+            ConsoleGraphic.WriteCenteredLine(testname, inputRow, ConsoleColor.White, true, 4);
+            ConsoleGraphic.WriteCenteredLine(
+                new string('-', Math.Max(8, Math.Min(24, testname.Length + 4))),
+                inputRow + 1,
+                ConsoleColor.DarkGray);
+
+            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.Green);
+            Thread.Sleep(120);
+            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.DarkGreen);
+            Thread.Sleep(120);
+            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.Green);
+            if (stopwatch.Elapsed.TotalSeconds > 25)
+                ConsoleGraphic.WriteCenteredLine("Долго придумывал :) ", inputRow + 3, ConsoleColor.DarkGray);
+
+            Thread.Sleep(1260);
         }
 
         private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)

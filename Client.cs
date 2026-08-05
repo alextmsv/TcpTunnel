@@ -53,7 +53,7 @@ namespace TCPTunnel
                 if (!hasSnakeProfile)
                     return false;
 
-                if (!profile.Enabled)
+                if (!profile.Enabled || profile.Paused)
                     return true;
 
                 long delayTicks = Math.Max(1L, Stopwatch.Frequency * profile.DelayMilliseconds / 1000L);

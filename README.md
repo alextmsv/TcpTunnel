@@ -58,6 +58,7 @@ The Hub runs in the background of the same process, while the host connects loca
 | Command | Action |
 |---|---|
 | `/status` | Show the local Hub and UPnP status. |
+| `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
 | `/exit` | Leave the current chat and return to the menu. |
 
 ## How it works

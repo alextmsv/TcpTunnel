@@ -14,21 +14,42 @@ namespace TCPTunnel
         private static Task acceptTask = Task.CompletedTask;
         private static Task portMappingLifecycle = Task.CompletedTask;
         private static volatile bool isRunning;
+        private static string displayAddress = "127.0.0.1";
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
         public static string PortMappingStatus { get; private set; } = "Автопроброс портов ещё не запускался.";
+        public static string DisplayAddress => displayAddress;
 
         public static void tryCreateServer()
         {
-            Program.matrix("Введите порт сервера [9091]: ");
+            if (ConsoleGraphic.Enabled)
+            {
+                ConsoleGraphic.WriteCenteredLine(
+                    "HUB SETUP",
+                    ConsoleGraphic.ContentTop + 1,
+                    ConsoleColor.Cyan,
+                    true,
+                    4);
+                ConsoleGraphic.WriteBottomStatus("Выберите TCP-порт", ConsoleColor.DarkGray);
+                ConsoleGraphic.TrySetContentCursor(2, ConsoleGraphic.ContentTop + 3);
+                Program.matrix("Введите порт сервера [9091]: ", 4, ConsoleColor.Yellow, false);
+            }
+            else
+            {
+                Program.matrix("Введите порт сервера [9091]: ");
+            }
+
             string rawPort = Console.ReadLine();
             int port;
             if (String.IsNullOrWhiteSpace(rawPort))
                 port = 9091;
             else if (!Int32.TryParse(rawPort, out port) || port < 1 || port > 65535)
             {
-                ConsoleGraphic.WriteContentLine("Порт должен быть числом от 1 до 65535.");
+                if (ConsoleGraphic.Enabled)
+                    ConsoleGraphic.WriteBottomStatus("Порт должен быть числом от 1 до 65535", ConsoleColor.Red);
+                else
+                    ConsoleGraphic.WriteContentLine("Порт должен быть числом от 1 до 65535.");
                 return;
             }
 
@@ -37,18 +58,57 @@ namespace TCPTunnel
 
         public static bool doCreateServer(int port)
         {
+            if (ConsoleGraphic.Enabled)
+                ConsoleGraphic.WriteBottomStatus("Запуск TCP-слушателя...", ConsoleColor.Yellow, 0, true, 3);
+
             string error;
             if (!TryStartServer(port, out error))
             {
-                ConsoleGraphic.WriteContentLine("Не удалось создать хаб: " + error);
+                if (ConsoleGraphic.Enabled)
+                    ConsoleGraphic.WriteBottomStatus("Не удалось создать хаб: " + error, ConsoleColor.Red);
+                else
+                    ConsoleGraphic.WriteContentLine("Не удалось создать хаб: " + error);
                 return false;
             }
 
-            ConsoleGraphic.WriteContentLine($"Хаб запущен на TCP-порту {port}.");
-            ConsoleGraphic.WriteContentLine("Локальный клиент подключается к 127.0.0.1; проброс порта настраивается в фоне.");
+            if (ConsoleGraphic.Enabled)
+            {
+                ConsoleGraphic.WriteBottomStatus("[+] TCP-слушатель запущен", ConsoleColor.Green);
+                Thread.Sleep(180);
+                ConsoleGraphic.WriteBottomStatus("Настройка UPnP / NAT-PMP...", ConsoleColor.Yellow);
+            }
+            else
+            {
+                ConsoleGraphic.WriteContentLine($"Хаб запущен на TCP-порту {port}.");
+                ConsoleGraphic.WriteContentLine("Локальный клиент подключается к 127.0.0.1; проброс порта настраивается в фоне.");
+            }
+
             StartPortMapping(port, serverCancellation.Token);
 
+            if (ConsoleGraphic.Enabled)
+            {
+                ConsoleGraphic.DrawServerEndpointCard(DisplayAddress, port);
+                ConsoleGraphic.WriteBottomStatus("Локальный клиент подключается...", ConsoleColor.Yellow, 3);
+            }
+
             return UserInterface.DoConnect("127.0.0.1", port, 1);
+        }
+
+        private static string GetDisplayAddress()
+        {
+            try
+            {
+                foreach (IPAddress address in Dns.GetHostAddresses(Dns.GetHostName()))
+                {
+                    if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
+                        return address.ToString();
+                }
+            }
+            catch
+            {
+            }
+
+            return "127.0.0.1";
         }
 
         public static bool TryStartServer(int port, out string error)
@@ -74,6 +134,7 @@ namespace TCPTunnel
 
                     server = listener;
                     serverCancellation = new CancellationTokenSource();
+                    displayAddress = GetDisplayAddress();
                     ListeningPort = port;
                     isRunning = true;
                     acceptTask = AcceptLoopAsync(listener, serverCancellation.Token);

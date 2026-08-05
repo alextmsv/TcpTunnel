@@ -6,6 +6,7 @@ namespace TCPTunnel
     internal struct SnakeProfile
     {
         public bool Enabled;
+        public bool Paused;
         public int DelayMilliseconds;
         public ConsoleColor Color;
         public int Step;
@@ -35,24 +36,31 @@ namespace TCPTunnel
                    (profile.Enabled ? "1" : "0") + "|" +
                    profile.DelayMilliseconds + "|" +
                    (int)profile.Color + "|" +
-                   profile.Step;
+                   profile.Step + "|" +
+                   (profile.Paused ? "1" : "0");
         }
 
         public static bool TryParseClientProfile(string message, out SnakeProfile profile)
         {
             profile = default(SnakeProfile);
             string[] fields;
-            if (!TrySplit(message, "PROFILE", 5, out fields))
+            if (message == null || !message.StartsWith(Prefix, StringComparison.Ordinal))
+                return false;
+
+            fields = message.Substring(Prefix.Length).Split('|');
+            if ((fields.Length != 5 && fields.Length != 6) || fields[0] != "PROFILE")
                 return false;
 
             int enabled;
             int delay;
             int color;
             int step;
+            int paused = 0;
             if (!Int32.TryParse(fields[1], out enabled) || (enabled != 0 && enabled != 1) ||
                 !Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
-                !Int32.TryParse(fields[4], out step))
+                !Int32.TryParse(fields[4], out step) ||
+                (fields.Length == 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
@@ -60,6 +68,7 @@ namespace TCPTunnel
                 return false;
 
             profile.Enabled = enabled == 1;
+            profile.Paused = paused == 1;
             profile.DelayMilliseconds = delay;
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
@@ -71,7 +80,8 @@ namespace TCPTunnel
             return Prefix + "SET|" + EncodeNickname(nickname) + "|" +
                    profile.DelayMilliseconds + "|" +
                    (int)profile.Color + "|" +
-                   NormalizeStep(profile.Step);
+                   NormalizeStep(profile.Step) + "|" +
+                   (profile.Paused ? "1" : "0");
         }
 
         public static string CreateRemove(string nickname)
@@ -102,16 +112,18 @@ namespace TCPTunnel
                 return true;
             }
 
-            if (fields.Length != 5 || fields[0] != "SET" ||
+            if ((fields.Length != 5 && fields.Length != 6) || fields[0] != "SET" ||
                 !TryDecodeNickname(fields[1], out nickname))
                 return false;
 
             int delay;
             int color;
             int step;
+            int paused = 0;
             if (!Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
-                !Int32.TryParse(fields[4], out step))
+                !Int32.TryParse(fields[4], out step) ||
+                (fields.Length == 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
@@ -119,6 +131,7 @@ namespace TCPTunnel
                 return false;
 
             profile.Enabled = true;
+            profile.Paused = paused == 1;
             profile.DelayMilliseconds = delay;
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
@@ -133,6 +146,7 @@ namespace TCPTunnel
                 SnakeProfile source = new SnakeProfile
                 {
                     Enabled = true,
+                    Paused = true,
                     DelayMilliseconds = 125,
                     Color = ConsoleColor.Cyan,
                     Step = 169
@@ -140,7 +154,7 @@ namespace TCPTunnel
 
                 SnakeProfile parsedClient;
                 if (!TryParseClientProfile(CreateClientProfile(source), out parsedClient) ||
-                    !parsedClient.Enabled || parsedClient.DelayMilliseconds != source.DelayMilliseconds ||
+                    !parsedClient.Enabled || !parsedClient.Paused || parsedClient.DelayMilliseconds != source.DelayMilliseconds ||
                     parsedClient.Color != source.Color || parsedClient.Step != source.Step)
                     return false;
 
@@ -153,7 +167,7 @@ namespace TCPTunnel
                         out nickname,
                         out parsedServer) ||
                     kind != SnakeUpdateKind.Set || nickname != "тестер" ||
-                    parsedServer.DelayMilliseconds != source.DelayMilliseconds ||
+                    !parsedServer.Paused || parsedServer.DelayMilliseconds != source.DelayMilliseconds ||
                     parsedServer.Color != source.Color || parsedServer.Step != source.Step)
                     return false;
 
@@ -165,22 +179,26 @@ namespace TCPTunnel
                     kind != SnakeUpdateKind.Remove || nickname != "тестер")
                     return false;
 
+                SnakeProfile legacyClient;
+                if (!TryParseClientProfile(Prefix + "PROFILE|1|75|10|5", out legacyClient) ||
+                    legacyClient.Paused)
+                    return false;
+
+                SnakeProfile legacyServer;
+                if (!TryParseServerUpdate(
+                        Prefix + "SET|" + EncodeNickname("тестер") + "|75|10|5",
+                        out kind,
+                        out nickname,
+                        out legacyServer) ||
+                    legacyServer.Paused)
+                    return false;
+
                 return !TryParseClientProfile(Prefix + "PROFILE|1|1|10|0", out parsedClient);
             }
             catch (Exception)
             {
                 return false;
             }
-        }
-
-        private static bool TrySplit(string message, string command, int expectedFields, out string[] fields)
-        {
-            fields = null;
-            if (message == null || !message.StartsWith(Prefix, StringComparison.Ordinal))
-                return false;
-
-            fields = message.Substring(Prefix.Length).Split('|');
-            return fields.Length == expectedFields && fields[0] == command;
         }
 
         private static string EncodeNickname(string nickname)

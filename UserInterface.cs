@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -35,6 +36,10 @@ namespace TCPTunnel
         private static ConsoleGraphic.ConsoleGeometry pendingConsoleGeometry;
         private static bool hasKnownConsoleGeometry;
         private static bool consoleResizePending;
+        private static bool isLocalHubSession;
+        private static bool showServerCard;
+        private static string serverCardAddress = "127.0.0.1";
+        private static int serverCardPort;
         private static long resizeStableSinceTimestamp;
         private static long nextResizePollTimestamp;
 
@@ -130,7 +135,17 @@ namespace TCPTunnel
                 {
                     TcpClient client = new TcpClient();
                     string error;
-                    ConsoleGraphic.WriteContentLine($">>> Подключение к {address}:{port}, попытка {attempt} из {attempts}...");
+                    if (ConsoleGraphic.Enabled)
+                    {
+                        ConsoleGraphic.WriteBottomStatus(
+                            $"Подключение к {address}:{port} [{attempt}/{attempts}]",
+                            ConsoleColor.Yellow,
+                            ServerInterface.IsRunning ? 3 : 0);
+                    }
+                    else
+                    {
+                        ConsoleGraphic.WriteContentLine($">>> Подключение к {address}:{port}, попытка {attempt} из {attempts}...");
+                    }
 
                     if (TryOpenConnection(client, address, port, out error))
                     {
@@ -142,18 +157,33 @@ namespace TCPTunnel
                         catch (Exception ex)
                         {
                             client.Close();
-                            ConsoleGraphic.WriteContentLine("Не удалось начать сеанс: " + ex.Message);
+                            if (ConsoleGraphic.Enabled)
+                                ConsoleGraphic.WriteBottomStatus("Не удалось начать сеанс: " + ex.Message, ConsoleColor.Red);
+                            else
+                                ConsoleGraphic.WriteContentLine("Не удалось начать сеанс: " + ex.Message);
                             return false;
                         }
                     }
 
                     client.Close();
-                    ConsoleGraphic.WriteContentLine("Не удалось подключиться: " + error);
+                    if (ConsoleGraphic.Enabled)
+                        ConsoleGraphic.WriteBottomStatus("Не удалось подключиться: " + error, ConsoleColor.Red);
+                    else
+                        ConsoleGraphic.WriteContentLine("Не удалось подключиться: " + error);
                     if (attempt < attempts)
                         Thread.Sleep(RetryDelayMilliseconds);
                 }
 
-                ConsoleGraphic.WriteContentLine($"Хаб {address}:{port} недоступен после {attempts} попыток. Возвращаюсь в меню.");
+                if (ConsoleGraphic.Enabled)
+                {
+                    ConsoleGraphic.WriteBottomStatus(
+                        $"Хаб {address}:{port} недоступен. Возвращаюсь в меню",
+                        ConsoleColor.Red);
+                }
+                else
+                {
+                    ConsoleGraphic.WriteContentLine($"Хаб {address}:{port} недоступен после {attempts} попыток. Возвращаюсь в меню.");
+                }
                 return false;
             }
             finally
@@ -218,6 +248,7 @@ namespace TCPTunnel
                 SnakeProfile localSnakeProfile = new SnakeProfile
                 {
                     Enabled = ConsoleGraphic.Enabled,
+                    Paused = ConsoleGraphic.BorderSnakePaused,
                     DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
                     Color = ConsoleGraphic.BorderSnakeColor,
                     Step = ConsoleGraphic.CurrentBorderSnakeStep
@@ -230,9 +261,22 @@ namespace TCPTunnel
 
             connected = true;
             ConsoleGraphic.ClearRemoteSnakes();
+            IPEndPoint remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
+            isLocalHubSession = ServerInterface.IsRunning &&
+                                remoteEndPoint != null &&
+                                remoteEndPoint.Port == ServerInterface.ListeningPort &&
+                                IPAddress.IsLoopback(remoteEndPoint.Address);
+            showServerCard = ConsoleGraphic.Enabled && remoteEndPoint != null;
+            serverCardAddress = isLocalHubSession
+                ? ServerInterface.DisplayAddress
+                : (remoteEndPoint == null ? "unknown" : remoteEndPoint.Address.ToString());
+            serverCardPort = remoteEndPoint == null ? 0 : remoteEndPoint.Port;
+            ConsoleGraphic.SetReservedBottomRows(showServerCard ? 2 : 0);
             graphic.Clear();
             ResetChatSessionLayout();
-            WriteChatLine($"Подключено к {client.Client.RemoteEndPoint}. Команды: /status, /exit.");
+            if (showServerCard)
+                ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
+            WriteChatLine($"Подключено к {client.Client.RemoteEndPoint}. Команды: /status, /stop, /exit.");
 
             var sessionCancellation = new CancellationTokenSource();
             Task receiverTask = ReceiveMessagesAsync(client, stream, sessionCancellation.Token);
@@ -249,6 +293,40 @@ namespace TCPTunnel
                         WriteChatLine(ServerInterface.IsRunning
                             ? ServerInterface.PortMappingStatus
                             : "В этом процессе локальный Hub не запущен.");
+                        continue;
+                    }
+                    if (message.Equals("/stop", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (isLocalHubSession)
+                        {
+                            WriteChatLine("Останавливаю локальный хаб...");
+                            connected = false;
+                            ServerInterface.StopServer();
+                            break;
+                        }
+
+                        if (!ConsoleGraphic.Enabled)
+                        {
+                            WriteChatLine("ConsoleGraphics выключена: активной змейки нет.");
+                            continue;
+                        }
+
+                        bool paused = ConsoleGraphic.ToggleBorderSnakePause();
+                        SnakeProfile updatedProfile = new SnakeProfile
+                        {
+                            Enabled = true,
+                            Paused = paused,
+                            DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
+                            Color = ConsoleGraphic.BorderSnakeColor,
+                            Step = ConsoleGraphic.CurrentBorderSnakeStep
+                        };
+                        MessageProtocol.WriteStringAsync(
+                            stream,
+                            SnakeProtocol.CreateClientProfile(updatedProfile),
+                            sessionCancellation.Token).GetAwaiter().GetResult();
+                        WriteChatLine(paused
+                            ? "Личная змейка остановлена и синхронизирована."
+                            : "Личная змейка продолжила движение и синхронизирована.");
                         continue;
                     }
                     if (String.IsNullOrWhiteSpace(message))
@@ -270,6 +348,14 @@ namespace TCPTunnel
                 try { receiverTask.GetAwaiter().GetResult(); } catch { }
                 sessionCancellation.Dispose();
                 ConsoleGraphic.ClearRemoteSnakes();
+                if (showServerCard && ConsoleGraphic.Enabled)
+                {
+                    ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort, false);
+                    Thread.Sleep(250);
+                }
+                isLocalHubSession = false;
+                showServerCard = false;
+                serverCardPort = 0;
             }
         }
 
@@ -290,7 +376,8 @@ namespace TCPTunnel
                     participant,
                     profile.DelayMilliseconds,
                     profile.Color,
-                    profile.Step);
+                    profile.Step,
+                    profile.Paused);
             }
             else
             {
@@ -478,7 +565,12 @@ namespace TCPTunnel
 
                 Console.SetCursorPosition(left, targetRow);
                 if (count > 0)
-                    Console.Write(visibleText.Substring(sourceIndex, count));
+                {
+                    if (ConsoleGraphic.Enabled)
+                        WriteStyledInputText(visibleText, sourceIndex, count, visibleStart + sourceIndex);
+                    else
+                        Console.Write(visibleText.Substring(sourceIndex, count));
+                }
             }
 
             Console.SetCursorPosition(
@@ -582,7 +674,7 @@ namespace TCPTunnel
                 int count = Math.Min(width, message.Length - offset);
                 if (count > 0)
                 {
-                    Console.Write(message.Substring(offset, count));
+                    WriteStyledChatText(message, offset, count);
                     offset += count;
                 }
 
@@ -591,6 +683,91 @@ namespace TCPTunnel
                     Math.Min(ConsoleGraphic.ContentBottom, row + 1));
             }
             while (offset < message.Length);
+        }
+
+        private static void WriteStyledInputText(
+            string visibleText,
+            int sourceIndex,
+            int count,
+            int originalTextIndex)
+        {
+            int promptCharacters = Math.Max(0, Math.Min(count, inputPrompt.Length - originalTextIndex));
+            if (promptCharacters > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write(visibleText.Substring(sourceIndex, promptCharacters));
+            }
+
+            int messageCharacters = count - promptCharacters;
+            if (messageCharacters > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.Write(visibleText.Substring(sourceIndex + promptCharacters, messageCharacters));
+            }
+
+            Console.ResetColor();
+        }
+
+        private static void WriteStyledChatText(string message, int offset, int count)
+        {
+            int end = offset + count;
+            int position = offset;
+            while (position < end)
+            {
+                ConsoleColor color = GetChatColor(message, position);
+                int runEnd = position + 1;
+                while (runEnd < end && GetChatColor(message, runEnd) == color)
+                    runEnd++;
+
+                Console.ForegroundColor = color;
+                Console.Write(message.Substring(position, runEnd - position));
+                position = runEnd;
+            }
+
+            Console.ResetColor();
+        }
+
+        private static ConsoleColor GetChatColor(string message, int position)
+        {
+            bool outgoing = message.StartsWith("<<< ", StringComparison.Ordinal);
+            bool incoming = message.StartsWith(">>> ", StringComparison.Ordinal);
+            bool serverEvent = incoming && !message.StartsWith(">>> [", StringComparison.Ordinal);
+            if (serverEvent && message.IndexOf("подключился к хабу", StringComparison.OrdinalIgnoreCase) >= 0)
+                return ConsoleColor.Green;
+            if (serverEvent && message.IndexOf("отключился от хаба", StringComparison.OrdinalIgnoreCase) >= 0)
+                return ConsoleColor.Red;
+
+            if (outgoing || incoming)
+            {
+                if (position < 3)
+                    return outgoing ? ConsoleColor.Cyan : ConsoleColor.Green;
+
+                int colon = message.IndexOf(':', 4);
+                if (colon >= 0 && position <= colon)
+                    return outgoing ? ConsoleColor.DarkCyan : ConsoleColor.Yellow;
+
+                return ConsoleColor.White;
+            }
+
+            if (ContainsAny(message, "не удалось", "потеряно", "недоступен", "закрыто", "ошибка"))
+                return ConsoleColor.Red;
+            if (ContainsAny(message, "подключено", "успешно", "запущен", "продолжила"))
+                return ConsoleColor.Green;
+            if (ContainsAny(message, "ожид", "настрой", "попытк", "остановлена", "останавливаю"))
+                return ConsoleColor.Yellow;
+
+            return ConsoleColor.DarkGray;
+        }
+
+        private static bool ContainsAny(string text, params string[] values)
+        {
+            foreach (string value in values)
+            {
+                if (text.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+
+            return false;
         }
 
         private static string SanitizeForConsole(string message)
@@ -708,6 +885,9 @@ namespace TCPTunnel
                     MarkConsoleResizePendingLocked();
                     return false;
                 }
+
+                if (showServerCard && ConsoleGraphic.Enabled)
+                    ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
 
                 foreach (string historyLine in chatHistory)
                     WriteWrappedChatLine(historyLine);
