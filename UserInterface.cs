@@ -33,7 +33,10 @@ namespace TCPTunnel
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
-                    WriteChatLine("<<< " + message);
+                    if (TryApplySnakeUpdate(message) || SnakeProtocol.IsSnakeControlMessage(message))
+                        continue;
+
+                    WriteChatLine(">>> " + message);
                 }
             }
             catch (OperationCanceledException)
@@ -200,9 +203,21 @@ namespace TCPTunnel
                     throw new IOException(authResult.StartsWith(AUTH_ERROR_MESSAGE, StringComparison.Ordinal)
                         ? authResult
                         : "Сервер отклонил псевдоним.");
+                SnakeProfile localSnakeProfile = new SnakeProfile
+                {
+                    Enabled = ConsoleGraphic.Enabled,
+                    DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
+                    Color = ConsoleGraphic.BorderSnakeColor,
+                    Step = ConsoleGraphic.CurrentBorderSnakeStep
+                };
+                MessageProtocol.WriteStringAsync(
+                    stream,
+                    SnakeProtocol.CreateClientProfile(localSnakeProfile),
+                    authToken).GetAwaiter().GetResult();
             }
 
             connected = true;
+            ConsoleGraphic.ClearRemoteSnakes();
             graphic.Clear();
             WriteChatLine($"Подключено к {client.Client.RemoteEndPoint}. Команды: /status, /exit.");
 
@@ -241,7 +256,35 @@ namespace TCPTunnel
                 client.Close();
                 try { receiverTask.GetAwaiter().GetResult(); } catch { }
                 sessionCancellation.Dispose();
+                ConsoleGraphic.ClearRemoteSnakes();
             }
+        }
+
+        private static bool TryApplySnakeUpdate(string message)
+        {
+            SnakeUpdateKind kind;
+            string participant;
+            SnakeProfile profile;
+            if (!SnakeProtocol.TryParseServerUpdate(message, out kind, out participant, out profile))
+                return false;
+
+            if (String.Equals(participant, nickname, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (kind == SnakeUpdateKind.Set && ConsoleGraphic.Enabled)
+            {
+                ConsoleGraphic.SetRemoteSnake(
+                    participant,
+                    profile.DelayMilliseconds,
+                    profile.Color,
+                    profile.Step);
+            }
+            else
+            {
+                ConsoleGraphic.RemoveRemoteSnake(participant);
+            }
+
+            return true;
         }
 
         private static async Task<string> ReadWithTimeoutAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)

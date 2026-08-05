@@ -13,6 +13,15 @@ namespace TCPTunnel
         const int centerX = (71 - 1) / 2;
         const int centerY = (16 - 1) / 2;
         const int selectionAnimationDelay = 4;
+        static readonly int[] snakeSpeeds = { 35, 75, 125, 200 };
+        static readonly ConsoleColor[] snakeColors = {
+            ConsoleColor.Green,
+            ConsoleColor.Cyan,
+            ConsoleColor.Yellow,
+            ConsoleColor.Red,
+            ConsoleColor.White,
+            ConsoleColor.Blue
+        };
         bool skipped = false;
         public void mainMatrix(
             string text,
@@ -144,7 +153,7 @@ namespace TCPTunnel
                 ServerInterface.IsRunning ? "Войти в свой хаб" : "Создать сервер",
                 "Войти на сервер",
                 (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
-                "ConsoleGraphics: " + (ConsoleGraphic.Enabled ? "включена" : "выключена"),
+                "ConsoleGraphics Options",
                 "Выход"
              };
             left = 10;
@@ -235,7 +244,7 @@ namespace TCPTunnel
                 }
                 else if (arrow == 3)
                 {
-                    ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled;
+                    ShowConsoleGraphicsOptions();
                     skipped = true;
                     goto main;
                 }
@@ -256,25 +265,160 @@ namespace TCPTunnel
 
         private static void DrawChoice(string text, int index, bool selected, bool animate)
         {
-            Console.SetCursorPosition(left - 2 * index, top + index);
-            if (selected)
-            {
-                Console.BackgroundColor = ConsoleColor.Cyan;
-                Console.ForegroundColor = ConsoleColor.Black;
-            }
-            else
-            {
-                Console.ResetColor();
-            }
+            ConsoleGraphic.DrawMenuOption(
+                text,
+                index,
+                left,
+                top,
+                selected,
+                animate && ConsoleGraphic.Enabled,
+                selectionAnimationDelay);
+        }
 
-            foreach (char symbol in text)
+        private void ShowConsoleGraphicsOptions()
+        {
+            int selectedOption = 0;
+            while (true)
             {
-                Console.Write(symbol);
-                if (animate)
-                    Thread.Sleep(selectionAnimationDelay);
-            }
+                string[] choices = {
+                    "ConsoleGraphics: " + (ConsoleGraphic.Enabled ? "включена" : "выключена"),
+                    "Кастомизация",
+                    "Назад"
+                };
+                int selection = ReadOptionsSelection("ConsoleGraphics Options", choices, selectedOption);
+                if (selection < 0 || selection == 2)
+                    return;
 
-            Console.ResetColor();
+                selectedOption = selection;
+
+                if (selection == 0)
+                    ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled;
+                else
+                    ShowCustomizationOptions();
+            }
+        }
+
+        private void ShowCustomizationOptions()
+        {
+            int selectedOption = 0;
+            while (true)
+            {
+                string[] choices = { "Змейка", "Назад" };
+                int selection = ReadOptionsSelection("Кастомизация", choices, selectedOption);
+                if (selection < 0 || selection == 1)
+                    return;
+
+                selectedOption = selection;
+
+                ShowSnakeOptions();
+            }
+        }
+
+        private void ShowSnakeOptions()
+        {
+            int selectedOption = 0;
+            while (true)
+            {
+                string[] choices = {
+                    "Скорость: " + GetSnakeSpeedName(ConsoleGraphic.BorderAnimationDelayMilliseconds),
+                    "Цвет: " + GetSnakeColorName(ConsoleGraphic.BorderSnakeColor),
+                    "Назад"
+                };
+                int selection = ReadOptionsSelection("Кастомизация змейки", choices, selectedOption);
+                if (selection < 0 || selection == 2)
+                    return;
+
+                selectedOption = selection;
+
+                if (selection == 0)
+                    ConsoleGraphic.BorderAnimationDelayMilliseconds = GetNextSnakeSpeed();
+                else
+                    ConsoleGraphic.BorderSnakeColor = GetNextSnakeColor();
+            }
+        }
+
+        private int ReadOptionsSelection(string title, string[] choices, int selectedOption)
+        {
+            Console.Title = "-----------------------------------" + title + "----------------------------------------------";
+            graphic.Clear(0, 0);
+            left = 10;
+            top = 1;
+            int arrow = Math.Max(0, Math.Min(selectedOption, choices.Length - 1));
+
+            for (int index = 0; index < choices.Length; index++)
+                DrawChoice(choices[index], index, index == arrow, false);
+
+            while (true)
+            {
+                ConsoleKey key = Console.ReadKey(true).Key;
+                int previousArrow = arrow;
+                if (key == ConsoleKey.DownArrow || key == ConsoleKey.RightArrow)
+                {
+                    arrow = (arrow + 1) % choices.Length;
+                    AnimateSelection(choices, previousArrow, arrow);
+                }
+                else if (key == ConsoleKey.UpArrow || key == ConsoleKey.LeftArrow)
+                {
+                    arrow = (arrow - 1 + choices.Length) % choices.Length;
+                    AnimateSelection(choices, previousArrow, arrow);
+                }
+                else if (key == ConsoleKey.Enter || key == ConsoleKey.Spacebar)
+                {
+                    return arrow;
+                }
+                else if (key == ConsoleKey.Escape)
+                {
+                    return -1;
+                }
+            }
+        }
+
+        private static int GetNextSnakeSpeed()
+        {
+            int current = ConsoleGraphic.BorderAnimationDelayMilliseconds;
+            for (int index = 0; index < snakeSpeeds.Length; index++)
+            {
+                if (snakeSpeeds[index] == current)
+                    return snakeSpeeds[(index + 1) % snakeSpeeds.Length];
+            }
+            return snakeSpeeds[0];
+        }
+
+        private static ConsoleColor GetNextSnakeColor()
+        {
+            ConsoleColor current = ConsoleGraphic.BorderSnakeColor;
+            for (int index = 0; index < snakeColors.Length; index++)
+            {
+                if (snakeColors[index] == current)
+                    return snakeColors[(index + 1) % snakeColors.Length];
+            }
+            return snakeColors[0];
+        }
+
+        private static string GetSnakeSpeedName(int delayMilliseconds)
+        {
+            switch (delayMilliseconds)
+            {
+                case 35: return "быстрая (35 мс)";
+                case 75: return "обычная (75 мс)";
+                case 125: return "спокойная (125 мс)";
+                case 200: return "медленная (200 мс)";
+                default: return delayMilliseconds + " мс";
+            }
+        }
+
+        private static string GetSnakeColorName(ConsoleColor color)
+        {
+            switch (color)
+            {
+                case ConsoleColor.Green: return "зелёный";
+                case ConsoleColor.Cyan: return "голубой";
+                case ConsoleColor.Yellow: return "жёлтый";
+                case ConsoleColor.Red: return "красный";
+                case ConsoleColor.White: return "белый";
+                case ConsoleColor.Blue: return "синий";
+                default: return color.ToString();
+            }
         }
 
         private void PrepareActionScreen(string title)

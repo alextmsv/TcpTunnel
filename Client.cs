@@ -13,9 +13,13 @@ namespace TCPTunnel
         private const int SendTimeoutMilliseconds = 5000;
 
         private readonly object rateLock = new object();
+        private readonly object snakeProfileLock = new object();
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private double availableTokens = BurstCapacity;
         private long lastRefillTimestamp = Stopwatch.GetTimestamp();
+        private SnakeProfile snakeProfile;
+        private long snakeProfileTimestamp;
+        private bool hasSnakeProfile;
         private int closed;
 
         public Client(TcpClient tcpClient)
@@ -30,6 +34,35 @@ namespace TCPTunnel
         public string IpAddress { get; set; }
         public string Nickname { get; set; }
         public bool IsAuthenticated { get; set; }
+
+        internal void UpdateSnakeProfile(SnakeProfile profile)
+        {
+            lock (snakeProfileLock)
+            {
+                snakeProfile = profile;
+                snakeProfileTimestamp = Stopwatch.GetTimestamp();
+                hasSnakeProfile = true;
+            }
+        }
+
+        internal bool TryGetSnakeProfile(out SnakeProfile profile)
+        {
+            lock (snakeProfileLock)
+            {
+                profile = snakeProfile;
+                if (!hasSnakeProfile)
+                    return false;
+
+                if (!profile.Enabled)
+                    return true;
+
+                long delayTicks = Math.Max(1L, Stopwatch.Frequency * profile.DelayMilliseconds / 1000L);
+                long elapsedTicks = Stopwatch.GetTimestamp() - snakeProfileTimestamp;
+                long moves = elapsedTicks / delayTicks;
+                profile.Step = (int)((profile.Step + moves) % SnakeProtocol.ReferencePerimeterLength);
+                return true;
+            }
+        }
 
         public bool TryConsumeMessageToken()
         {

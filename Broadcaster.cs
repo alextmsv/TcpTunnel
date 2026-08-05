@@ -50,7 +50,31 @@ namespace TCPTunnel
             return removed;
         }
 
-        public async Task BroadcastAsync(Client sender, string message, CancellationToken cancellationToken)
+        public Client[] GetAuthenticatedClients(Client excludedClient = null)
+        {
+            lock (clientsLock)
+            {
+                return clients
+                    .Where(client => client.IsAuthenticated && !Object.ReferenceEquals(client, excludedClient))
+                    .ToArray();
+            }
+        }
+
+        public Task BroadcastAsync(Client sender, string message, CancellationToken cancellationToken)
+        {
+            return BroadcastCoreAsync(sender, message, false, cancellationToken);
+        }
+
+        public Task BroadcastSnakeAsync(Client sender, string message, CancellationToken cancellationToken)
+        {
+            return BroadcastCoreAsync(sender, message, true, cancellationToken);
+        }
+
+        private async Task BroadcastCoreAsync(
+            Client sender,
+            string message,
+            bool snakeProfilesOnly,
+            CancellationToken cancellationToken)
         {
             await broadcastLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -59,7 +83,10 @@ namespace TCPTunnel
                 lock (clientsLock)
                 {
                     recipients = clients
-                        .Where(client => client.IsAuthenticated && !Object.ReferenceEquals(client, sender))
+                        .Where(client =>
+                            client.IsAuthenticated &&
+                            !Object.ReferenceEquals(client, sender) &&
+                            (!snakeProfilesOnly || HasSnakeProfile(client)))
                         .ToArray();
                 }
 
@@ -72,6 +99,12 @@ namespace TCPTunnel
             {
                 broadcastLock.Release();
             }
+        }
+
+        private static bool HasSnakeProfile(Client client)
+        {
+            SnakeProfile profile;
+            return client.TryGetSnakeProfile(out profile);
         }
 
         public void DisconnectAll()

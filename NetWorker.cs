@@ -337,6 +337,16 @@ namespace TCPTunnel
                         return;
                     }
 
+                    SnakeProfile snakeProfile;
+                    if (SnakeProtocol.TryParseClientProfile(message, out snakeProfile))
+                    {
+                        await SynchronizeSnakeProfileAsync(client, snakeProfile, serverCancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (SnakeProtocol.IsSnakeControlMessage(message))
+                        continue;
+
                     await broadcaster.BroadcastAsync(client, $"[{authenticatedNickname}]: {message}", serverCancellationToken).ConfigureAwait(false);
                 }
             }
@@ -375,11 +385,45 @@ namespace TCPTunnel
                 {
                     try
                     {
+                        await broadcaster.BroadcastSnakeAsync(
+                            null,
+                            SnakeProtocol.CreateRemove(authenticatedNickname),
+                            CancellationToken.None).ConfigureAwait(false);
                         await broadcaster.BroadcastAsync(null, $"{authenticatedNickname} отключился от хаба.", CancellationToken.None).ConfigureAwait(false);
                     }
                     catch { }
                 }
             }
+        }
+
+        private static async Task SynchronizeSnakeProfileAsync(
+            Client client,
+            SnakeProfile profile,
+            CancellationToken cancellationToken)
+        {
+            SnakeProfile previousProfile;
+            bool isFirstProfile = !client.TryGetSnakeProfile(out previousProfile);
+            client.UpdateSnakeProfile(profile);
+
+            if (isFirstProfile)
+            {
+                Client[] participants = broadcaster.GetAuthenticatedClients(client);
+                foreach (Client participant in participants)
+                {
+                    SnakeProfile participantProfile;
+                    if (!participant.TryGetSnakeProfile(out participantProfile) || !participantProfile.Enabled)
+                        continue;
+
+                    await client.SendAsync(
+                        SnakeProtocol.CreateSet(participant.Nickname, participantProfile),
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            string update = profile.Enabled
+                ? SnakeProtocol.CreateSet(client.Nickname, profile)
+                : SnakeProtocol.CreateRemove(client.Nickname);
+            await broadcaster.BroadcastSnakeAsync(client, update, cancellationToken).ConfigureAwait(false);
         }
 
         private static async Task<string> ReadStringWithTimeoutAsync(Client client, int timeoutMilliseconds, CancellationToken cancellationToken)

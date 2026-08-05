@@ -13,9 +13,9 @@ namespace TCPTunnel
 
             if (Array.Exists(args, argument => String.Equals(argument, "-self-test", StringComparison.OrdinalIgnoreCase)))
             {
-                Console.WriteLine(EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat()
+                Console.WriteLine(EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat() && SnakeProtocol.RunSelfTest()
                     ? "TCPTunnel self-test: OK"
-                    : "TCPTunnel self-test: Open.Nat недоступна");
+                    : "TCPTunnel self-test: FAILED");
                 return;
             }
 
