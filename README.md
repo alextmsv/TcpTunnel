@@ -100,7 +100,7 @@ TCPTunnel.exe [options]
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
-| `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
+| `-lang <en/ru>` | `-lang ru (by default)` | Switch current language. Have the option in main menu. |
 
 Example:
 
