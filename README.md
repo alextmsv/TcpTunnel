@@ -28,10 +28,9 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
-| 🖥️ | ConsoleGraphics | Animated menu, cyclic scrolling window titles, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
+| 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
 | 📦 | Single EXE | `Open.Nat.dll` is embedded into `TCPTunnel.exe`; no adjacent application DLLs are required. |
-| 🌍 | Russian & English | Switch the complete interface instantly from the main menu; mixed-language clients can share one Hub. |
 
 ## Quick start
 
@@ -66,13 +65,17 @@ The Hub runs in the background of the same process, while the host connects loca
 
 ```mermaid
 flowchart LR
-    Host["Host client"] <--> Hub["TCP Hub"]
-    ClientA["Remote client A"] <--> Hub
-    ClientB["Remote client B"] <--> Hub
-    ClientN["Remote client N"] <--> Hub
+    ClientA["Remote client A"] <--> HubA
+    ClientB["Remote client B"] <--> HubA
+    Host["Host client"] <--> HubA["TCP Hub A"]
+    ClientC["Remote client C"] <--> HubA
+    HubB["TCP Hub B"] <--> ClientD["Remote cliend D and owner of  Hub B"] <--> HubA
+    ClientN["Remote client N"] <--> HubB
+    ClientX["Remote client X"] <--> HubB
 ```
 
 The Hub authenticates each nickname, receives length-prefixed UTF-8 messages, and broadcasts them to all other authenticated clients in a consistent order.
+Even if you hosting an other hub, you can connect to anyone and checking by doing ```/status``` there to see a status of YOUR hub
 
 ### Protocol limits
 
@@ -94,10 +97,10 @@ TCPTunnel.exe [options]
 | `-create <port>` | `-create 9091` | Start a Hub and connect to it locally. |
 | `-connect <host:port>` | `-connect cool.tcptunnel.hub:9091` | Connect directly to a Hub. |
 | `-ping <host:port>` | `-ping cool.tcptunnel.hub:9091` | Check whether a TCP endpoint is reachable. |
-| `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics. |
-| `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. |
-| `-lang <ru\|en>` | `-lang en` | Select the interface language before startup. |
+| `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
+| `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
+| `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
 
 Example:
 
@@ -162,23 +165,24 @@ TCPTunnel self-test: OK
 
 ```text
 TCPTunnel
-├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
-├── ServerInterface.cs          # Hub lifecycle and accept loop
-├── NetWorker.cs                # Authentication, sessions, and UPnP
 ├── Broadcaster.cs              # Ordered multi-client broadcasting
 ├── Client.cs                   # Client state, sending, and rate limits
-├── UserInterface.cs            # Interactive chat and input rendering
 ├── ConsoleGraphic.cs           # Console frame and bounded output
-├── ConsoleTitleAnimator.cs     # Cyclic terminal-title animation
+├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
+├── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
+├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
-├── Localization.cs             # Built-in Russian and English text catalog
-├── SystemMessageProtocol.cs    # Language-neutral Hub event messages
-└── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
+├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
+├── NetWorker.cs                # Authentication, sessions, and UPnP
+├── ServerInterface.cs          # Hub lifecycle and accept loop
+├── SnakeProtocol.cs            # Custom UI-snake profile transmission
+├── SystemMessageProtocol.cs    # "Language" for system ivents
+├── UserInterface.cs            # Interactive chat and input rendering
 ```
 
 ## Roadmap
 
-- [x] Add English language support
+- [V] Add english language support
 - [ ] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations
