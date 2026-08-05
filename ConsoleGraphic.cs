@@ -684,8 +684,6 @@ namespace TCPTunnel
             if (!Enabled)
                 return;
 
-            // The title occupies the last chat row. Once history reaches it,
-            // normal chat rendering deliberately overwrites HUB ONLINE.
             SetReservedBottomRows(2);
             string safeAddress = String.IsNullOrWhiteSpace(address) ? "127.0.0.1" : address;
             IPAddress parsedAddress;
@@ -696,7 +694,7 @@ namespace TCPTunnel
             string endpoint = safeAddress + ":" + port;
             int separatorLength = Math.Max(8, Math.Min(24, endpoint.Length + 4));
             ConsoleColor stateColor = online ? ConsoleColor.Green : ConsoleColor.Red;
-            WriteBottomStatus(online ? "HUB ONLINE" : "HUB OFFLINE", stateColor, 2);
+            WriteBottomStatus(Lang.Get(online ? TextId.HubOnline : TextId.HubOffline), stateColor, 2);
             WriteBottomStatus(endpoint, stateColor, 1);
             WriteBottomStatus(new string('-', separatorLength), ConsoleColor.DarkGray);
             TrySetContentCursor(ContentLeft, ContentTop);
@@ -1277,7 +1275,6 @@ namespace TCPTunnel
 
                             TryRenderSnakeLayerLocked();
 
-                // Весь последующий вывод должен начинаться внутри рамки.
                             Console.SetCursorPosition(1, 1);
                         }
 

@@ -18,7 +18,7 @@ namespace TCPTunnel
         {
             int byteCount = await Read7BitEncodedIntAsync(stream, cancellationToken).ConfigureAwait(false);
             if (byteCount < 0 || byteCount > MaxFrameBytes)
-                throw new InvalidDataException($"Размер сообщения {byteCount} байт превышает лимит {MaxFrameBytes} байт.");
+                throw new InvalidDataException(Lang.Get(TextId.FrameTooLarge, byteCount, MaxFrameBytes));
             if (byteCount == 0)
                 return String.Empty;
 
@@ -42,7 +42,7 @@ namespace TCPTunnel
 
             int byteCount = Utf8.GetByteCount(value);
             if (byteCount > MaxFrameBytes)
-                throw new InvalidDataException($"Размер сообщения {byteCount} байт превышает лимит {MaxFrameBytes} байт.");
+                throw new InvalidDataException(Lang.Get(TextId.FrameTooLarge, byteCount, MaxFrameBytes));
 
             int prefixLength = Get7BitEncodedIntLength(byteCount);
             byte[] frame = new byte[prefixLength + byteCount];
@@ -65,14 +65,14 @@ namespace TCPTunnel
 
                 byte current = singleByte[0];
                 if (shift == 28 && (current & 0xF0) != 0)
-                    throw new InvalidDataException("Некорректная длина сообщения.");
+                    throw new InvalidDataException(Lang.Get(TextId.InvalidFrameLength));
 
                 value |= (current & 0x7F) << shift;
                 if ((current & 0x80) == 0)
                     return value;
             }
 
-            throw new InvalidDataException("Некорректный префикс длины сообщения.");
+            throw new InvalidDataException(Lang.Get(TextId.InvalidFramePrefix));
         }
 
         private static int Get7BitEncodedIntLength(int value)

@@ -16,10 +16,13 @@ namespace TCPTunnel
 
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
         private static readonly SemaphoreSlim natLock = new SemaphoreSlim(1, 1);
+        private static readonly object natStatusLock = new object();
         private static NatDevice mappedDevice;
         private static Mapping activeMapping;
         private static string activeMappingProtocol;
         private static Task mappingRenewalTask = Task.CompletedTask;
+        private static TextId natStatusTextId = TextId.NatNotStarted;
+        private static object[] natStatusArguments = new object[0];
 
         public const string DO_AUTH_MESSAGE = "DoAuth()";
         public const string AUTH_OK_MESSAGE = "AuthOk()";
@@ -51,14 +54,30 @@ namespace TCPTunnel
                 if (force)
                     return null;
 
-                Program.matrix("Некорректный псевдоним", 20, ConsoleColor.DarkRed);
+                Program.matrix(Lang.Get(TextId.AuthInvalidNickname), 20, ConsoleColor.DarkRed);
                 graphic.Clear();
-                Program.matrix("Введите свой псевдоним: ", 20, ConsoleColor.DarkYellow);
+                Program.matrix(Lang.Get(TextId.EnterYourNickname), 20, ConsoleColor.DarkYellow);
                 name = Console.ReadLine();
                 if (name == null)
                     return null;
             }
             return name;
+        }
+
+        internal static string GetPortMappingStatus()
+        {
+            lock (natStatusLock)
+                return Lang.Get(natStatusTextId, natStatusArguments);
+        }
+
+        internal static string SetPortMappingStatus(TextId textId, params object[] arguments)
+        {
+            lock (natStatusLock)
+            {
+                natStatusTextId = textId;
+                natStatusArguments = arguments == null ? new object[0] : (object[])arguments.Clone();
+                return Lang.Get(natStatusTextId, natStatusArguments);
+            }
         }
 
         public async static Task<string> TryOpenPortAsync(int port, CancellationToken cancellationToken)
@@ -75,16 +94,16 @@ namespace TCPTunnel
                         port,
                         cancellationToken).ConfigureAwait(false);
                     if (upnpError == null)
-                        return $"{activeMappingProtocol}: TCP-порт {port} успешно проброшен.";
+                        return SetPortMappingStatus(TextId.NatPortMapped, activeMappingProtocol, port);
 
                     string pmpError = await TryCreatePortMappingAsync(
                         PortMapper.Pmp,
                         port,
                         cancellationToken).ConfigureAwait(false);
                     if (pmpError == null)
-                        return $"{activeMappingProtocol}: TCP-порт {port} успешно проброшен; lease продлевается автоматически.";
+                        return SetPortMappingStatus(TextId.NatPortMappedRenewable, activeMappingProtocol, port);
 
-                    return "Автопроброс не удался. UPnP: " + upnpError + "; NAT-PMP: " + pmpError;
+                    return SetPortMappingStatus(TextId.NatFailed, upnpError, pmpError);
                 }
                 finally
                 {
@@ -94,12 +113,12 @@ namespace TCPTunnel
             catch (OperationCanceledException)
             {
                 return cancellationToken.IsCancellationRequested
-                    ? "Автопроброс: настройка отменена."
-                    : "Автопроброс: роутер не ответил вовремя.";
+                    ? SetPortMappingStatus(TextId.NatCancelled)
+                    : SetPortMappingStatus(TextId.NatRouterTimeout);
             }
             catch (Exception ex)
             {
-                return "Автопроброс недоступен: " + DescribeNatException(ex);
+                return SetPortMappingStatus(TextId.NatUnavailable, DescribeNatException(ex));
             }
         }
 
@@ -125,7 +144,7 @@ namespace TCPTunnel
             catch (OperationCanceledException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return "устройство не найдено за " + NatDiscoveryTimeoutSeconds + " секунд";
+                return Lang.Get(TextId.NatDeviceNotFound, NatDiscoveryTimeoutSeconds);
             }
             catch (Exception ex)
             {
@@ -161,7 +180,7 @@ namespace TCPTunnel
                 catch (OperationCanceledException)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    lastError = "истёк таймаут создания правила";
+                    lastError = Lang.Get(TextId.NatRuleTimeout);
                 }
                 catch (Exception ex)
                 {
@@ -169,7 +188,7 @@ namespace TCPTunnel
                 }
             }
 
-            return lastError ?? "роутер отклонил правило";
+            return lastError ?? Lang.Get(TextId.NatRuleRejected);
         }
 
         private static async Task RenewPortMappingAsync(
@@ -216,7 +235,7 @@ namespace TCPTunnel
             {
                 MappingException mappingException = current as MappingException;
                 if (mappingException != null && mappingException.ErrorCode != 0)
-                    return $"ошибка {mappingException.ErrorCode}: {mappingException.ErrorText}";
+                    return Lang.Get(TextId.NatError, mappingException.ErrorCode, mappingException.ErrorText);
                 current = current.InnerException;
             }
 
@@ -229,16 +248,16 @@ namespace TCPTunnel
             try
             {
                 if (mappedDevice == null || activeMapping == null)
-                    return "Автопроброс: активного правила нет.";
+                    return SetPortMappingStatus(TextId.NatNoActiveRule);
 
                 try
                 {
                     await mappedDevice.DeletePortMapAsync(activeMapping).ConfigureAwait(false);
-                    return $"{activeMappingProtocol ?? "NAT"}: TCP-порт {activeMapping.PublicPort} закрыт.";
+                    return SetPortMappingStatus(TextId.NatPortClosed, activeMappingProtocol ?? "NAT", activeMapping.PublicPort);
                 }
                 catch (Exception ex)
                 {
-                    return "Автопроброс: не удалось удалить правило: " + DescribeNatException(ex);
+                    return SetPortMappingStatus(TextId.NatDeleteFailed, DescribeNatException(ex));
                 }
                 finally
                 {
@@ -276,7 +295,7 @@ namespace TCPTunnel
             }
             catch (Exception ex)
             {
-                ConsoleGraphic.WriteContentLine($"Упс... {ex.Message}");
+                ConsoleGraphic.WriteContentLine(Lang.Get(TextId.UnexpectedError, ex.Message));
                 return false;
             }
         }
@@ -293,20 +312,20 @@ namespace TCPTunnel
                     string authReply = await ReadStringWithTimeoutAsync(client, AuthenticationTimeoutMilliseconds, serverCancellationToken).ConfigureAwait(false);
                     if (!authReply.StartsWith("REPLY:", StringComparison.Ordinal))
                     {
-                        await client.SendAsync(AUTH_ERROR_MESSAGE + ": неверный запрос", serverCancellationToken).ConfigureAwait(false);
+                        await client.SendAsync(AUTH_ERROR_MESSAGE + ":INVALID_REQUEST", serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
                     string requestedNickname = authReply.Substring("REPLY:".Length).Trim();
                     if (!IsNicknameValid(requestedNickname))
                     {
-                        await client.SendAsync(AUTH_ERROR_MESSAGE + ": некорректный псевдоним", serverCancellationToken).ConfigureAwait(false);
+                        await client.SendAsync(AUTH_ERROR_MESSAGE + ":INVALID_NICKNAME", serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
                     if (!broadcaster.TryAuthenticate(client, requestedNickname))
                     {
-                        await client.SendAsync(AUTH_ERROR_MESSAGE + ": псевдоним уже занят", serverCancellationToken).ConfigureAwait(false);
+                        await client.SendAsync(AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN", serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
@@ -317,7 +336,10 @@ namespace TCPTunnel
                     await client.SendAsync(AUTH_OK_MESSAGE, serverCancellationToken).ConfigureAwait(false);
                 }
 
-                await broadcaster.BroadcastAsync(null, $"{authenticatedNickname} подключился к хабу!", serverCancellationToken).ConfigureAwait(false);
+                await broadcaster.BroadcastAsync(
+                    null,
+                    SystemMessageProtocol.Create(SystemMessageKind.UserJoined, authenticatedNickname),
+                    serverCancellationToken).ConfigureAwait(false);
 
                 while (!serverCancellationToken.IsCancellationRequested)
                 {
@@ -327,13 +349,13 @@ namespace TCPTunnel
 
                     if (message.Length > MessageProtocol.MaxMessageCharacters)
                     {
-                        await client.SendAsync("Сообщение слишком длинное.", serverCancellationToken).ConfigureAwait(false);
+                        await client.SendAsync(SystemMessageProtocol.Create(SystemMessageKind.MessageTooLong), serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
                     if (!client.TryConsumeMessageToken())
                     {
-                        await client.SendAsync("Слишком много сообщений. Соединение закрыто.", serverCancellationToken).ConfigureAwait(false);
+                        await client.SendAsync(SystemMessageProtocol.Create(SystemMessageKind.TooManyMessages), serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
@@ -389,7 +411,10 @@ namespace TCPTunnel
                             null,
                             SnakeProtocol.CreateRemove(authenticatedNickname),
                             CancellationToken.None).ConfigureAwait(false);
-                        await broadcaster.BroadcastAsync(null, $"{authenticatedNickname} отключился от хаба.", CancellationToken.None).ConfigureAwait(false);
+                        await broadcaster.BroadcastAsync(
+                            null,
+                            SystemMessageProtocol.Create(SystemMessageKind.UserLeft, authenticatedNickname),
+                            CancellationToken.None).ConfigureAwait(false);
                     }
                     catch { }
                 }
@@ -442,7 +467,7 @@ namespace TCPTunnel
                 cancellationToken.ThrowIfCancellationRequested();
                 client.Close();
                 try { await readTask.ConfigureAwait(false); } catch { }
-                throw new TimeoutException("Истёк таймаут авторизации.");
+                throw new TimeoutException(Lang.Get(TextId.AuthTimedOut));
             }
         }
     }

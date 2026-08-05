@@ -38,7 +38,7 @@ namespace TCPTunnel
             int startX = Math.Max(ConsoleGraphic.ContentLeft, x - text.Length / 2);
             Console.SetCursorPosition(startX, y);
             Program.matrix(text, symbolDelay, ConsoleColor.White, false);
-            Thread.Sleep(time * 1000); // Перевод в секунды
+            Thread.Sleep(time * 1000);
             for (int j = text.Length - 1; j >= 0; j--)
             {
                 Console.SetCursorPosition(startX, y);
@@ -114,15 +114,15 @@ namespace TCPTunnel
                     object[] endpoint = splitIPByArg(args, "-ping");
                     if (endpoint == null)
                     {
-                        ConsoleGraphic.WriteContentLine("Параметр -ping ожидает адрес в формате host:port.");
+                        ConsoleGraphic.WriteContentLine(Lang.Get(TextId.PingArgument));
                     }
                     else
                     {
                         string ip = endpoint[0].ToString();
                         int port = Convert.ToInt32(endpoint[1]);
                         Program.matrix(NetWorker.ping(ip, port)
-                            ? $"Сервер {ip}:{port} работает!."
-                            : $"Сервер {ip}:{port} мёртв.");
+                            ? Lang.Get(TextId.ServerAlive, ip, port)
+                            : Lang.Get(TextId.ServerDead, ip, port));
                         Console.ReadKey();
                         graphic.Clear();
                     }
@@ -138,7 +138,7 @@ namespace TCPTunnel
                     }
                     else
                     {
-                        ConsoleGraphic.WriteContentLine("Параметр -connect ожидает адрес в формате host:port.");
+                        ConsoleGraphic.WriteContentLine(Lang.Get(TextId.ConnectArgument));
                     }
                 }
                 if (args.Contains("-skip"))
@@ -147,21 +147,28 @@ namespace TCPTunnel
                     goto main;
                 }
             }
-            mainMatrix("Добро пожаловать в чат", centerX, centerY);
+            mainMatrix(Lang.Get(TextId.Welcome), centerX, centerY);
         main:
             ConsoleGraphic.SetReservedBottomRows(0);
             Program.bufferClear();
-            Console.Title = "--------------------------------------Меню----------------------------------------------";
+            ConsoleTitleAnimator.SetCaption(Lang.Get(TextId.MenuTitle), ConsoleGraphic.Enabled);
             if (skipped) graphic.Clear(0, 0);
             else graphic.Clear();
             var choiceList = new List<string> {
-                ServerInterface.IsRunning ? "Войти в свой хаб" : "Создать сервер",
-                "Войти на сервер",
-                (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname)
+                Lang.Get(ServerInterface.IsRunning ? TextId.EnterOwnHub : TextId.HostServer),
+                Lang.Get(TextId.ConnectToHub),
+                (NetWorker.nickname.Length <= 0) ? Lang.Get(TextId.EnterNickname) : Lang.Get(TextId.CurrentNickname, NetWorker.nickname)
             };
+            int graphicsOptionsIndex = -1;
             if (graphicsOptionsAvailable)
-                choiceList.Add("ConsoleGraphics Options");
-            choiceList.Add("Выход");
+            {
+                graphicsOptionsIndex = choiceList.Count;
+                choiceList.Add(Lang.Get(TextId.GraphicsOptions));
+            }
+            int languageIndex = choiceList.Count;
+            choiceList.Add(Lang.Get(TextId.LanguageMenu));
+            int exitIndex = choiceList.Count;
+            choiceList.Add(Lang.Get(TextId.Exit));
             string[] choice = choiceList.ToArray();
             left = 10;
             top = 1;
@@ -193,7 +200,7 @@ namespace TCPTunnel
                     case ConsoleKey.Escape:
                     default:
 
-                        Console.Title = $"-----------------------------------{choice[Math.Abs(arrow)]}----------------------------------------------";
+                        ConsoleTitleAnimator.SetCaption(choice[Math.Abs(arrow)], ConsoleGraphic.Enabled);
                         break;
                 }
                 if (arrow == 0)
@@ -220,13 +227,19 @@ namespace TCPTunnel
                         ChangeNicknamePlain();
                     goto main;
                 }
-                else if (graphicsOptionsAvailable && arrow == 3)
+                else if (arrow == graphicsOptionsIndex)
                 {
                     ShowConsoleGraphicsOptions();
                     skipped = true;
                     goto main;
                 }
-                else
+                else if (arrow == languageIndex)
+                {
+                    Lang.Toggle();
+                    skipped = true;
+                    goto main;
+                }
+                else if (arrow == exitIndex)
                 {
                     PrepareActionScreen(choice[arrow]);
                     Program.bye();
@@ -240,14 +253,14 @@ namespace TCPTunnel
             Stopwatch stopwatch = Stopwatch.StartNew();
             int inputTop = Console.CursorTop;
             mainMatrix(
-                "Добро пожаловать в процедуру смены ника в TCPTunnel",
+                Lang.Get(TextId.ChangeNicknameWelcome),
                 centerX,
                 centerY,
                 0,
                 3,
                 3);
             Console.SetCursorPosition(2, inputTop++);
-            Program.matrix("В свободном поле вы сможете задать себе ник: ");
+            Program.matrix(Lang.Get(TextId.EnterNewNickname) + ": ");
             string testname = Console.ReadLine();
             Console.SetCursorPosition(2, inputTop++);
             Console.ForegroundColor = ConsoleColor.DarkGray;
@@ -255,8 +268,8 @@ namespace TCPTunnel
             Program.matrix("...\n", 500, ConsoleColor.DarkGray);
             if (!NetWorker.IsNicknameValid(testname))
             {
-                Program.matrix("Ник должен содержать от 3 до 20 символов без пробелов и спецсимволов\n");
-                Program.matrix("Попробуй еще раз");
+                Program.matrix(Lang.Get(TextId.NicknameRules) + "\n");
+                Program.matrix(Lang.Get(TextId.TryAgain));
                 Console.ReadKey();
                 return;
             }
@@ -264,9 +277,9 @@ namespace TCPTunnel
             stopwatch.Stop();
             NetWorker.nickname = testname;
             Console.SetCursorPosition(2, inputTop += 2);
-            Program.matrix("Хорошее имя\n", 8, ConsoleColor.Green);
+            Program.matrix(Lang.Get(TextId.GoodName) + "\n", 8, ConsoleColor.Green);
             if (stopwatch.Elapsed.TotalSeconds > 25)
-                Program.matrix(", долго придумывал))))", 10);
+                Program.matrix(Lang.Get(TextId.TookYourTime), 10);
 
             Thread.Sleep(1500);
         }
@@ -278,9 +291,9 @@ namespace TCPTunnel
             int hintRow = ConsoleGraphic.ContentTop + 3;
             int inputRow = ConsoleGraphic.ContentTop + 5;
 
-            ConsoleGraphic.WriteCenteredLine("CHANGE IDENTITY", titleRow, ConsoleColor.Cyan, true, 3);
+            ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.ChangeIdentity), titleRow, ConsoleColor.Cyan, true, 3);
             ConsoleGraphic.WriteCenteredLine(
-                "Введите новый псевдоним",
+                Lang.Get(TextId.EnterNewNickname),
                 hintRow,
                 ConsoleColor.DarkGray);
             ConsoleGraphic.WriteCenteredLine("> ", inputRow, ConsoleColor.Cyan);
@@ -289,7 +302,7 @@ namespace TCPTunnel
             for (int dots = 1; dots <= 3; dots++)
             {
                 ConsoleGraphic.WriteBottomStatus(
-                    "Проверка имени" + new string('.', dots),
+                    Lang.Get(TextId.CheckingName, new string('.', dots)),
                     ConsoleColor.Yellow);
                 Thread.Sleep(70);
             }
@@ -297,10 +310,10 @@ namespace TCPTunnel
             if (!NetWorker.IsNicknameValid(testname))
             {
                 ConsoleGraphic.WriteCenteredLine(
-                    "От 3 до 20 символов, без пробелов и спецсимволов",
+                    Lang.Get(TextId.NicknameRules),
                     hintRow + 2,
                     ConsoleColor.Red);
-                ConsoleGraphic.WriteBottomStatus("Некорректный псевдоним", ConsoleColor.Red);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.AuthInvalidNickname), ConsoleColor.Red);
                 Console.ReadKey(true);
                 return;
             }
@@ -308,20 +321,20 @@ namespace TCPTunnel
             stopwatch.Stop();
             NetWorker.nickname = testname;
             graphic.Clear(0, 0);
-            ConsoleGraphic.WriteCenteredLine("IDENTITY UPDATED", titleRow, ConsoleColor.Cyan, true, 3);
+            ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.IdentityUpdated), titleRow, ConsoleColor.Cyan, true, 3);
             ConsoleGraphic.WriteCenteredLine(testname, inputRow, ConsoleColor.White, true, 4);
             ConsoleGraphic.WriteCenteredLine(
                 new string('-', Math.Max(8, Math.Min(24, testname.Length + 4))),
                 inputRow + 1,
                 ConsoleColor.DarkGray);
 
-            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.Green);
+            ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.Green);
             Thread.Sleep(120);
-            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.DarkGreen);
+            ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.DarkGreen);
             Thread.Sleep(120);
-            ConsoleGraphic.WriteBottomStatus("Хорошее имя", ConsoleColor.Green);
+            ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.Green);
             if (stopwatch.Elapsed.TotalSeconds > 25)
-                ConsoleGraphic.WriteCenteredLine("Долго придумывал :) ", inputRow + 3, ConsoleColor.DarkGray);
+                ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.TookYourTime), inputRow + 3, ConsoleColor.DarkGray);
 
             Thread.Sleep(1260);
         }
@@ -441,11 +454,11 @@ namespace TCPTunnel
             while (true)
             {
                 string[] choices = {
-                    "ConsoleGraphics: " + (ConsoleGraphic.Enabled ? "включена" : "выключена"),
-                    "Кастомизация",
-                    "Назад"
+                    Lang.Get(ConsoleGraphic.Enabled ? TextId.GraphicsEnabled : TextId.GraphicsDisabled),
+                    Lang.Get(TextId.Customization),
+                    Lang.Get(TextId.Back)
                 };
-                int selection = ReadOptionsSelection("ConsoleGraphics Options", choices, selectedOption);
+                int selection = ReadOptionsSelection(Lang.Get(TextId.GraphicsOptions), choices, selectedOption);
                 if (selection < 0 || selection == 2)
                     return;
 
@@ -463,8 +476,8 @@ namespace TCPTunnel
             int selectedOption = 0;
             while (true)
             {
-                string[] choices = { "Змейка", "Назад" };
-                int selection = ReadOptionsSelection("Кастомизация", choices, selectedOption);
+                string[] choices = { Lang.Get(TextId.Snake), Lang.Get(TextId.Back) };
+                int selection = ReadOptionsSelection(Lang.Get(TextId.Customization), choices, selectedOption);
                 if (selection < 0 || selection == 1)
                     return;
 
@@ -480,11 +493,11 @@ namespace TCPTunnel
             while (true)
             {
                 string[] choices = {
-                    "Скорость: " + GetSnakeSpeedName(ConsoleGraphic.BorderAnimationDelayMilliseconds),
-                    "Цвет: " + GetSnakeColorName(ConsoleGraphic.BorderSnakeColor),
-                    "Назад"
+                    Lang.Get(TextId.Speed, GetSnakeSpeedName(ConsoleGraphic.BorderAnimationDelayMilliseconds)),
+                    Lang.Get(TextId.Color, GetSnakeColorName(ConsoleGraphic.BorderSnakeColor)),
+                    Lang.Get(TextId.Back)
                 };
-                int selection = ReadOptionsSelection("Кастомизация змейки", choices, selectedOption);
+                int selection = ReadOptionsSelection(Lang.Get(TextId.SnakeCustomization), choices, selectedOption);
                 if (selection < 0 || selection == 2)
                     return;
 
@@ -499,7 +512,7 @@ namespace TCPTunnel
 
         private int ReadOptionsSelection(string title, string[] choices, int selectedOption)
         {
-            Console.Title = "-----------------------------------" + title + "----------------------------------------------";
+            ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
             left = 10;
             top = 1;
@@ -559,11 +572,11 @@ namespace TCPTunnel
         {
             switch (delayMilliseconds)
             {
-                case 35: return "быстрая (35 мс)";
-                case 75: return "обычная (75 мс)";
-                case 125: return "спокойная (125 мс)";
-                case 200: return "медленная (200 мс)";
-                default: return delayMilliseconds + " мс";
+                case 35: return Lang.Get(TextId.SpeedFast);
+                case 75: return Lang.Get(TextId.SpeedNormal);
+                case 125: return Lang.Get(TextId.SpeedCalm);
+                case 200: return Lang.Get(TextId.SpeedSlow);
+                default: return delayMilliseconds + (Lang.Current == AppLanguage.Russian ? " мс" : " ms");
             }
         }
 
@@ -571,19 +584,19 @@ namespace TCPTunnel
         {
             switch (color)
             {
-                case ConsoleColor.Green: return "зелёный";
-                case ConsoleColor.Cyan: return "голубой";
-                case ConsoleColor.Yellow: return "жёлтый";
-                case ConsoleColor.Red: return "красный";
-                case ConsoleColor.White: return "белый";
-                case ConsoleColor.Blue: return "синий";
+                case ConsoleColor.Green: return Lang.Get(TextId.ColorGreen);
+                case ConsoleColor.Cyan: return Lang.Get(TextId.ColorCyan);
+                case ConsoleColor.Yellow: return Lang.Get(TextId.ColorYellow);
+                case ConsoleColor.Red: return Lang.Get(TextId.ColorRed);
+                case ConsoleColor.White: return Lang.Get(TextId.ColorWhite);
+                case ConsoleColor.Blue: return Lang.Get(TextId.ColorBlue);
                 default: return color.ToString();
             }
         }
 
         private void PrepareActionScreen(string title)
         {
-            Console.Title = $"-----------------------------------{title}----------------------------------------------";
+            ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
         }
 

@@ -54,7 +54,7 @@ namespace TCPTunnel
                     {
                         int read = resource.Read(assemblyBytes, offset, assemblyBytes.Length - offset);
                         if (read == 0)
-                            throw new EndOfStreamException("Не удалось прочитать встроенную библиотеку Open.Nat.");
+                            throw new EndOfStreamException(Lang.Get(TextId.EmbeddedLibraryReadFailed));
                         offset += read;
                     }
 

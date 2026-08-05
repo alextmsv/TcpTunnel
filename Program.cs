@@ -10,12 +10,16 @@ namespace TCPTunnel
         static void Main(string[] args)
         {
             EmbeddedAssemblyResolver.Register();
+            Lang.ApplyArguments(args);
 
             if (Array.Exists(args, argument => String.Equals(argument, "-self-test", StringComparison.OrdinalIgnoreCase)))
             {
-                Console.WriteLine(EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat() && SnakeProtocol.RunSelfTest()
-                    ? "TCPTunnel self-test: OK"
-                    : "TCPTunnel self-test: FAILED");
+                bool success = EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat() &&
+                               SnakeProtocol.RunSelfTest() &&
+                               Lang.RunSelfTest() &&
+                               SystemMessageProtocol.RunSelfTest() &&
+                               ConsoleTitleAnimator.RunSelfTest();
+                Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));
                 return;
             }
 
@@ -25,7 +29,11 @@ namespace TCPTunnel
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static void Run(string[] args)
         {
-            AppDomain.CurrentDomain.ProcessExit += delegate { ServerInterface.StopServer(); };
+            AppDomain.CurrentDomain.ProcessExit += delegate
+            {
+                ConsoleTitleAnimator.Stop();
+                ServerInterface.StopServer();
+            };
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)
             {
                 eventArgs.Cancel = true;
@@ -39,7 +47,7 @@ namespace TCPTunnel
         public static void bye()
         {
             ConsoleGraphic.WriteContentLine(String.Empty);
-            Program.matrix("До свидания");
+            Program.matrix(Lang.Get(TextId.Goodbye));
             Console.ReadKey();
             ServerInterface.StopServer();
             Environment.Exit(0);
@@ -78,9 +86,6 @@ namespace TCPTunnel
             }
             Console.ResetColor();
         }
-        //public static void matrixRemove(){
-            
-        //}
         public static void bufferClear()
         {
             int currentTop = Console.CursorTop;

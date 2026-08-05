@@ -18,7 +18,7 @@ namespace TCPTunnel
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
-        public static string PortMappingStatus { get; private set; } = "Автопроброс портов ещё не запускался.";
+        public static string PortMappingStatus => GetPortMappingStatus();
         public static string DisplayAddress => displayAddress;
 
         public static void tryCreateServer()
@@ -26,18 +26,18 @@ namespace TCPTunnel
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.WriteCenteredLine(
-                    "HUB SETUP",
+                    Lang.Get(TextId.HubSetup),
                     ConsoleGraphic.ContentTop + 1,
                     ConsoleColor.Cyan,
                     true,
                     4);
-                ConsoleGraphic.WriteBottomStatus("Выберите TCP-порт", ConsoleColor.DarkGray);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ChooseTcpPort), ConsoleColor.DarkGray);
                 ConsoleGraphic.TrySetContentCursor(2, ConsoleGraphic.ContentTop + 3);
-                Program.matrix("Введите порт сервера [9091]: ", 4, ConsoleColor.Yellow, false);
+                Program.matrix(Lang.Get(TextId.EnterServerPort), 4, ConsoleColor.Yellow, false);
             }
             else
             {
-                Program.matrix("Введите порт сервера [9091]: ");
+                Program.matrix(Lang.Get(TextId.EnterServerPort));
             }
 
             string rawPort = Console.ReadLine();
@@ -47,9 +47,9 @@ namespace TCPTunnel
             else if (!Int32.TryParse(rawPort, out port) || port < 1 || port > 65535)
             {
                 if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus("Порт должен быть числом от 1 до 65535", ConsoleColor.Red);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.InvalidPortNumber), ConsoleColor.Red);
                 else
-                    ConsoleGraphic.WriteContentLine("Порт должен быть числом от 1 до 65535.");
+                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.InvalidPortNumber));
                 return;
             }
 
@@ -59,28 +59,28 @@ namespace TCPTunnel
         public static bool doCreateServer(int port)
         {
             if (ConsoleGraphic.Enabled)
-                ConsoleGraphic.WriteBottomStatus("Запуск TCP-слушателя...", ConsoleColor.Yellow, 0, true, 3);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.StartingListener), ConsoleColor.Yellow, 0, true, 3);
 
             string error;
             if (!TryStartServer(port, out error))
             {
                 if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus("Не удалось создать хаб: " + error, ConsoleColor.Red);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.CreateHubFailed, error), ConsoleColor.Red);
                 else
-                    ConsoleGraphic.WriteContentLine("Не удалось создать хаб: " + error);
+                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.CreateHubFailed, error));
                 return false;
             }
 
             if (ConsoleGraphic.Enabled)
             {
-                ConsoleGraphic.WriteBottomStatus("[+] TCP-слушатель запущен", ConsoleColor.Green);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ListenerStarted), ConsoleColor.Green);
                 Thread.Sleep(180);
-                ConsoleGraphic.WriteBottomStatus("Настройка UPnP / NAT-PMP...", ConsoleColor.Yellow);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConfiguringNat), ConsoleColor.Yellow);
             }
             else
             {
-                ConsoleGraphic.WriteContentLine($"Хаб запущен на TCP-порту {port}.");
-                ConsoleGraphic.WriteContentLine("Локальный клиент подключается к 127.0.0.1; проброс порта настраивается в фоне.");
+                ConsoleGraphic.WriteContentLine(Lang.Get(TextId.HubStarted, port));
+                ConsoleGraphic.WriteContentLine(Lang.Get(TextId.LocalClientBackground));
             }
 
             StartPortMapping(port, serverCancellation.Token);
@@ -88,7 +88,7 @@ namespace TCPTunnel
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.DrawServerEndpointCard(DisplayAddress, port);
-                ConsoleGraphic.WriteBottomStatus("Локальный клиент подключается...", ConsoleColor.Yellow, 3);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.LocalClientConnecting), ConsoleColor.Yellow, 3);
             }
 
             return UserInterface.DoConnect("127.0.0.1", port, 1);
@@ -115,7 +115,7 @@ namespace TCPTunnel
         {
             if (port < 1 || port > 65535)
             {
-                error = "порт должен быть в диапазоне от 1 до 65535";
+                error = Lang.Get(TextId.PortOutOfRange);
                 return false;
             }
 
@@ -123,7 +123,7 @@ namespace TCPTunnel
             {
                 if (isRunning)
                 {
-                    error = $"хаб уже работает на порту {ListeningPort}";
+                    error = Lang.Get(TextId.HubAlreadyRunning, ListeningPort);
                     return false;
                 }
 
@@ -217,8 +217,8 @@ namespace TCPTunnel
                     if (cancellationToken.IsCancellationRequested)
                         return;
 
-                    PortMappingStatus = "Автопроброс: сначала UPnP, затем NAT-PMP...";
-                    PortMappingStatus = await TryOpenPortAsync(port, cancellationToken).ConfigureAwait(false);
+                    SetPortMappingStatus(TextId.NatTrying);
+                    await TryOpenPortAsync(port, cancellationToken).ConfigureAwait(false);
                 });
             }
         }
@@ -231,7 +231,7 @@ namespace TCPTunnel
                 portMappingLifecycle = Task.Run(async () =>
                 {
                     try { await previousLifecycle.ConfigureAwait(false); } catch { }
-                    PortMappingStatus = await TryClosePortAsync().ConfigureAwait(false);
+                    await TryClosePortAsync().ConfigureAwait(false);
                 });
                 return portMappingLifecycle;
             }

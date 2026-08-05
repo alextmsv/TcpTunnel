@@ -28,9 +28,10 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
-| 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
+| 🖥️ | ConsoleGraphics | Animated menu, cyclic scrolling window titles, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
 | 📦 | Single EXE | `Open.Nat.dll` is embedded into `TCPTunnel.exe`; no adjacent application DLLs are required. |
+| 🌍 | Russian & English | Switch the complete interface instantly from the main menu; mixed-language clients can share one Hub. |
 
 ## Quick start
 
@@ -95,6 +96,7 @@ TCPTunnel.exe [options]
 | `-ping <host:port>` | `-ping cool.tcptunnel.hub:9091` | Check whether a TCP endpoint is reachable. |
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics. |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. |
+| `-lang <ru\|en>` | `-lang en` | Select the interface language before startup. |
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
 
 Example:
@@ -167,13 +169,16 @@ TCPTunnel
 ├── Client.cs                   # Client state, sending, and rate limits
 ├── UserInterface.cs            # Interactive chat and input rendering
 ├── ConsoleGraphic.cs           # Console frame and bounded output
+├── ConsoleTitleAnimator.cs     # Cyclic terminal-title animation
 ├── Menu.cs                     # Menu and launch arguments
+├── Localization.cs             # Built-in Russian and English text catalog
+├── SystemMessageProtocol.cs    # Language-neutral Hub event messages
 └── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
 ```
 
 ## Roadmap
 
-- [ ] Add english language support
+- [x] Add English language support
 - [ ] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations

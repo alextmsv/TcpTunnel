@@ -99,7 +99,7 @@ namespace TCPTunnel
                         cancellationToken.ThrowIfCancellationRequested();
                         Close();
                         try { await writeTask.ConfigureAwait(false); } catch { }
-                        throw new TimeoutException("Клиент не принимает сообщения.");
+                        throw new TimeoutException(Lang.Get(TextId.ClientNotReceiving));
                     }
 
                     timeoutCancellation.Cancel();
