@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
@@ -13,10 +15,14 @@ namespace TCPTunnel
         private const int ConnectionTimeoutMilliseconds = 3000;
         private const int RetryDelayMilliseconds = 1000;
         private const int MaxVisibleInputRows = 3;
+        private const int MaxChatHistoryLines = 200;
+        private const int ResizePollMilliseconds = 100;
+        private const int ResizeSettleMilliseconds = 180;
 
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
         private static readonly object consoleLock = new object();
         private static readonly StringBuilder inputBuffer = new StringBuilder();
+        private static readonly List<string> chatHistory = new List<string>();
         private static int isBusy;
         private static bool inputActive;
         private static int inputCursorIndex;
@@ -25,6 +31,12 @@ namespace TCPTunnel
         private static int renderedInputLeft;
         private static int renderedInputWidth;
         private static string inputPrompt = "";
+        private static ConsoleGraphic.ConsoleGeometry knownConsoleGeometry;
+        private static ConsoleGraphic.ConsoleGeometry pendingConsoleGeometry;
+        private static bool hasKnownConsoleGeometry;
+        private static bool consoleResizePending;
+        private static long resizeStableSinceTimestamp;
+        private static long nextResizePollTimestamp;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -219,6 +231,7 @@ namespace TCPTunnel
             connected = true;
             ConsoleGraphic.ClearRemoteSnakes();
             graphic.Clear();
+            ResetChatSessionLayout();
             WriteChatLine($"Подключено к {client.Client.RemoteEndPoint}. Команды: /status, /exit.");
 
             var sessionCancellation = new CancellationTokenSource();
@@ -322,6 +335,7 @@ namespace TCPTunnel
 
             while (connected)
             {
+                CheckForConsoleResize();
                 if (!Console.KeyAvailable)
                 {
                     Thread.Sleep(20);
@@ -341,7 +355,7 @@ namespace TCPTunnel
                         return message;
                     }
 
-                    if (HandleInputKey(key))
+                    if (HandleInputKey(key) && EnsureConsoleGeometryLocked())
                         RenderInputLine();
                 }
             }
@@ -414,11 +428,11 @@ namespace TCPTunnel
             }
             catch (ArgumentOutOfRangeException)
             {
-                RecoverInputLayout();
+                MarkConsoleResizePendingLocked();
             }
             catch (IOException)
             {
-                RecoverInputLayout();
+                MarkConsoleResizePendingLocked();
             }
         }
 
@@ -430,7 +444,7 @@ namespace TCPTunnel
             int width = GetContentWidth();
             int availableRows = ConsoleGraphic.Enabled
                 ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1)
-                : Math.Max(1, Console.BufferHeight - Console.CursorTop);
+                : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight));
             int maximumRows = Math.Min(MaxVisibleInputRows, availableRows);
             int capacity = Math.Max(1, width * maximumRows);
             string text = inputPrompt + inputBuffer;
@@ -514,22 +528,28 @@ namespace TCPTunnel
         {
             lock (consoleLock)
             {
+                bool consoleReady = EnsureConsoleGeometryLocked();
+                string safeMessage = SanitizeForConsole(message);
+                AppendChatHistoryLocked(safeMessage);
+                if (!consoleReady)
+                    return;
+
                 bool restoreInput = inputActive;
                 if (restoreInput)
                     EraseRenderedInput();
 
                 try
                 {
-                    WriteWrappedChatLine(SanitizeForConsole(message));
+                    WriteWrappedChatLine(safeMessage);
                 }
                 catch (ArgumentOutOfRangeException)
                 {
-                    RecoverChatLayout();
-                    WriteWrappedChatLine(SanitizeForConsole(message));
+                    MarkConsoleResizePendingLocked();
+                    return;
                 }
                 catch (IOException)
                 {
-                    connected = false;
+                    MarkConsoleResizePendingLocked();
                     return;
                 }
 
@@ -584,12 +604,150 @@ namespace TCPTunnel
             return safe.ToString();
         }
 
+        private static void ResetChatSessionLayout()
+        {
+            lock (consoleLock)
+            {
+                chatHistory.Clear();
+                inputActive = false;
+                inputBuffer.Clear();
+                inputCursorIndex = 0;
+                renderedInputRows = 0;
+                renderedInputWidth = 0;
+                CaptureConsoleGeometryLocked();
+                consoleResizePending = false;
+                resizeStableSinceTimestamp = 0;
+                nextResizePollTimestamp = Stopwatch.GetTimestamp();
+            }
+        }
+
+        private static void AppendChatHistoryLocked(string message)
+        {
+            chatHistory.Add(message ?? String.Empty);
+            if (chatHistory.Count > MaxChatHistoryLines)
+                chatHistory.RemoveRange(0, chatHistory.Count - MaxChatHistoryLines);
+        }
+
+        private static void CheckForConsoleResize()
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (now < Volatile.Read(ref nextResizePollTimestamp))
+                return;
+
+            long intervalTicks = Math.Max(1L, Stopwatch.Frequency * ResizePollMilliseconds / 1000L);
+            Volatile.Write(ref nextResizePollTimestamp, now + intervalTicks);
+            lock (consoleLock)
+                EnsureConsoleGeometryLocked();
+        }
+
+        private static bool EnsureConsoleGeometryLocked()
+        {
+            ConsoleGraphic.ConsoleGeometry currentGeometry;
+            if (!ConsoleGraphic.TryCaptureConsoleGeometry(out currentGeometry))
+                return false;
+
+            if (!hasKnownConsoleGeometry)
+            {
+                knownConsoleGeometry = currentGeometry;
+                hasKnownConsoleGeometry = true;
+                consoleResizePending = false;
+                return true;
+            }
+
+            if (currentGeometry.IsSameAs(knownConsoleGeometry) && !consoleResizePending)
+                return true;
+
+            long now = Stopwatch.GetTimestamp();
+            if (!consoleResizePending || !currentGeometry.IsSameAs(pendingConsoleGeometry))
+            {
+                pendingConsoleGeometry = currentGeometry;
+                consoleResizePending = true;
+                resizeStableSinceTimestamp = now;
+                return false;
+            }
+
+            long settleTicks = Math.Max(1L, Stopwatch.Frequency * ResizeSettleMilliseconds / 1000L);
+            if (now - resizeStableSinceTimestamp < settleTicks)
+                return false;
+
+            return RedrawChatLayoutLocked();
+        }
+
+        private static void CaptureConsoleGeometryLocked()
+        {
+            ConsoleGraphic.ConsoleGeometry geometry;
+            if (!ConsoleGraphic.TryCaptureConsoleGeometry(out geometry))
+                return;
+
+            knownConsoleGeometry = geometry;
+            hasKnownConsoleGeometry = true;
+        }
+
+        private static void MarkConsoleResizePendingLocked()
+        {
+            ConsoleGraphic.ConsoleGeometry geometry;
+            if (ConsoleGraphic.TryCaptureConsoleGeometry(out geometry))
+                pendingConsoleGeometry = geometry;
+
+            consoleResizePending = true;
+            resizeStableSinceTimestamp = Stopwatch.GetTimestamp();
+        }
+
+        private static bool RedrawChatLayoutLocked()
+        {
+            ConsoleGraphic.ConsoleGeometry targetGeometry;
+            if (!ConsoleGraphic.TryCaptureConsoleGeometry(out targetGeometry))
+                return false;
+
+            try
+            {
+                renderedInputRows = 0;
+                renderedInputWidth = 0;
+                if (!graphic.TryClear(0, 0))
+                {
+                    MarkConsoleResizePendingLocked();
+                    return false;
+                }
+
+                foreach (string historyLine in chatHistory)
+                    WriteWrappedChatLine(historyLine);
+
+                inputStartRow = Console.CursorTop;
+                if (inputActive)
+                    RenderInputLineCore();
+
+                ConsoleGraphic.ConsoleGeometry renderedGeometry;
+                if (!ConsoleGraphic.TryCaptureConsoleGeometry(out renderedGeometry) ||
+                    !renderedGeometry.IsSameAs(targetGeometry))
+                {
+                    MarkConsoleResizePendingLocked();
+                    return false;
+                }
+
+                knownConsoleGeometry = renderedGeometry;
+                hasKnownConsoleGeometry = true;
+                consoleResizePending = false;
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                renderedInputRows = 0;
+                renderedInputWidth = 0;
+                MarkConsoleResizePendingLocked();
+                return false;
+            }
+            catch (IOException)
+            {
+                renderedInputRows = 0;
+                renderedInputWidth = 0;
+                MarkConsoleResizePendingLocked();
+                return false;
+            }
+        }
+
         private static void RecoverChatLayout()
         {
-            renderedInputRows = 0;
-            renderedInputWidth = 0;
-            graphic.Clear(0, 0);
-            inputStartRow = Console.CursorTop;
+            RedrawChatLayoutLocked();
         }
 
         private static void RecoverInputLayout()
@@ -597,8 +755,6 @@ namespace TCPTunnel
             try
             {
                 RecoverChatLayout();
-                if (inputActive)
-                    RenderInputLineCore();
             }
             catch (Exception)
             {

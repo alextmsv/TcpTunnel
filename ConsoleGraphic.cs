@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +10,25 @@ namespace TCPTunnel
 {
     public class ConsoleGraphic
     {
+        internal struct ConsoleGeometry
+        {
+            public int WindowWidth;
+            public int WindowHeight;
+            public int BufferWidth;
+            public int BufferHeight;
+
+            public int DrawableWidth => Math.Min(WindowWidth, BufferWidth);
+            public int DrawableHeight => Math.Min(WindowHeight, BufferHeight);
+
+            public bool IsSameAs(ConsoleGeometry other)
+            {
+                return WindowWidth == other.WindowWidth &&
+                       WindowHeight == other.WindowHeight &&
+                       BufferWidth == other.BufferWidth &&
+                       BufferHeight == other.BufferHeight;
+            }
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct ConsoleCoordinate
         {
@@ -20,6 +40,25 @@ namespace TCPTunnel
                 X = (short)x;
                 Y = (short)y;
             }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SmallRectangle
+        {
+            public short Left;
+            public short Top;
+            public short Right;
+            public short Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ConsoleScreenBufferInfo
+        {
+            public ConsoleCoordinate Size;
+            public ConsoleCoordinate CursorPosition;
+            public ushort Attributes;
+            public SmallRectangle Window;
+            public ConsoleCoordinate MaximumWindowSize;
         }
 
         private struct BorderCell
@@ -74,60 +113,167 @@ namespace TCPTunnel
             ConsoleCoordinate writeCoordinate,
             out uint attributesWritten);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetConsoleScreenBufferInfo(
+            IntPtr consoleOutput,
+            out ConsoleScreenBufferInfo consoleScreenBufferInfo);
+
         private static readonly IntPtr consoleOutputHandle = GetStdHandle(StandardOutputHandle);
 
         private interface IMenuOptionRenderer
         {
-            void Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay);
+            bool Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay);
+        }
+
+        private static bool TryGetGraphicalMenuPosition(
+            ConsoleGeometry geometry,
+            int index,
+            int baseLeft,
+            int baseTop,
+            out int left,
+            out int row,
+            out int rightExclusive)
+        {
+            row = baseTop + index;
+            rightExclusive = Math.Min(geometry.BufferWidth, geometry.WindowWidth - 1);
+            int maximumRow = geometry.DrawableHeight - 1;
+            if (row < 0 || row > maximumRow || rightExclusive <= ContentLeft)
+            {
+                left = ContentLeft;
+                return false;
+            }
+
+            int maximumLeft = Math.Max(ContentLeft, rightExclusive - 1);
+            int minimumLeft = Math.Min(maximumLeft, ContentLeft + 3);
+            left = Math.Max(minimumLeft, Math.Min(baseLeft - 2 * index, maximumLeft));
+            return true;
+        }
+
+        private static bool DrawGraphicalSelectionMarker(
+            ConsoleGeometry geometry,
+            int left,
+            int row,
+            bool selected)
+        {
+            int markerLeft = Math.Max(ContentLeft, left - 3);
+            int markerWidth = Math.Min(3, Math.Max(0, left - markerLeft));
+            if (markerWidth == 0)
+                return true;
+
+            Console.ResetColor();
+            Console.SetCursorPosition(markerLeft, row);
+            if (selected)
+                Console.ForegroundColor = ConsoleColor.Cyan;
+
+            string marker = selected ? ">> " : "   ";
+            Console.Write(marker.Substring(0, markerWidth));
+            Console.ResetColor();
+            return IsConsoleGeometryCurrent(geometry);
         }
 
         private sealed class GraphicalMenuOptionRenderer : IMenuOptionRenderer
         {
-            public void Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay)
+            public bool Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay)
             {
-                Console.SetCursorPosition(baseLeft - 2 * index, baseTop + index);
-                if (selected)
+                try
                 {
-                    Console.BackgroundColor = ConsoleColor.Cyan;
-                    Console.ForegroundColor = ConsoleColor.Black;
-                }
-                else
-                {
+                    ConsoleGeometry geometry;
+                    if (!TryCaptureConsoleGeometry(out geometry))
+                        return false;
+
+                    int left;
+                    int row;
+                    int rightExclusive;
+                    if (!TryGetGraphicalMenuPosition(
+                        geometry,
+                        index,
+                        baseLeft,
+                        baseTop,
+                        out left,
+                        out row,
+                        out rightExclusive))
+                        return true;
+
+                    if (!DrawGraphicalSelectionMarker(geometry, left, row, selected))
+                        return false;
+
+                    int characterCount = Math.Max(0, Math.Min(text.Length, rightExclusive - left));
+                    if (characterCount == 0)
+                        return true;
+
+                    Console.SetCursorPosition(left, row);
+                    if (selected)
+                    {
+                        Console.BackgroundColor = ConsoleColor.Cyan;
+                        Console.ForegroundColor = ConsoleColor.Black;
+                    }
+                    else
+                    {
+                        Console.ResetColor();
+                    }
+
+                    for (int characterIndex = 0; characterIndex < characterCount; characterIndex++)
+                    {
+                        Console.Write(text[characterIndex]);
+                        if (animate)
+                            Thread.Sleep(animationDelay);
+                    }
+
                     Console.ResetColor();
+                    return IsConsoleGeometryCurrent(geometry);
                 }
-
-                foreach (char symbol in text)
+                catch (ArgumentOutOfRangeException)
                 {
-                    Console.Write(symbol);
-                    if (animate)
-                        Thread.Sleep(animationDelay);
+                    return false;
                 }
-
-                Console.ResetColor();
+                catch (IOException)
+                {
+                    return false;
+                }
             }
         }
 
         private sealed class PlainMenuOptionRenderer : IMenuOptionRenderer
         {
-            public void Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay)
+            public bool Draw(string text, int index, int baseLeft, int baseTop, bool selected, bool animate, int animationDelay)
             {
-                const int plainLeft = 2;
-                int row = baseTop + index;
-                string option = " " + text + " ";
-                int clearWidth = Math.Max(1, Math.Min(option.Length, Console.BufferWidth - plainLeft));
-
-                Console.ResetColor();
-                Console.SetCursorPosition(plainLeft, row);
-                Console.Write(new string(' ', clearWidth));
-                Console.SetCursorPosition(plainLeft, row);
-                if (selected)
+                try
                 {
-                    Console.BackgroundColor = ConsoleColor.White;
-                    Console.ForegroundColor = ConsoleColor.Black;
-                }
+                    ConsoleGeometry geometry;
+                    if (!TryCaptureConsoleGeometry(out geometry))
+                        return false;
 
-                Console.Write(option.Substring(0, clearWidth));
-                Console.ResetColor();
+                    int row = baseTop + index;
+                    int maximumRow = geometry.DrawableHeight - 1;
+                    if (row < 0 || row > maximumRow)
+                        return true;
+
+                    int plainLeft = Math.Min(2, Math.Max(0, geometry.BufferWidth - 1));
+                    string option = " " + text + " ";
+                    int clearWidth = Math.Max(1, Math.Min(option.Length, geometry.BufferWidth - plainLeft));
+
+                    Console.ResetColor();
+                    Console.SetCursorPosition(plainLeft, row);
+                    Console.Write(new string(' ', clearWidth));
+                    Console.SetCursorPosition(plainLeft, row);
+                    if (selected)
+                    {
+                        Console.BackgroundColor = ConsoleColor.White;
+                        Console.ForegroundColor = ConsoleColor.Black;
+                    }
+
+                    Console.Write(option.Substring(0, clearWidth));
+                    Console.ResetColor();
+                    return IsConsoleGeometryCurrent(geometry);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return false;
+                }
+                catch (IOException)
+                {
+                    return false;
+                }
             }
         }
 
@@ -190,7 +336,7 @@ namespace TCPTunnel
             }
         }
 
-        public static void DrawMenuOption(
+        public static bool DrawMenuOption(
             string text,
             int index,
             int baseLeft,
@@ -200,7 +346,104 @@ namespace TCPTunnel
             int animationDelay)
         {
             IMenuOptionRenderer renderer = Enabled ? graphicalMenuRenderer : plainMenuRenderer;
-            renderer.Draw(text, index, baseLeft, baseTop, selected, animate, animationDelay);
+            return renderer.Draw(text, index, baseLeft, baseTop, selected, animate, animationDelay);
+        }
+
+        public static bool DrawMenuSelectionMarker(
+            int index,
+            int baseLeft,
+            int baseTop,
+            bool selected)
+        {
+            if (!Enabled)
+                return true;
+
+            try
+            {
+                ConsoleGeometry geometry;
+                if (!TryCaptureConsoleGeometry(out geometry))
+                    return false;
+
+                int left;
+                int row;
+                int rightExclusive;
+                if (!TryGetGraphicalMenuPosition(
+                    geometry,
+                    index,
+                    baseLeft,
+                    baseTop,
+                    out left,
+                    out row,
+                    out rightExclusive))
+                    return true;
+
+                return DrawGraphicalSelectionMarker(geometry, left, row, selected);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        }
+
+        internal static bool TryCaptureConsoleGeometry(out ConsoleGeometry geometry)
+        {
+            geometry = new ConsoleGeometry();
+            try
+            {
+                ConsoleScreenBufferInfo nativeInfo;
+                if (consoleOutputHandle != IntPtr.Zero &&
+                    consoleOutputHandle != invalidHandleValue &&
+                    GetConsoleScreenBufferInfo(consoleOutputHandle, out nativeInfo))
+                {
+                    geometry = new ConsoleGeometry
+                    {
+                        WindowWidth = nativeInfo.Window.Right - nativeInfo.Window.Left + 1,
+                        WindowHeight = nativeInfo.Window.Bottom - nativeInfo.Window.Top + 1,
+                        BufferWidth = nativeInfo.Size.X,
+                        BufferHeight = nativeInfo.Size.Y
+                    };
+                    return geometry.DrawableWidth > 0 && geometry.DrawableHeight > 0;
+                }
+
+                ConsoleGeometry first = new ConsoleGeometry
+                {
+                    WindowWidth = Console.WindowWidth,
+                    WindowHeight = Console.WindowHeight,
+                    BufferWidth = Console.BufferWidth,
+                    BufferHeight = Console.BufferHeight
+                };
+                ConsoleGeometry second = new ConsoleGeometry
+                {
+                    WindowWidth = Console.WindowWidth,
+                    WindowHeight = Console.WindowHeight,
+                    BufferWidth = Console.BufferWidth,
+                    BufferHeight = Console.BufferHeight
+                };
+
+                if (!first.IsSameAs(second) || second.DrawableWidth <= 0 || second.DrawableHeight <= 0)
+                    return false;
+
+                geometry = second;
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        }
+
+        internal static bool IsConsoleGeometryCurrent(ConsoleGeometry expected)
+        {
+            ConsoleGeometry current;
+            return TryCaptureConsoleGeometry(out current) && current.IsSameAs(expected);
         }
 
         public static void ConfigureConsole(int requestedWidth = 71, int requestedHeight = 16)
@@ -260,7 +503,7 @@ namespace TCPTunnel
         public static int ContentTop => Enabled ? 1 : 0;
         public static int ContentWidth => Enabled
             ? Math.Max(1, Console.WindowWidth - 2)
-            : Math.Max(1, Console.BufferWidth - 1);
+            : Math.Max(1, Math.Min(Console.WindowWidth, Console.BufferWidth) - 1);
         public static int ContentBottom => Enabled
             ? Math.Max(ContentTop, Console.WindowHeight - 2)
             : Math.Max(ContentTop, Console.BufferHeight - 1);
@@ -269,7 +512,11 @@ namespace TCPTunnel
         {
             AlignViewport();
             if (!Enabled)
-                return Math.Max(0, Math.Min(startRow, Console.BufferHeight - 1));
+            {
+                int availableHeight = Math.Max(1, Console.BufferHeight);
+                requiredRows = Math.Max(1, Math.Min(requiredRows, availableHeight));
+                return Math.Max(0, Math.Min(startRow, availableHeight - requiredRows));
+            }
 
             int top = ContentTop;
             int bottom = ContentBottom;
@@ -386,8 +633,18 @@ namespace TCPTunnel
 
         private static void StartBorderAnimation()
         {
-            if (!Enabled || Console.IsOutputRedirected || Console.WindowWidth < 4 || Console.WindowHeight < 4)
+            try
+            {
+                ConsoleGeometry geometry;
+                if (!Enabled || Console.IsOutputRedirected ||
+                    !TryCaptureConsoleGeometry(out geometry) ||
+                    geometry.DrawableWidth < 4 || geometry.DrawableHeight < 4)
+                    return;
+            }
+            catch (IOException)
+            {
                 return;
+            }
 
             int version = Interlocked.Increment(ref borderAnimationVersion);
             Task.Run(() => AnimateBorderAsync(version));
@@ -412,8 +669,12 @@ namespace TCPTunnel
                         if (!Enabled || version != Volatile.Read(ref borderAnimationVersion))
                             return;
 
-                        int width = Console.WindowWidth;
-                        int height = Console.WindowHeight;
+                        ConsoleGeometry geometry;
+                        if (!TryCaptureConsoleGeometry(out geometry))
+                            return;
+
+                        int width = geometry.DrawableWidth;
+                        int height = geometry.DrawableHeight;
                         if (width < 4 || height < 4 || !borderIsDrawn ||
                             drawnBorderWidth != width || drawnBorderHeight != height)
                             return;
@@ -591,8 +852,12 @@ namespace TCPTunnel
             if (!Enabled || !borderIsDrawn || Console.IsOutputRedirected)
                 return;
 
-            int width = Console.WindowWidth;
-            int height = Console.WindowHeight;
+            ConsoleGeometry geometry;
+            if (!TryCaptureConsoleGeometry(out geometry))
+                return;
+
+            int width = geometry.DrawableWidth;
+            int height = geometry.DrawableHeight;
             if (width != drawnBorderWidth || height != drawnBorderHeight || width < 4 || height < 4)
                 return;
 
@@ -680,57 +945,107 @@ namespace TCPTunnel
             }
         }
 
+        private static void InvalidateBorderLocked()
+        {
+            borderIsDrawn = false;
+            drawnBorderWidth = 0;
+            drawnBorderHeight = 0;
+            baseBorderAttributes = null;
+            desiredBorderAttributes = null;
+            renderedBorderAttributes = null;
+        }
+
         public void Clear(int lineTime = 2, int cornerTime = 5)
         {
+            TryClear(lineTime, cornerTime);
+        }
+
+        public bool TryClear(int lineTime = 2, int cornerTime = 5)
+        {
             StopBorderAnimation();
-            Monitor.Enter(borderAnimationLock);
-            try
+            bool frameCompleted = false;
+            AlignViewport();
+            lock (borderAnimationLock)
             {
-                AlignViewport();
-                Console.ResetColor();
-
-                if (!Enabled || Console.WindowWidth < 4 || Console.WindowHeight < 4)
+                for (int attempt = 0; attempt < 2 && !frameCompleted; attempt++)
                 {
-                    Console.Clear();
-                    borderIsDrawn = false;
-                    baseBorderAttributes = null;
-                    desiredBorderAttributes = null;
-                    renderedBorderAttributes = null;
-                    Console.SetCursorPosition(0, 0);
-                    return;
-                }
+                    ConsoleGeometry geometry;
+                    if (!TryCaptureConsoleGeometry(out geometry))
+                        break;
 
-                int width = Console.WindowWidth;
-                int height = Console.WindowHeight;
-                ClearGraphicsInterior(width, height);
-                if (!borderIsDrawn || drawnBorderWidth != width || drawnBorderHeight != height)
-                {
-                    DrawRectangle(0, 0, width, height);
-                    borderIsDrawn = true;
-                    drawnBorderWidth = width;
-                    drawnBorderHeight = height;
-                    ResetBorderAttributeCacheLocked(width, height);
-                }
+                    try
+                    {
+                        Console.ResetColor();
 
-                const string signature = "By alextmsv";
-                int signatureLeft = Math.Max(1, width - signature.Length - 9);
-                int signatureTop = Math.Max(1, height - 4);
-                Console.SetCursorPosition(signatureLeft, signatureTop);
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.Write(signature);
-                Console.ResetColor();
+                        int width = geometry.DrawableWidth;
+                        int height = geometry.DrawableHeight;
+                        if (!Enabled || width < 4 || height < 4)
+                        {
+                            Console.Clear();
+                            InvalidateBorderLocked();
+                            Console.SetCursorPosition(0, 0);
+                        }
+                        else
+                        {
+                            bool dimensionsChanged = borderIsDrawn &&
+                                                     (drawnBorderWidth != width || drawnBorderHeight != height);
+                            if (dimensionsChanged)
+                            {
+                                Console.Clear();
+                                InvalidateBorderLocked();
+                            }
+                            else
+                            {
+                                ClearGraphicsInterior(width, height);
+                            }
 
-                TryRenderSnakeLayerLocked();
+                            if (!borderIsDrawn || drawnBorderWidth != width || drawnBorderHeight != height)
+                            {
+                                DrawRectangle(0, 0, width, height);
+                                borderIsDrawn = true;
+                                drawnBorderWidth = width;
+                                drawnBorderHeight = height;
+                                ResetBorderAttributeCacheLocked(width, height);
+                            }
+
+                            const string signature = "By alextmsv";
+                            if (width >= signature.Length + 2 && height >= 5)
+                            {
+                                int signatureLeft = Math.Min(
+                                    width - signature.Length - 1,
+                                    Math.Max(1, width - signature.Length - 9));
+                                int signatureTop = Math.Max(1, height - 4);
+                                Console.SetCursorPosition(signatureLeft, signatureTop);
+                                Console.ForegroundColor = ConsoleColor.DarkGray;
+                                Console.Write(signature);
+                                Console.ResetColor();
+                            }
+
+                            TryRenderSnakeLayerLocked();
 
                 // Весь последующий вывод должен начинаться внутри рамки.
-                Console.SetCursorPosition(1, 1);
-            }
-            finally
-            {
-                Monitor.Exit(borderAnimationLock);
+                            Console.SetCursorPosition(1, 1);
+                        }
+
+                        frameCompleted = IsConsoleGeometryCurrent(geometry);
+                        if (!frameCompleted)
+                            InvalidateBorderLocked();
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        InvalidateBorderLocked();
+                    }
+                    catch (IOException)
+                    {
+                        InvalidateBorderLocked();
+                    }
+                }
             }
 
-            StartBorderAnimation();
+            if (frameCompleted)
+                StartBorderAnimation();
+
+            return frameCompleted;
         }
     }
 }

@@ -8,11 +8,14 @@ namespace TCPTunnel
     public class Menu
     {
         ConsoleGraphic graphic = new ConsoleGraphic();
-        public static int top = Console.CursorTop;
-        public static int left = Console.CursorLeft;
+        public static int top;
+        public static int left;
         const int centerX = (71 - 1) / 2;
         const int centerY = (16 - 1) / 2;
         const int selectionAnimationDelay = 4;
+        const int selectionMarkerBlinkMilliseconds = 450;
+        const int resizePollMilliseconds = 30;
+        const int resizeSettleMilliseconds = 180;
         static readonly int[] snakeSpeeds = { 35, 75, 125, 200 };
         static readonly ConsoleColor[] snakeColors = {
             ConsoleColor.Green,
@@ -23,6 +26,7 @@ namespace TCPTunnel
             ConsoleColor.Blue
         };
         bool skipped = false;
+        bool graphicsOptionsAvailable = true;
         public void mainMatrix(
             string text,
             int x = centerX,
@@ -149,13 +153,15 @@ namespace TCPTunnel
             Console.Title = "--------------------------------------Меню----------------------------------------------";
             if (skipped) graphic.Clear(0, 0);
             else graphic.Clear();
-            string[] choice = {
+            var choiceList = new List<string> {
                 ServerInterface.IsRunning ? "Войти в свой хаб" : "Создать сервер",
                 "Войти на сервер",
-                (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname),
-                "ConsoleGraphics Options",
-                "Выход"
-             };
+                (NetWorker.nickname.Length <= 0) ? "Ввести псевдоним?" : ("Ваш текущий псевдоним: " + NetWorker.nickname)
+            };
+            if (graphicsOptionsAvailable)
+                choiceList.Add("ConsoleGraphics Options");
+            choiceList.Add("Выход");
+            string[] choice = choiceList.ToArray();
             left = 10;
             top = 1;
 
@@ -167,7 +173,7 @@ namespace TCPTunnel
 
             while (isMenu)
             {
-                ConsoleKey key = Console.ReadKey(true).Key;
+                ConsoleKey key = ReadMenuKey(choice, arrow);
                 int previousArrow = arrow;
 
                 switch (key)
@@ -242,7 +248,7 @@ namespace TCPTunnel
                     Thread.Sleep(1500);
                     goto main;
                 }
-                else if (arrow == 3)
+                else if (graphicsOptionsAvailable && arrow == 3)
                 {
                     ShowConsoleGraphicsOptions();
                     skipped = true;
@@ -257,15 +263,106 @@ namespace TCPTunnel
 
         }
 
+        private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)
+        {
+            ConsoleGraphic.ConsoleGeometry knownGeometry;
+            bool hasKnownGeometry = ConsoleGraphic.TryCaptureConsoleGeometry(out knownGeometry);
+            ConsoleGraphic.ConsoleGeometry pendingGeometry = new ConsoleGraphic.ConsoleGeometry();
+            bool resizePending = false;
+            long stableSince = 0;
+            long settleTicks = Math.Max(1L, Stopwatch.Frequency * resizeSettleMilliseconds / 1000L);
+            long blinkTicks = Math.Max(1L, Stopwatch.Frequency * selectionMarkerBlinkMilliseconds / 1000L);
+            long nextMarkerBlink = Stopwatch.GetTimestamp() + blinkTicks;
+            bool markerVisible = true;
+
+            while (true)
+            {
+                try
+                {
+                    if (Console.KeyAvailable)
+                        return Console.ReadKey(true).Key;
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                }
+                catch (System.IO.IOException)
+                {
+                }
+
+                Thread.Sleep(resizePollMilliseconds);
+                ConsoleGraphic.ConsoleGeometry currentGeometry;
+                if (!ConsoleGraphic.TryCaptureConsoleGeometry(out currentGeometry))
+                    continue;
+
+                long now = Stopwatch.GetTimestamp();
+                if (hasKnownGeometry &&
+                    currentGeometry.IsSameAs(knownGeometry) &&
+                    !resizePending)
+                {
+                    if (ConsoleGraphic.Enabled && now >= nextMarkerBlink)
+                    {
+                        markerVisible = !markerVisible;
+                        ConsoleGraphic.DrawMenuSelectionMarker(
+                            selectedIndex,
+                            left,
+                            top,
+                            markerVisible);
+                        nextMarkerBlink = now + blinkTicks;
+                    }
+
+                    continue;
+                }
+
+                if (!resizePending || !currentGeometry.IsSameAs(pendingGeometry))
+                {
+                    pendingGeometry = currentGeometry;
+                    resizePending = true;
+                    stableSince = now;
+                    continue;
+                }
+
+                if (now - stableSince < settleTicks)
+                    continue;
+
+                bool frameCompleted = graphic.TryClear(0, 0);
+                left = 10;
+                top = 1;
+                for (int index = 0; index < choices.Length; index++)
+                    frameCompleted &= DrawChoice(choices[index], index, index == selectedIndex, false);
+
+                ConsoleGraphic.ConsoleGeometry renderedGeometry;
+                if (frameCompleted &&
+                    ConsoleGraphic.TryCaptureConsoleGeometry(out renderedGeometry) &&
+                    renderedGeometry.IsSameAs(pendingGeometry))
+                {
+                    knownGeometry = renderedGeometry;
+                    hasKnownGeometry = true;
+                    resizePending = false;
+                    markerVisible = true;
+                    nextMarkerBlink = Stopwatch.GetTimestamp() + blinkTicks;
+                }
+                else
+                {
+                    stableSince = Stopwatch.GetTimestamp();
+                }
+            }
+        }
+
         private static void AnimateSelection(string[] choices, int previousIndex, int currentIndex)
         {
+            if (ConsoleGraphic.Enabled)
+            {
+                ConsoleGraphic.DrawMenuSelectionMarker(previousIndex, left, top, false);
+                ConsoleGraphic.DrawMenuSelectionMarker(currentIndex, left, top, true);
+            }
+
             DrawChoice(choices[previousIndex], previousIndex, false, true);
             DrawChoice(choices[currentIndex], currentIndex, true, true);
         }
 
-        private static void DrawChoice(string text, int index, bool selected, bool animate)
+        private static bool DrawChoice(string text, int index, bool selected, bool animate)
         {
-            ConsoleGraphic.DrawMenuOption(
+            return ConsoleGraphic.DrawMenuOption(
                 text,
                 index,
                 left,
@@ -350,7 +447,7 @@ namespace TCPTunnel
 
             while (true)
             {
-                ConsoleKey key = Console.ReadKey(true).Key;
+                ConsoleKey key = ReadMenuKey(choices, arrow);
                 int previousArrow = arrow;
                 if (key == ConsoleKey.DownArrow || key == ConsoleKey.RightArrow)
                 {
@@ -427,12 +524,21 @@ namespace TCPTunnel
             graphic.Clear(0, 0);
         }
 
-        private static void ApplyGraphicsArguments(List<string> args)
+        private void ApplyGraphicsArguments(List<string> args)
         {
-            if (args.Contains("-no-graphics"))
+            int noGraphicsIndex = args.FindIndex(argument =>
+                argument.Equals("-no-graphics", StringComparison.OrdinalIgnoreCase));
+            if (noGraphicsIndex >= 0)
+            {
+                graphicsOptionsAvailable = false;
                 ConsoleGraphic.Enabled = false;
+                return;
+            }
 
-            int graphicsIndex = args.IndexOf("-graphics");
+            graphicsOptionsAvailable = true;
+
+            int graphicsIndex = args.FindIndex(argument =>
+                argument.Equals("-graphics", StringComparison.OrdinalIgnoreCase));
             if (graphicsIndex < 0 || graphicsIndex + 1 >= args.Count)
                 return;
 
