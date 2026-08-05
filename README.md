@@ -100,6 +100,7 @@ TCPTunnel.exe [options]
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded `Open.Nat` dependency loads correctly. |
+| `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
 
 Example:
 
@@ -164,20 +165,24 @@ TCPTunnel self-test: OK
 
 ```text
 TCPTunnel
-├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
-├── ServerInterface.cs          # Hub lifecycle and accept loop
-├── NetWorker.cs                # Authentication, sessions, and UPnP
 ├── Broadcaster.cs              # Ordered multi-client broadcasting
 ├── Client.cs                   # Client state, sending, and rate limits
-├── UserInterface.cs            # Interactive chat and input rendering
 ├── ConsoleGraphic.cs           # Console frame and bounded output
+├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
+├── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
+├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
-└── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
+├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
+├── NetWorker.cs                # Authentication, sessions, and UPnP
+├── ServerInterface.cs          # Hub lifecycle and accept loop
+├── SnakeProtocol.cs            # Custom UI-snake profile transmission
+├── SystemMessageProtocol.cs    # "Language" for system ivents
+├── UserInterface.cs            # Interactive chat and input rendering
 ```
 
 ## Roadmap
 
-- [ ] Add english language support
+- [V] Add english language support
 - [ ] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations
