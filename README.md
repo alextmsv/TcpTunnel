@@ -65,13 +65,17 @@ The Hub runs in the background of the same process, while the host connects loca
 
 ```mermaid
 flowchart LR
-    Host["Host client"] <--> Hub["TCP Hub"]
-    ClientA["Remote client A"] <--> Hub
-    ClientB["Remote client B"] <--> Hub
-    ClientN["Remote client N"] <--> Hub
+    ClientA["Remote client A"] <--> HubA
+    ClientB["Remote client B"] <--> HubA
+    Host["Host client"] <--> HubA["TCP Hub A"]
+    ClientC["Remote client C"] <--> HubA
+    HubB["TCP Hub B"] <--> ClientD["Remote cliend D and owner of  Hub B"] <--> HubA
+    ClientN["Remote client N"] <--> HubB
+    ClientX["Remote client X"] <--> HubB
 ```
 
 The Hub authenticates each nickname, receives length-prefixed UTF-8 messages, and broadcasts them to all other authenticated clients in a consistent order.
+Even if you hosting an other hub, you can connect to anyone and checking by doing ```/status ``` there to see a status of YOUR hub
 
 ### Protocol limits
 
