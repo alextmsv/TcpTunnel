@@ -178,6 +178,7 @@ TCPTunnel
 ├── SnakeProtocol.cs            # Custom UI-snake profile transmission
 ├── SystemMessageProtocol.cs    # "Language" for system ivents
 ├── UserInterface.cs            # Interactive chat and input rendering
+. . .
 ```
 
 ## Roadmap
