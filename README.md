@@ -26,6 +26,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 |:--:|---|---|
 | 🌐 | Multiplayer Hub | One process hosts the TCP Hub and connects the local user—no second console window required. |
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
+| @ | Mentions | Existing participants are highlighted by `@nickname`; direct mentions blink in-chat and request attention on the Windows taskbar. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
@@ -58,6 +59,8 @@ The Hub runs in the background of the same process, while the host connects loca
 | Command | Action |
 |---|---|
 | `/status` | Show the local Hub and UPnP status. |
+| `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
+| `/clear` | Clear only your local chat history while keeping the session and interface active. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
 | `/exit` | Leave the current chat and return to the menu. |
 
@@ -178,6 +181,7 @@ TCPTunnel
 ├── SnakeProtocol.cs            # Custom UI-snake profile transmission
 ├── SystemMessageProtocol.cs    # "Language" for system ivents
 ├── UserInterface.cs            # Interactive chat and input rendering
+├── WindowAttention.cs          # Windows taskbar attention notifications
 ```
 
 ## Roadmap

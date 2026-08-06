@@ -7,6 +7,7 @@ namespace TCPTunnel
     {
         UserJoined,
         UserLeft,
+        ParticipantPresent,
         MessageTooLong,
         TooManyMessages
     }
@@ -21,10 +22,15 @@ namespace TCPTunnel
             return Prefix + kind + "|" + encodedArgument;
         }
 
-        public static bool TryLocalize(string message, out string localized, out SystemMessageKind kind)
+        public static bool TryLocalize(
+            string message,
+            out string localized,
+            out SystemMessageKind kind,
+            out string argument)
         {
             localized = null;
             kind = default(SystemMessageKind);
+            argument = null;
             if (String.IsNullOrEmpty(message) || !message.StartsWith(Prefix, StringComparison.Ordinal))
                 return false;
 
@@ -32,7 +38,6 @@ namespace TCPTunnel
             if (parts.Length != 2 || !Enum.TryParse(parts[0], false, out kind))
                 return false;
 
-            string argument;
             try
             {
                 argument = Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));
@@ -50,6 +55,8 @@ namespace TCPTunnel
                 case SystemMessageKind.UserLeft:
                     localized = Lang.Get(TextId.UserLeft, argument);
                     return true;
+                case SystemMessageKind.ParticipantPresent:
+                    return true;
                 case SystemMessageKind.MessageTooLong:
                     localized = Lang.Get(TextId.MessageTooLong);
                     return true;
@@ -66,10 +73,14 @@ namespace TCPTunnel
             string original = "Тест User | Test";
             string localized;
             SystemMessageKind kind;
-            return TryLocalize(Create(SystemMessageKind.UserJoined, original), out localized, out kind) &&
+            string argument;
+            return TryLocalize(Create(SystemMessageKind.UserJoined, original), out localized, out kind, out argument) &&
                    kind == SystemMessageKind.UserJoined &&
+                   argument == original &&
                    localized.IndexOf(original, StringComparison.Ordinal) >= 0 &&
-                   !TryLocalize("ordinary chat message", out localized, out kind);
+                   TryLocalize(Create(SystemMessageKind.ParticipantPresent, original), out localized, out kind, out argument) &&
+                   kind == SystemMessageKind.ParticipantPresent && localized == null && argument == original &&
+                   !TryLocalize("ordinary chat message", out localized, out kind, out argument);
         }
     }
 }

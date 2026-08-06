@@ -9,6 +9,7 @@ namespace TCPTunnel
 
         static void Main(string[] args)
         {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
             EmbeddedAssemblyResolver.Register();
             Lang.ApplyArguments(args);
 
@@ -18,7 +19,8 @@ namespace TCPTunnel
                                SnakeProtocol.RunSelfTest() &&
                                Lang.RunSelfTest() &&
                                SystemMessageProtocol.RunSelfTest() &&
-                               ConsoleTitleAnimator.RunSelfTest();
+                               ConsoleTitleAnimator.RunSelfTest() &&
+                               UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));
                 return;
             }

@@ -14,14 +14,45 @@ namespace TCPTunnel
     {
         private sealed class ChatHistoryEntry
         {
-            public ChatHistoryEntry(string text, ConsoleColor? forcedColor)
+            public ChatHistoryEntry(string text, ConsoleColor? forcedColor, List<MentionSpan> mentions)
             {
                 Text = text;
                 ForcedColor = forcedColor;
+                Mentions = mentions ?? new List<MentionSpan>();
             }
 
             public string Text { get; }
             public ConsoleColor? ForcedColor { get; }
+            public List<MentionSpan> Mentions { get; }
+            public bool MentionsLocalUser
+            {
+                get { return Mentions.Exists(mention => mention.IsLocalUser); }
+            }
+        }
+
+        private sealed class MentionSpan
+        {
+            public int Start;
+            public int Length;
+            public bool IsLocalUser;
+        }
+
+        private sealed class MentionFragment
+        {
+            public int Left;
+            public int Top;
+            public string Text;
+        }
+
+        private struct ChatTextStyle
+        {
+            public ConsoleColor Foreground;
+            public ConsoleColor Background;
+
+            public bool IsSameAs(ChatTextStyle other)
+            {
+                return Foreground == other.Foreground && Background == other.Background;
+            }
         }
 
         private const int DefaultConnectionAttempts = 3;
@@ -31,11 +62,18 @@ namespace TCPTunnel
         private const int MaxChatHistoryLines = 200;
         private const int ResizePollMilliseconds = 100;
         private const int ResizeSettleMilliseconds = 180;
+        private const int MentionBlinkDelayMilliseconds = 130;
+        private const int MentionBlinkCycles = 3;
 
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
         private static readonly object consoleLock = new object();
+        private static readonly object participantsLock = new object();
         private static readonly StringBuilder inputBuffer = new StringBuilder();
         private static readonly List<ChatHistoryEntry> chatHistory = new List<ChatHistoryEntry>();
+        private static readonly HashSet<string> activeParticipants =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<ChatHistoryEntry> pendingMentionAnimations =
+            new HashSet<ChatHistoryEntry>();
         private static int isBusy;
         private static bool inputActive;
         private static int inputCursorIndex;
@@ -54,6 +92,8 @@ namespace TCPTunnel
         private static int serverCardPort;
         private static long resizeStableSinceTimestamp;
         private static long nextResizePollTimestamp;
+        private static int mentionMonitorActive;
+        private static int chatSessionVersion;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -67,8 +107,17 @@ namespace TCPTunnel
 
                     string localizedSystemMessage;
                     SystemMessageKind systemKind;
-                    if (SystemMessageProtocol.TryLocalize(message, out localizedSystemMessage, out systemKind))
+                    string systemArgument;
+                    if (SystemMessageProtocol.TryLocalize(
+                        message,
+                        out localizedSystemMessage,
+                        out systemKind,
+                        out systemArgument))
                     {
+                        UpdateParticipantState(systemKind, systemArgument);
+                        if (systemKind == SystemMessageKind.ParticipantPresent)
+                            continue;
+
                         ConsoleColor? eventColor = systemKind == SystemMessageKind.UserJoined
                             ? ConsoleColor.Green
                             : (systemKind == SystemMessageKind.UserLeft ? ConsoleColor.Red : (ConsoleColor?)null);
@@ -76,7 +125,7 @@ namespace TCPTunnel
                     }
                     else
                     {
-                        WriteChatLine(">>> " + message);
+                        WriteChatLine(">>> " + message, null, true);
                     }
                 }
             }
@@ -102,6 +151,7 @@ namespace TCPTunnel
                     WriteChatLine(Lang.Get(TextId.HubConnectionLost), ConsoleColor.Red);
                 connected = false;
                 client.Close();
+                WindowAttention.StopFlashing();
             }
         }
 
@@ -310,6 +360,28 @@ namespace TCPTunnel
                     string message = ReadChatMessage();
                     if (message == null || message.Equals("/exit", StringComparison.OrdinalIgnoreCase))
                         break;
+                    if (message.Equals("/clear", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ClearChatLocally();
+                        continue;
+                    }
+                    if (message.Equals("/ping", StringComparison.OrdinalIgnoreCase) ||
+                        message.StartsWith("/ping ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string pingAddress;
+                        int pingPort;
+                        if (!TryParsePingCommand(message, out pingAddress, out pingPort))
+                        {
+                            WriteChatLine(Lang.Get(TextId.PingCommandUsage), ConsoleColor.Yellow);
+                            continue;
+                        }
+
+                        bool reachable = NetWorker.ping(pingAddress, pingPort);
+                        WriteChatLine(
+                            Lang.Get(reachable ? TextId.ServerAlive : TextId.ServerDead, pingAddress, pingPort),
+                            reachable ? ConsoleColor.Green : ConsoleColor.Red);
+                        continue;
+                    }
                     if (message.Equals("/status", StringComparison.OrdinalIgnoreCase))
                     {
                         WriteChatLine(ServerInterface.IsRunning
@@ -356,7 +428,7 @@ namespace TCPTunnel
                         continue;
 
                     MessageProtocol.WriteStringAsync(stream, message, sessionCancellation.Token).GetAwaiter().GetResult();
-                    WriteChatLine($"<<< [{nickname}]: {message}");
+                    WriteChatLine($"<<< [{nickname}]: {message}", null, true);
                 }
             }
             catch (IOException)
@@ -379,6 +451,7 @@ namespace TCPTunnel
                 isLocalHubSession = false;
                 showServerCard = false;
                 serverCardPort = 0;
+                EndMentionSession();
             }
         }
 
@@ -423,6 +496,211 @@ namespace TCPTunnel
             }
 
             return true;
+        }
+
+        private static void UpdateParticipantState(SystemMessageKind kind, string participant)
+        {
+            if (String.IsNullOrWhiteSpace(participant))
+                return;
+
+            lock (participantsLock)
+            {
+                if (kind == SystemMessageKind.UserLeft)
+                    activeParticipants.Remove(participant);
+                else if (kind == SystemMessageKind.UserJoined || kind == SystemMessageKind.ParticipantPresent)
+                    activeParticipants.Add(participant);
+            }
+        }
+
+        private static List<MentionSpan> FindMentionSpans(string message)
+        {
+            var mentions = new List<MentionSpan>();
+            if (String.IsNullOrEmpty(message) || message.IndexOf('@') < 0)
+                return mentions;
+
+            string[] participants;
+            lock (participantsLock)
+            {
+                participants = new string[activeParticipants.Count];
+                activeParticipants.CopyTo(participants);
+            }
+            Array.Sort(participants, (first, second) => second.Length.CompareTo(first.Length));
+
+            for (int index = 0; index < message.Length; index++)
+            {
+                if (message[index] != '@')
+                    continue;
+
+                foreach (string participant in participants)
+                {
+                    int mentionLength = participant.Length + 1;
+                    if (index + mentionLength > message.Length ||
+                        String.Compare(message, index + 1, participant, 0, participant.Length, StringComparison.OrdinalIgnoreCase) != 0 ||
+                        !IsMentionBoundary(message, index + mentionLength))
+                        continue;
+
+                    mentions.Add(new MentionSpan
+                    {
+                        Start = index,
+                        Length = mentionLength,
+                        IsLocalUser = String.Equals(participant, nickname, StringComparison.OrdinalIgnoreCase)
+                    });
+                    index += mentionLength - 1;
+                    break;
+                }
+            }
+
+            return mentions;
+        }
+
+        private static bool IsMentionBoundary(string text, int index)
+        {
+            if (index >= text.Length)
+                return true;
+
+            char character = text[index];
+            return !Char.IsLetterOrDigit(character) && character != '_';
+        }
+
+        private static void ScheduleDeferredMentionAnimation(ChatHistoryEntry entry)
+        {
+            lock (consoleLock)
+                pendingMentionAnimations.Add(entry);
+
+            WindowAttention.FlashTaskbarUntilForeground();
+            int version = Volatile.Read(ref chatSessionVersion);
+            if (Interlocked.CompareExchange(ref mentionMonitorActive, 1, 0) != 0)
+                return;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    while (connected && version == Volatile.Read(ref chatSessionVersion) && WindowAttention.IsMinimized)
+                        await Task.Delay(100).ConfigureAwait(false);
+
+                    WindowAttention.StopFlashing();
+                    if (!connected || version != Volatile.Read(ref chatSessionVersion))
+                        return;
+
+                    lock (consoleLock)
+                    {
+                        var pending = new HashSet<ChatHistoryEntry>(pendingMentionAnimations);
+                        pendingMentionAnimations.Clear();
+                        RedrawChatLayoutLocked(pending);
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref mentionMonitorActive, 0);
+                    lock (consoleLock)
+                    {
+                        if (connected && pendingMentionAnimations.Count > 0)
+                        {
+                            ChatHistoryEntry pending = null;
+                            foreach (ChatHistoryEntry candidate in pendingMentionAnimations)
+                            {
+                                pending = candidate;
+                                break;
+                            }
+                            if (pending != null)
+                                ScheduleDeferredMentionAnimation(pending);
+                        }
+                    }
+                }
+            });
+        }
+
+        private static void EndMentionSession()
+        {
+            Interlocked.Increment(ref chatSessionVersion);
+            WindowAttention.StopFlashing();
+            lock (consoleLock)
+                pendingMentionAnimations.Clear();
+            lock (participantsLock)
+                activeParticipants.Clear();
+        }
+
+        private static bool TryParsePingCommand(string message, out string address, out int port)
+        {
+            address = null;
+            port = 0;
+            if (String.IsNullOrWhiteSpace(message))
+                return false;
+
+            string argument = message.Substring("/ping".Length).Trim();
+            int separator = argument.LastIndexOf(':');
+            if (separator <= 0 || separator == argument.Length - 1)
+                return false;
+
+            string parsedAddress = argument.Substring(0, separator).Trim();
+            string parsedPort = argument.Substring(separator + 1).Trim();
+            int portNumber;
+            if (parsedAddress.Length == 0 ||
+                !Int32.TryParse(parsedPort, out portNumber) ||
+                portNumber < 1 || portNumber > 65535)
+                return false;
+
+            address = parsedAddress;
+            port = portNumber;
+            return true;
+        }
+
+        internal static bool RunCommandSelfTest()
+        {
+            string address;
+            int port;
+            bool commandsAreValid = TryParsePingCommand("/ping localhost:9091", out address, out port) &&
+                   address == "localhost" && port == 9091 &&
+                   TryParsePingCommand("/ping 127.0.0.1:1", out address, out port) &&
+                   address == "127.0.0.1" && port == 1 &&
+                   !TryParsePingCommand("/ping", out address, out port) &&
+                   !TryParsePingCommand("/ping localhost", out address, out port) &&
+                   !TryParsePingCommand("/ping localhost:0", out address, out port) &&
+                   !TryParsePingCommand("/ping localhost:65536", out address, out port);
+
+            string previousNickname = nickname;
+            List<MentionSpan> validMentions;
+            List<MentionSpan> invalidMentions;
+            lock (participantsLock)
+            {
+                activeParticipants.Clear();
+                activeParticipants.Add("alex");
+                activeParticipants.Add("alextmsv");
+            }
+            nickname = "alextmsv";
+            validMentions = FindMentionSpans("hello @alextmsv, @alex!");
+            invalidMentions = FindMentionSpans("@missing @alextmsvSuffix");
+            var styleEntry = new ChatHistoryEntry(
+                "hello @alextmsv",
+                null,
+                FindMentionSpans("hello @alextmsv"));
+            ChatTextStyle mentionStyle = GetChatTextStyle(styleEntry, "hello ".Length);
+            ChatTextStyle plainStyle = GetChatTextStyle(styleEntry, 0);
+            nickname = previousNickname;
+            lock (participantsLock)
+                activeParticipants.Clear();
+
+            return commandsAreValid &&
+                   validMentions.Count == 2 &&
+                   validMentions[0].Length == "@alextmsv".Length &&
+                   validMentions[0].IsLocalUser &&
+                   !validMentions[1].IsLocalUser &&
+                   invalidMentions.Count == 0 &&
+                   mentionStyle.Foreground == ConsoleColor.Black &&
+                   mentionStyle.Background == ConsoleColor.White &&
+                   plainStyle.Background == ConsoleColor.Black;
+        }
+
+        private static void ClearChatLocally()
+        {
+            lock (consoleLock)
+            {
+                chatHistory.Clear();
+                pendingMentionAnimations.Clear();
+                if (!RedrawChatLayoutLocked())
+                    MarkConsoleResizePendingLocked();
+            }
         }
 
         private static async Task<string> ReadWithTimeoutAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
@@ -647,13 +925,23 @@ namespace TCPTunnel
             renderedInputWidth = 0;
         }
 
-        private static void WriteChatLine(string message, ConsoleColor? forcedColor = null)
+        private static void WriteChatLine(
+            string message,
+            ConsoleColor? forcedColor = null,
+            bool detectMentions = false)
         {
             lock (consoleLock)
             {
                 bool consoleReady = EnsureConsoleGeometryLocked();
                 string safeMessage = SanitizeForConsole(message);
-                AppendChatHistoryLocked(safeMessage, forcedColor);
+                List<MentionSpan> mentions = detectMentions
+                    ? FindMentionSpans(safeMessage)
+                    : new List<MentionSpan>();
+                ChatHistoryEntry entry = AppendChatHistoryLocked(safeMessage, forcedColor, mentions);
+                bool localMention = entry.MentionsLocalUser;
+                bool deferAnimation = localMention && WindowAttention.IsMinimized;
+                if (deferAnimation)
+                    ScheduleDeferredMentionAnimation(entry);
                 if (!consoleReady)
                     return;
 
@@ -663,7 +951,17 @@ namespace TCPTunnel
 
                 try
                 {
-                    WriteWrappedChatLine(safeMessage, forcedColor);
+                    var mentionFragments = new List<MentionFragment>();
+                    WriteWrappedChatLine(entry, mentionFragments);
+
+                    if (restoreInput)
+                    {
+                        inputStartRow = Console.CursorTop;
+                        RenderInputLine();
+                    }
+
+                    if (localMention && !deferAnimation)
+                        AnimateMentionFragments(mentionFragments);
                 }
                 catch (ArgumentOutOfRangeException)
                 {
@@ -676,20 +974,28 @@ namespace TCPTunnel
                     return;
                 }
 
-                if (restoreInput)
-                {
-                    inputStartRow = Console.CursorTop;
-                    RenderInputLine();
-                }
             }
         }
 
-        private static void WriteWrappedChatLine(string message, ConsoleColor? forcedColor = null)
+        private static void WriteWrappedChatLine(
+            ChatHistoryEntry entry,
+            List<MentionFragment> localMentionFragments = null)
         {
+            string message = entry.Text;
             if (!ConsoleGraphic.Enabled)
             {
                 MoveCursorToContentColumn();
-                Console.WriteLine(message);
+                int startLeft = Console.CursorLeft;
+                int startTop = Console.CursorTop;
+                int plainWidth = Math.Max(1, Console.BufferWidth);
+                CollectPlainConsoleMentionFragments(
+                    entry,
+                    startLeft,
+                    startTop,
+                    plainWidth,
+                    localMentionFragments);
+                WriteStyledChatText(message, 0, message.Length, entry);
+                Console.WriteLine();
                 return;
             }
 
@@ -705,7 +1011,14 @@ namespace TCPTunnel
                 int count = Math.Min(width, message.Length - offset);
                 if (count > 0)
                 {
-                    WriteStyledChatText(message, offset, count, forcedColor);
+                    CollectMentionFragments(
+                        entry,
+                        offset,
+                        count,
+                        ConsoleGraphic.ContentLeft,
+                        row,
+                        localMentionFragments);
+                    WriteStyledChatText(message, offset, count, entry);
                     offset += count;
                 }
 
@@ -739,23 +1052,148 @@ namespace TCPTunnel
             Console.ResetColor();
         }
 
-        private static void WriteStyledChatText(string message, int offset, int count, ConsoleColor? forcedColor)
+        private static void WriteStyledChatText(string message, int offset, int count, ChatHistoryEntry entry)
         {
             int end = offset + count;
             int position = offset;
             while (position < end)
             {
-                ConsoleColor color = forcedColor ?? GetChatColor(message, position);
+                ChatTextStyle style = GetChatTextStyle(entry, position);
                 int runEnd = position + 1;
-                while (runEnd < end && (forcedColor ?? GetChatColor(message, runEnd)) == color)
+                while (runEnd < end && GetChatTextStyle(entry, runEnd).IsSameAs(style))
                     runEnd++;
 
-                Console.ForegroundColor = color;
+                Console.ForegroundColor = style.Foreground;
+                Console.BackgroundColor = style.Background;
                 Console.Write(message.Substring(position, runEnd - position));
                 position = runEnd;
             }
 
             Console.ResetColor();
+        }
+
+        private static ChatTextStyle GetChatTextStyle(ChatHistoryEntry entry, int position)
+        {
+            foreach (MentionSpan mention in entry.Mentions)
+            {
+                if (position >= mention.Start && position < mention.Start + mention.Length)
+                {
+                    return new ChatTextStyle
+                    {
+                        Foreground = ConsoleColor.Black,
+                        Background = ConsoleColor.White
+                    };
+                }
+            }
+
+            return new ChatTextStyle
+            {
+                Foreground = entry.ForcedColor ?? GetChatColor(entry.Text, position),
+                Background = ConsoleColor.Black
+            };
+        }
+
+        private static void CollectMentionFragments(
+            ChatHistoryEntry entry,
+            int offset,
+            int count,
+            int left,
+            int top,
+            List<MentionFragment> fragments)
+        {
+            if (fragments == null)
+                return;
+
+            int end = offset + count;
+            foreach (MentionSpan mention in entry.Mentions)
+            {
+                if (!mention.IsLocalUser)
+                    continue;
+
+                int fragmentStart = Math.Max(offset, mention.Start);
+                int fragmentEnd = Math.Min(end, mention.Start + mention.Length);
+                if (fragmentStart >= fragmentEnd)
+                    continue;
+
+                fragments.Add(new MentionFragment
+                {
+                    Left = left + fragmentStart - offset,
+                    Top = top,
+                    Text = entry.Text.Substring(fragmentStart, fragmentEnd - fragmentStart)
+                });
+            }
+        }
+
+        private static void CollectPlainConsoleMentionFragments(
+            ChatHistoryEntry entry,
+            int startLeft,
+            int startTop,
+            int width,
+            List<MentionFragment> fragments)
+        {
+            if (fragments == null)
+                return;
+
+            foreach (MentionSpan mention in entry.Mentions)
+            {
+                if (!mention.IsLocalUser)
+                    continue;
+
+                int consumed = 0;
+                while (consumed < mention.Length)
+                {
+                    int absoluteCell = startLeft + mention.Start + consumed;
+                    int left = absoluteCell % width;
+                    int top = startTop + absoluteCell / width;
+                    int length = Math.Min(mention.Length - consumed, width - left);
+                    fragments.Add(new MentionFragment
+                    {
+                        Left = left,
+                        Top = top,
+                        Text = entry.Text.Substring(mention.Start + consumed, length)
+                    });
+                    consumed += length;
+                }
+            }
+        }
+
+        private static void AnimateMentionFragments(List<MentionFragment> fragments)
+        {
+            if (fragments == null || fragments.Count == 0)
+                return;
+
+            int previousLeft = Console.CursorLeft;
+            int previousTop = Console.CursorTop;
+            for (int cycle = 0; cycle < MentionBlinkCycles; cycle++)
+            {
+                PaintMentionFragments(fragments, ConsoleColor.Magenta, ConsoleColor.Yellow);
+                Thread.Sleep(MentionBlinkDelayMilliseconds);
+                PaintMentionFragments(fragments, ConsoleColor.Black, ConsoleColor.White);
+                Thread.Sleep(MentionBlinkDelayMilliseconds);
+            }
+
+            Console.ResetColor();
+            int safeLeft = Math.Max(0, Math.Min(previousLeft, Console.BufferWidth - 1));
+            int safeTop = Math.Max(0, Math.Min(previousTop, Console.BufferHeight - 1));
+            Console.SetCursorPosition(safeLeft, safeTop);
+        }
+
+        private static void PaintMentionFragments(
+            List<MentionFragment> fragments,
+            ConsoleColor foreground,
+            ConsoleColor background)
+        {
+            Console.ForegroundColor = foreground;
+            Console.BackgroundColor = background;
+            foreach (MentionFragment fragment in fragments)
+            {
+                if (fragment.Top < 0 || fragment.Top >= Console.BufferHeight ||
+                    fragment.Left < 0 || fragment.Left + fragment.Text.Length > Console.BufferWidth)
+                    continue;
+
+                Console.SetCursorPosition(fragment.Left, fragment.Top);
+                Console.Write(fragment.Text);
+            }
         }
 
         private static ConsoleColor GetChatColor(string message, int position)
@@ -811,9 +1249,19 @@ namespace TCPTunnel
 
         private static void ResetChatSessionLayout()
         {
+            Interlocked.Increment(ref chatSessionVersion);
+            WindowAttention.StopFlashing();
+            lock (participantsLock)
+            {
+                activeParticipants.Clear();
+                if (IsNicknameValid(nickname))
+                    activeParticipants.Add(nickname);
+            }
+
             lock (consoleLock)
             {
                 chatHistory.Clear();
+                pendingMentionAnimations.Clear();
                 inputActive = false;
                 inputBuffer.Clear();
                 inputCursorIndex = 0;
@@ -826,11 +1274,21 @@ namespace TCPTunnel
             }
         }
 
-        private static void AppendChatHistoryLocked(string message, ConsoleColor? forcedColor)
+        private static ChatHistoryEntry AppendChatHistoryLocked(
+            string message,
+            ConsoleColor? forcedColor,
+            List<MentionSpan> mentions)
         {
-            chatHistory.Add(new ChatHistoryEntry(message ?? String.Empty, forcedColor));
+            var entry = new ChatHistoryEntry(message ?? String.Empty, forcedColor, mentions);
+            chatHistory.Add(entry);
             if (chatHistory.Count > MaxChatHistoryLines)
-                chatHistory.RemoveRange(0, chatHistory.Count - MaxChatHistoryLines);
+            {
+                int removeCount = chatHistory.Count - MaxChatHistoryLines;
+                for (int index = 0; index < removeCount; index++)
+                    pendingMentionAnimations.Remove(chatHistory[index]);
+                chatHistory.RemoveRange(0, removeCount);
+            }
+            return entry;
         }
 
         private static void CheckForConsoleResize()
@@ -898,7 +1356,7 @@ namespace TCPTunnel
             resizeStableSinceTimestamp = Stopwatch.GetTimestamp();
         }
 
-        private static bool RedrawChatLayoutLocked()
+        private static bool RedrawChatLayoutLocked(ISet<ChatHistoryEntry> animateEntries = null)
         {
             ConsoleGraphic.ConsoleGeometry targetGeometry;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out targetGeometry))
@@ -906,6 +1364,7 @@ namespace TCPTunnel
 
             try
             {
+                int inputRowsToReserve = inputActive ? Math.Max(1, renderedInputRows) : 0;
                 renderedInputRows = 0;
                 renderedInputWidth = 0;
                 if (!graphic.TryClear(0, 0))
@@ -917,12 +1376,28 @@ namespace TCPTunnel
                 if (showServerCard && ConsoleGraphic.Enabled)
                     ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
 
-                foreach (ChatHistoryEntry historyLine in chatHistory)
-                    WriteWrappedChatLine(historyLine.Text, historyLine.ForcedColor);
+                int contentWidth = GetContentWidth();
+                int availableRows = ConsoleGraphic.Enabled
+                    ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop - inputRowsToReserve)
+                    : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight) - 1 - inputRowsToReserve);
+                int firstVisibleEntry = GetFirstVisibleHistoryEntry(contentWidth, availableRows);
+                var mentionFragments = new List<MentionFragment>();
+                for (int index = firstVisibleEntry; index < chatHistory.Count; index++)
+                {
+                    ChatHistoryEntry historyLine = chatHistory[index];
+                    WriteWrappedChatLine(
+                        historyLine,
+                        animateEntries != null && animateEntries.Contains(historyLine)
+                            ? mentionFragments
+                            : null);
+                }
 
                 inputStartRow = Console.CursorTop;
                 if (inputActive)
                     RenderInputLineCore();
+
+                if (mentionFragments.Count > 0)
+                    AnimateMentionFragments(mentionFragments);
 
                 ConsoleGraphic.ConsoleGeometry renderedGeometry;
                 if (!ConsoleGraphic.TryCaptureConsoleGeometry(out renderedGeometry) ||
@@ -951,6 +1426,31 @@ namespace TCPTunnel
                 MarkConsoleResizePendingLocked();
                 return false;
             }
+        }
+
+        private static int GetFirstVisibleHistoryEntry(int width, int availableRows)
+        {
+            int rows = 0;
+            int first = chatHistory.Count;
+            while (first > 0)
+            {
+                int candidateRows = GetWrappedRowCount(chatHistory[first - 1].Text, width);
+                if (rows > 0 && rows + candidateRows > availableRows)
+                    break;
+
+                rows += candidateRows;
+                first--;
+                if (rows >= availableRows)
+                    break;
+            }
+
+            return first;
+        }
+
+        private static int GetWrappedRowCount(string text, int width)
+        {
+            return Math.Max(1, (Math.Max(0, text == null ? 0 : text.Length) + Math.Max(1, width) - 1) /
+                Math.Max(1, width));
         }
 
         private static void RecoverChatLayout()

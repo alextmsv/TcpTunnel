@@ -105,6 +105,9 @@ namespace TCPTunnel
         private static ushort[] baseBorderAttributes;
         private static ushort[] desiredBorderAttributes;
         private static ushort[] renderedBorderAttributes;
+        private static int signatureLeft;
+        private static int signatureTop;
+        private static int signatureLength;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr GetStdHandle(int standardHandle);
@@ -1094,6 +1097,34 @@ namespace TCPTunnel
             }
         }
 
+        private static void RestoreBorderSignatureLocked(int width, int height)
+        {
+            if (signatureLength <= 0)
+                return;
+
+            bool positionIsValid = signatureTop == height - 1 &&
+                                   signatureLeft >= 1 &&
+                                   signatureLeft + signatureLength < width;
+            if (positionIsValid)
+            {
+                Console.SetCursorPosition(signatureLeft, signatureTop);
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.Write(new string('-', signatureLength));
+                Console.ResetColor();
+                SetBorderBaseAttributeRangeLocked(
+                    signatureLeft,
+                    signatureTop,
+                    signatureLength,
+                    (ushort)ConsoleColor.Magenta,
+                    width,
+                    height);
+            }
+
+            signatureLeft = 0;
+            signatureTop = 0;
+            signatureLength = 0;
+        }
+
         private static void RenderSnakeLayerLocked()
         {
             if (!Enabled || !borderIsDrawn || Console.IsOutputRedirected)
@@ -1200,6 +1231,9 @@ namespace TCPTunnel
             baseBorderAttributes = null;
             desiredBorderAttributes = null;
             renderedBorderAttributes = null;
+            signatureLeft = 0;
+            signatureTop = 0;
+            signatureLength = 0;
         }
 
         public void Clear(int lineTime = 2, int cornerTime = 5)
@@ -1255,22 +1289,28 @@ namespace TCPTunnel
                                 ResetBorderAttributeCacheLocked(width, height);
                             }
 
-                            const string signature = "By alextmsv";
+                            RestoreBorderSignatureLocked(width, height);
+                            string signature = String.IsNullOrEmpty(NetWorker.nickname)
+                                ? "By alextmsv"
+                                : NetWorker.nickname;
                             if (width >= signature.Length + 3 && height >= 4)
                             {
-                                int signatureLeft = Math.Max(1, width - signature.Length - 2);
-                                int signatureTop = height - 1;
-                                Console.SetCursorPosition(signatureLeft, signatureTop);
+                                int newSignatureLeft = Math.Max(1, width - signature.Length - 2);
+                                int newSignatureTop = height - 1;
+                                Console.SetCursorPosition(newSignatureLeft, newSignatureTop);
                                 Console.ForegroundColor = ConsoleColor.DarkGray;
                                 Console.Write(signature);
                                 Console.ResetColor();
                                 SetBorderBaseAttributeRangeLocked(
-                                    signatureLeft,
-                                    signatureTop,
+                                    newSignatureLeft,
+                                    newSignatureTop,
                                     signature.Length,
                                     (ushort)ConsoleColor.DarkGray,
                                     width,
                                     height);
+                                signatureLeft = newSignatureLeft;
+                                signatureTop = newSignatureTop;
+                                signatureLength = signature.Length;
                             }
 
                             TryRenderSnakeLayerLocked();

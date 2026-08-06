@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -12,7 +11,7 @@ namespace TCPTunnel
         public const int MaxFrameBytes = 16 * 1024;
         public const int MaxMessageCharacters = 2000;
 
-        private static readonly Encoding Utf8 = new UTF8Encoding(false, true);
+        private static readonly System.Text.Encoding Utf8 = new System.Text.UTF8Encoding(false, true);
 
         public static async Task<string> ReadStringAsync(NetworkStream stream, CancellationToken cancellationToken)
         {

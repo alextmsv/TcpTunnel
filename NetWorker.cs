@@ -274,6 +274,9 @@ namespace TCPTunnel
 
         public static bool ping(string ip, int port, int timeout = 2000)
         {
+            if (String.IsNullOrWhiteSpace(ip) || port < 1 || port > 65535 || timeout < 1)
+                return false;
+
             try
             {
                 using (var client = new TcpClient())
@@ -293,9 +296,8 @@ namespace TCPTunnel
             {
                 return false;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                ConsoleGraphic.WriteContentLine(Lang.Get(TextId.UnexpectedError, ex.Message));
                 return false;
             }
         }
@@ -334,6 +336,14 @@ namespace TCPTunnel
                     IPEndPoint remoteEndPoint = client.TcpClient.Client.RemoteEndPoint as IPEndPoint;
                     client.IpAddress = remoteEndPoint == null ? "unknown" : remoteEndPoint.Address.ToString();
                     await client.SendAsync(AUTH_OK_MESSAGE, serverCancellationToken).ConfigureAwait(false);
+                }
+
+                Client[] currentParticipants = broadcaster.GetAuthenticatedClients(client);
+                foreach (Client participant in currentParticipants)
+                {
+                    await client.SendAsync(
+                        SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, participant.Nickname),
+                        serverCancellationToken).ConfigureAwait(false);
                 }
 
                 await broadcaster.BroadcastAsync(

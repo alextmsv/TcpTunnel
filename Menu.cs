@@ -157,7 +157,7 @@ namespace TCPTunnel
             var choiceList = new List<string> {
                 Lang.Get(ServerInterface.IsRunning ? TextId.EnterOwnHub : TextId.HostServer),
                 Lang.Get(TextId.ConnectToHub),
-                (NetWorker.nickname.Length <= 0) ? Lang.Get(TextId.EnterNickname) : Lang.Get(TextId.CurrentNickname, NetWorker.nickname)
+                (NetWorker.nickname.Length <= 0) ? Lang.Get(TextId.EnterNickname) : Lang.Get(TextId.ChangeNickname)
             };
             int graphicsOptionsIndex = -1;
             if (graphicsOptionsAvailable)
@@ -328,7 +328,7 @@ namespace TCPTunnel
                 inputRow + 1,
                 ConsoleColor.DarkGray);
 
-            ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.Green);
+            ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.Green, 0, true, 100);
             Thread.Sleep(120);
             ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.GoodName), ConsoleColor.DarkGreen);
             Thread.Sleep(120);
@@ -336,7 +336,7 @@ namespace TCPTunnel
             if (stopwatch.Elapsed.TotalSeconds > 25)
                 ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.TookYourTime), inputRow + 3, ConsoleColor.DarkGray);
 
-            Thread.Sleep(1260);
+            Thread.Sleep(2000);
         }
 
         private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)

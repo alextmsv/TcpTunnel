@@ -64,6 +64,7 @@
     <Compile Include="SnakeProtocol.cs" />
     <Compile Include="SystemMessageProtocol.cs" />
     <Compile Include="UserInterface.cs" />
+    <Compile Include="WindowAttention.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
