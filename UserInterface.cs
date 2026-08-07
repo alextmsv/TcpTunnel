@@ -681,7 +681,10 @@ namespace TCPTunnel
             lock (participantsLock)
                 activeParticipants.Clear();
 
+            bool chatLayoutIsValid = RunChatLayoutModelSelfTest();
+
             return commandsAreValid &&
+                   chatLayoutIsValid &&
                    validMentions.Count == 2 &&
                    validMentions[0].Length == "@alextmsv".Length &&
                    validMentions[0].IsLocalUser &&
@@ -690,6 +693,34 @@ namespace TCPTunnel
                    mentionStyle.Foreground == ConsoleColor.Black &&
                    mentionStyle.Background == ConsoleColor.White &&
                    plainStyle.Background == ConsoleColor.Black;
+        }
+
+        private static bool RunChatLayoutModelSelfTest()
+        {
+            var savedHistory = new List<ChatHistoryEntry>(chatHistory);
+            try
+            {
+                chatHistory.Clear();
+                for (int index = 0; index < 100; index++)
+                    chatHistory.Add(new ChatHistoryEntry("message-" + index, null, null));
+
+                int firstEntry;
+                int rowsToSkip;
+                FindVisibleHistoryStart(40, 10, out firstEntry, out rowsToSkip);
+                bool tailSelectionIsValid = firstEntry == 90 && rowsToSkip == 0;
+
+                chatHistory.Clear();
+                chatHistory.Add(new ChatHistoryEntry(new string('x', 25), null, null));
+                FindVisibleHistoryStart(10, 2, out firstEntry, out rowsToSkip);
+                bool longLineSelectionIsValid = firstEntry == 0 && rowsToSkip == 1;
+
+                return tailSelectionIsValid && longLineSelectionIsValid;
+            }
+            finally
+            {
+                chatHistory.Clear();
+                chatHistory.AddRange(savedHistory);
+            }
         }
 
         private static void ClearChatLocally()
@@ -733,7 +764,15 @@ namespace TCPTunnel
                 inputStartRow = Console.CursorTop;
                 renderedInputRows = 0;
                 inputPrompt = $"<<< [{nickname}]: ";
-                RenderInputLine();
+                if (ConsoleGraphic.Enabled)
+                {
+                    if (!RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                }
+                else
+                {
+                    RenderInputLine();
+                }
             }
 
             while (connected)
@@ -759,7 +798,26 @@ namespace TCPTunnel
                     }
 
                     if (HandleInputKey(key) && EnsureConsoleGeometryLocked())
-                        RenderInputLine();
+                    {
+                        if (ConsoleGraphic.Enabled)
+                        {
+                            int requiredRows = GetRequiredInputRows(
+                                GetContentWidth(),
+                                Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1));
+                            if (requiredRows == renderedInputRows)
+                            {
+                                RenderInputLine();
+                            }
+                            else if (!RedrawChatLayoutLocked())
+                            {
+                                MarkConsoleResizePendingLocked();
+                            }
+                        }
+                        else
+                        {
+                            RenderInputLine();
+                        }
+                    }
                 }
             }
 
@@ -841,6 +899,11 @@ namespace TCPTunnel
 
         private static void RenderInputLineCore()
         {
+            RenderInputLineCoreAt(null);
+        }
+
+        private static void RenderInputLineCoreAt(int? fixedStartRow)
+        {
             ConsoleGraphic.AlignViewport();
 
             int left = GetContentLeft();
@@ -861,7 +924,19 @@ namespace TCPTunnel
             int occupiedCells = Math.Max(visibleText.Length, visibleCursorOffset + 1);
             int rows = Math.Max(1, Math.Min(maximumRows, (occupiedCells + width - 1) / width));
 
-            inputStartRow = ConsoleGraphic.EnsureContentSpace(inputStartRow, rows);
+            if (fixedStartRow.HasValue)
+            {
+                int lastPossibleRow = ConsoleGraphic.Enabled
+                    ? Math.Max(ConsoleGraphic.ContentTop, ConsoleGraphic.ContentBottom - rows + 1)
+                    : Math.Max(0, Console.BufferHeight - rows);
+                inputStartRow = Math.Max(
+                    ConsoleGraphic.Enabled ? ConsoleGraphic.ContentTop : 0,
+                    Math.Min(fixedStartRow.Value, lastPossibleRow));
+            }
+            else
+            {
+                inputStartRow = ConsoleGraphic.EnsureContentSpace(inputStartRow, rows);
+            }
             renderedInputLeft = left;
             renderedInputWidth = width;
             renderedInputRows = rows;
@@ -944,6 +1019,20 @@ namespace TCPTunnel
                     ScheduleDeferredMentionAnimation(entry);
                 if (!consoleReady)
                     return;
+
+                // MoveBufferArea is not reliable when messages and the editable input
+                // line update the same graphical rectangle in quick succession. The CG
+                // view is therefore rendered as one fixed snapshot from chatHistory.
+                if (ConsoleGraphic.Enabled)
+                {
+                    ISet<ChatHistoryEntry> animatedEntries = null;
+                    if (localMention && !deferAnimation)
+                        animatedEntries = new HashSet<ChatHistoryEntry> { entry };
+
+                    if (!RedrawChatLayoutLocked(animatedEntries))
+                        MarkConsoleResizePendingLocked();
+                    return;
+                }
 
                 bool restoreInput = inputActive;
                 if (restoreInput)
@@ -1364,6 +1453,9 @@ namespace TCPTunnel
 
             try
             {
+                if (ConsoleGraphic.Enabled)
+                    return RedrawGraphicalChatLayoutLocked(targetGeometry, animateEntries);
+
                 int inputRowsToReserve = inputActive ? Math.Max(1, renderedInputRows) : 0;
                 renderedInputRows = 0;
                 renderedInputWidth = 0;
@@ -1425,6 +1517,157 @@ namespace TCPTunnel
                 renderedInputWidth = 0;
                 MarkConsoleResizePendingLocked();
                 return false;
+            }
+        }
+
+        private static bool RedrawGraphicalChatLayoutLocked(
+            ConsoleGraphic.ConsoleGeometry targetGeometry,
+            ISet<ChatHistoryEntry> animateEntries)
+        {
+            bool geometryChanged = !hasKnownConsoleGeometry ||
+                                   !targetGeometry.IsSameAs(knownConsoleGeometry) ||
+                                   consoleResizePending;
+            if (geometryChanged)
+            {
+                if (!graphic.TryClear(0, 0))
+                {
+                    MarkConsoleResizePendingLocked();
+                    return false;
+                }
+
+                if (showServerCard)
+                    ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
+            }
+
+            int width = GetContentWidth();
+            int top = ConsoleGraphic.ContentTop;
+            int bottom = ConsoleGraphic.ContentBottom;
+            int totalRows = Math.Max(1, bottom - top + 1);
+            int inputRows = inputActive ? GetRequiredInputRows(width, totalRows) : 0;
+            int chatRows = Math.Max(0, totalRows - inputRows);
+
+            int firstEntry;
+            int rowsToSkip;
+            FindVisibleHistoryStart(width, chatRows, out firstEntry, out rowsToSkip);
+            int targetRow = top;
+            int chatBottomExclusive = top + chatRows;
+            var mentionFragments = new List<MentionFragment>();
+            for (int index = firstEntry;
+                 index < chatHistory.Count && targetRow < chatBottomExclusive;
+                 index++)
+            {
+                ChatHistoryEntry historyLine = chatHistory[index];
+                int skip = index == firstEntry ? rowsToSkip : 0;
+                WriteGraphicalHistoryEntryAt(
+                    historyLine,
+                    skip,
+                    ref targetRow,
+                    chatBottomExclusive,
+                    animateEntries != null && animateEntries.Contains(historyLine)
+                        ? mentionFragments
+                        : null);
+            }
+
+            Console.ResetColor();
+            for (int row = targetRow; row < chatBottomExclusive; row++)
+                ConsoleGraphic.ClearContentRow(row);
+
+            renderedInputRows = 0;
+            renderedInputWidth = 0;
+            if (inputActive)
+            {
+                inputStartRow = top + chatRows;
+                RenderInputLineCoreAt(inputStartRow);
+            }
+            else
+            {
+                int cursorRow = Math.Max(top, Math.Min(bottom, targetRow));
+                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, cursorRow);
+            }
+
+            if (mentionFragments.Count > 0)
+                AnimateMentionFragments(mentionFragments);
+
+            ConsoleGraphic.ConsoleGeometry renderedGeometry;
+            if (!ConsoleGraphic.TryCaptureConsoleGeometry(out renderedGeometry) ||
+                !renderedGeometry.IsSameAs(targetGeometry))
+            {
+                MarkConsoleResizePendingLocked();
+                return false;
+            }
+
+            knownConsoleGeometry = renderedGeometry;
+            hasKnownConsoleGeometry = true;
+            consoleResizePending = false;
+            return true;
+        }
+
+        private static int GetRequiredInputRows(int width, int availableRows)
+        {
+            int maximumRows = Math.Max(1, Math.Min(MaxVisibleInputRows, availableRows));
+            int capacity = Math.Max(1, width * maximumRows);
+            int textLength = inputPrompt.Length + inputBuffer.Length;
+            int cursorOffset = inputPrompt.Length + inputCursorIndex;
+            int visibleStart = Math.Max(0, cursorOffset - capacity + 1);
+            int visibleLength = Math.Min(capacity, Math.Max(0, textLength - visibleStart));
+            int visibleCursorOffset = Math.Max(0, cursorOffset - visibleStart);
+            int occupiedCells = Math.Max(visibleLength, visibleCursorOffset + 1);
+            return Math.Max(1, Math.Min(maximumRows, (occupiedCells + width - 1) / width));
+        }
+
+        private static void FindVisibleHistoryStart(
+            int width,
+            int availableRows,
+            out int firstEntry,
+            out int rowsToSkip)
+        {
+            firstEntry = chatHistory.Count;
+            rowsToSkip = 0;
+            int remainingRows = Math.Max(0, availableRows);
+            while (firstEntry > 0 && remainingRows > 0)
+            {
+                int candidate = firstEntry - 1;
+                int candidateRows = GetWrappedRowCount(chatHistory[candidate].Text, width);
+                firstEntry = candidate;
+                if (candidateRows <= remainingRows)
+                {
+                    remainingRows -= candidateRows;
+                    continue;
+                }
+
+                rowsToSkip = candidateRows - remainingRows;
+                remainingRows = 0;
+            }
+        }
+
+        private static void WriteGraphicalHistoryEntryAt(
+            ChatHistoryEntry entry,
+            int wrappedRowsToSkip,
+            ref int targetRow,
+            int bottomExclusive,
+            List<MentionFragment> localMentionFragments)
+        {
+            int width = GetContentWidth();
+            int wrappedRows = GetWrappedRowCount(entry.Text, width);
+            for (int wrappedRow = Math.Max(0, wrappedRowsToSkip);
+                 wrappedRow < wrappedRows && targetRow < bottomExclusive;
+                 wrappedRow++, targetRow++)
+            {
+                int offset = wrappedRow * width;
+                int count = Math.Min(width, Math.Max(0, entry.Text.Length - offset));
+                ConsoleGraphic.ClearContentRow(targetRow);
+                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                if (count <= 0)
+                    continue;
+
+                CollectMentionFragments(
+                    entry,
+                    offset,
+                    count,
+                    ConsoleGraphic.ContentLeft,
+                    targetRow,
+                    localMentionFragments);
+                WriteStyledChatText(entry.Text, offset, count, entry);
             }
         }
 

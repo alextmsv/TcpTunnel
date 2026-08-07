@@ -763,6 +763,7 @@ namespace TCPTunnel
         public static void ClearContentRow(int row)
         {
             int safeRow = Math.Max(ContentTop, Math.Min(row, Console.BufferHeight - 1));
+            Console.ResetColor();
             Console.SetCursorPosition(ContentLeft, safeRow);
             Console.Write(new string(' ', ContentWidth));
         }
