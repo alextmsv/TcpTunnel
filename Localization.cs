@@ -22,6 +22,8 @@ namespace TCPTunnel
         GraphicsEnabled, GraphicsDisabled, Customization, Back, Snake,
         SnakeCustomization, Speed, Color, SpeedFast, SpeedNormal, SpeedCalm,
         SpeedSlow, ColorGreen, ColorCyan, ColorYellow, ColorRed, ColorWhite, ColorBlue,
+        ColorBlack, ColorDarkBlue, ColorDarkGreen, ColorDarkCyan, ColorDarkRed,
+        ColorDarkMagenta, ColorDarkYellow, ColorGray, ColorMagenta,
         HubSetup, ChooseTcpPort, EnterServerPort, InvalidPortNumber, StartingListener,
         CreateHubFailed, ListenerStarted, ConfiguringNat, HubStarted,
         LocalClientBackground, LocalClientConnecting, PortOutOfRange, HubAlreadyRunning,
@@ -29,7 +31,7 @@ namespace TCPTunnel
         NatCancelled, NatRouterTimeout, NatUnavailable, NatDeviceNotFound,
         NatRuleTimeout, NatRuleRejected, NatNoActiveRule, NatPortClosed,
         NatDeleteFailed, NatError, UnexpectedError,
-        EnterServerAddress, MissingServerAddress, ConnectionInProgress, ConnectingCompact,
+        MissingServerAddress, ConnectionInProgress, ConnectingCompact,
         ConnectingAttempt, SessionStartFailed, ConnectFailed, HubUnavailableCompact,
         HubUnavailableAttempts, EnterYourNickname, ConnectionTimedOut,
         UnknownAuthProtocol, NicknameRejected, ConnectedCommands, LocalHubNotRunning,
@@ -38,7 +40,15 @@ namespace TCPTunnel
         UserJoined, UserLeft, MessageTooLong, TooManyMessages,
         AuthInvalidRequest, AuthInvalidNickname, AuthNicknameTaken, AuthTimedOut,
         ClientNotReceiving, FrameTooLarge, InvalidFrameLength, InvalidFramePrefix,
-        EmbeddedLibraryReadFailed, HubOnline, HubOffline
+        EmbeddedLibraryReadFailed, HubOnline, HubOffline,
+        CommandHelp, UnknownCommand, CommandNoPermission,
+        KickUsage, KickUserNotFound, KickCannotSelf, KickSucceeded,
+        KickedDefault, KickedReason, HubStatusWithClients,
+        ImportProfilePrompt, Yes, No, AlwaysImport,
+        ResetSettings, SettingsReset, InterfaceColors, IncomingMessages,
+        OutgoingMessages, InputField, SystemMessages, Border,
+        GlyphValue, EnterServerAddressSaved, EnterServerPortSaved,
+        MenuTextColor, PreviewMessage, PreviewSystem, PreviewMenuItem
     }
 
     internal sealed class LocalizedText
@@ -104,6 +114,15 @@ namespace TCPTunnel
                 { TextId.ColorRed, T("красный", "red") },
                 { TextId.ColorWhite, T("белый", "white") },
                 { TextId.ColorBlue, T("синий", "blue") },
+                { TextId.ColorBlack, T("чёрный", "black") },
+                { TextId.ColorDarkBlue, T("тёмно-синий", "dark blue") },
+                { TextId.ColorDarkGreen, T("тёмно-зелёный", "dark green") },
+                { TextId.ColorDarkCyan, T("тёмно-голубой", "dark cyan") },
+                { TextId.ColorDarkRed, T("тёмно-красный", "dark red") },
+                { TextId.ColorDarkMagenta, T("тёмно-пурпурный", "dark magenta") },
+                { TextId.ColorDarkYellow, T("тёмно-жёлтый", "dark yellow") },
+                { TextId.ColorGray, T("серый", "gray") },
+                { TextId.ColorMagenta, T("пурпурный", "magenta") },
                 { TextId.HubSetup, T("НАСТРОЙКА ХАБА", "HUB SETUP") },
                 { TextId.ChooseTcpPort, T("Выберите TCP-порт", "Choose a TCP port") },
                 { TextId.EnterServerPort, T("Введите порт сервера [9091]: ", "Enter server port [9091]: ") },
@@ -133,7 +152,6 @@ namespace TCPTunnel
                 { TextId.NatDeleteFailed, T("Автопроброс: не удалось удалить правило: {0}", "Automatic port mapping: failed to remove rule: {0}") },
                 { TextId.NatError, T("ошибка {0}: {1}", "error {0}: {1}") },
                 { TextId.UnexpectedError, T("Упс... {0}", "Oops... {0}") },
-                { TextId.EnterServerAddress, T("Введите IP-адрес или имя сервера [localhost]: ", "Enter server IP address or host name [localhost]: ") },
                 { TextId.MissingServerAddress, T("Не указано имя или IP-адрес сервера.", "Server name or IP address is missing.") },
                 { TextId.ConnectionInProgress, T("Подключение уже выполняется.", "A connection attempt is already in progress.") },
                 { TextId.ConnectingCompact, T("Подключение к {0}:{1} [{2}/{3}]", "Connecting to {0}:{1} [{2}/{3}]") },
@@ -146,7 +164,7 @@ namespace TCPTunnel
                 { TextId.ConnectionTimedOut, T("превышено время ожидания", "connection timed out") },
                 { TextId.UnknownAuthProtocol, T("Сервер использует неизвестный протокол авторизации.", "The server uses an unknown authentication protocol.") },
                 { TextId.NicknameRejected, T("Сервер отклонил псевдоним.", "The server rejected the nickname.") },
-                { TextId.ConnectedCommands, T("Подключено к {0}. Команды: /status, /ping, /clear, /stop, /exit.", "Connected to {0}. Commands: /status, /ping, /clear, /stop, /exit.") },
+                { TextId.ConnectedCommands, T("Подключено к {0}. Команды: /help, /status, /ping, /clear, /stop, /exit.", "Connected to {0}. Commands: /help, /status, /ping, /clear, /stop, /exit.") },
                 { TextId.LocalHubNotRunning, T("В этом процессе локальный хаб не запущен.", "No local hub is running in this process.") },
                 { TextId.StoppingLocalHub, T("Останавливаю локальный хаб...", "Stopping local hub...") },
                 { TextId.NoActiveSnake, T("ConsoleGraphics выключена: активной змейки нет.", "ConsoleGraphics is disabled: there is no active snake.") },
@@ -169,7 +187,36 @@ namespace TCPTunnel
                 { TextId.InvalidFramePrefix, T("Некорректный префикс длины сообщения.", "Invalid message length prefix.") },
                 { TextId.EmbeddedLibraryReadFailed, T("Не удалось прочитать встроенную библиотеку Open.Nat.", "Could not read the embedded Open.Nat library.") },
                 { TextId.HubOnline, T("ХАБ В СЕТИ", "HUB ONLINE") },
-                { TextId.HubOffline, T("ХАБ ОТКЛЮЧЁН", "HUB OFFLINE") }
+                { TextId.HubOffline, T("ХАБ ОТКЛЮЧЁН", "HUB OFFLINE") },
+                { TextId.CommandHelp, T("Команды: /help, /status, /ping host:port, /clear, /stop, /exit. Администратор локального хаба: /kick @псевдоним \"причина\".", "Commands: /help, /status, /ping host:port, /clear, /stop, /exit. Local hub administrator: /kick @nickname \"reason\".") },
+                { TextId.UnknownCommand, T("Неизвестная команда: {0}. Используйте /help.", "Unknown command: {0}. Use /help.") },
+                { TextId.CommandNoPermission, T("Эта команда доступна только администратору локального хаба.", "This command is available only to the local hub administrator.") },
+                { TextId.KickUsage, T("Использование: /kick @псевдоним [\"причина\"]", "Usage: /kick @nickname [\"reason\"]") },
+                { TextId.KickUserNotFound, T("Участник {0} не найден.", "Participant {0} was not found.") },
+                { TextId.KickCannotSelf, T("Нельзя выгнать собственный локальный клиент этой командой.", "You cannot kick your own local client with this command.") },
+                { TextId.KickSucceeded, T("Участник {0} отключён от хаба.", "Participant {0} was disconnected from the hub.") },
+                { TextId.KickedDefault, T("Вы были выгнаны администратором хаба.", "You were kicked by the hub administrator.") },
+                { TextId.KickedReason, T("Вы были выгнаны администратором хаба. Причина: {0}", "You were kicked by the hub administrator. Reason: {0}") },
+                { TextId.HubStatusWithClients, T("{0} Подключено клиентов: {1}.", "{0} Connected clients: {1}.") },
+                { TextId.ImportProfilePrompt, T("Импортировать настройки пользователя {0}?", "Import settings for {0}?") },
+                { TextId.Yes, T("Да", "Yes") },
+                { TextId.No, T("Нет", "No") },
+                { TextId.AlwaysImport, T("Всегда импортировать {0}", "Always import {0}") },
+                { TextId.ResetSettings, T("Сбросить настройки", "Reset settings") },
+                { TextId.SettingsReset, T("Настройки восстановлены", "Settings restored") },
+                { TextId.InterfaceColors, T("Цвета интерфейса", "Interface colors") },
+                { TextId.IncomingMessages, T("Входящие сообщения", "Incoming messages") },
+                { TextId.OutgoingMessages, T("Исходящие сообщения", "Outgoing messages") },
+                { TextId.InputField, T("Поле ввода", "Input field") },
+                { TextId.SystemMessages, T("Системные сообщения", "System messages") },
+                { TextId.Border, T("Граница", "Border") },
+                { TextId.GlyphValue, T("Символ: {0}", "Symbol: {0}") },
+                { TextId.EnterServerAddressSaved, T("Введите IP-адрес или имя сервера [{0}]: ", "Enter server IP address or host name [{0}]: ") },
+                { TextId.EnterServerPortSaved, T("Введите порт сервера [{0}]: ", "Enter server port [{0}]: ") },
+                { TextId.MenuTextColor, T("Текст меню", "Menu text") },
+                { TextId.PreviewMessage, T("Тестовое сообщение!", "Test message!") },
+                { TextId.PreviewSystem, T("[+] Хаб запущен", "[+] Hub started") },
+                { TextId.PreviewMenuItem, T("Пункт меню", "Menu item") }
             };
 
         private static AppLanguage current = DetectLanguage();
@@ -191,6 +238,11 @@ namespace TCPTunnel
         public static void Toggle()
         {
             current = current == AppLanguage.Russian ? AppLanguage.English : AppLanguage.Russian;
+        }
+
+        public static void Set(AppLanguage language)
+        {
+            current = language;
         }
 
         public static void ApplyArguments(IList<string> arguments)

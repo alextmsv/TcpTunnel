@@ -12,6 +12,15 @@ namespace TCPTunnel
         private readonly List<Client> clients = new List<Client>();
         private readonly SemaphoreSlim broadcastLock = new SemaphoreSlim(1, 1);
 
+        public int AuthenticatedClientCount
+        {
+            get
+            {
+                lock (clientsLock)
+                    return clients.Count(client => client.IsAuthenticated);
+            }
+        }
+
         public void AddConnection(Client client)
         {
             lock (clientsLock)
@@ -68,6 +77,52 @@ namespace TCPTunnel
         public Task BroadcastSnakeAsync(Client sender, string message, CancellationToken cancellationToken)
         {
             return BroadcastCoreAsync(sender, message, true, cancellationToken);
+        }
+
+        internal Task SendSystemMessageToAsync(
+            Client recipient,
+            SystemMessageKind kind,
+            string argument,
+            CancellationToken cancellationToken)
+        {
+            if (recipient == null)
+                throw new ArgumentNullException(nameof(recipient));
+            return recipient.SendAsync(SystemMessageProtocol.Create(kind, argument), cancellationToken);
+        }
+
+        public async Task<bool> KickAsync(
+            string nickname,
+            string reason,
+            CancellationToken cancellationToken)
+        {
+            Client target;
+            lock (clientsLock)
+            {
+                target = clients.FirstOrDefault(client =>
+                    client.IsAuthenticated &&
+                    String.Equals(client.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (target == null)
+                return false;
+
+            try
+            {
+                await SendSystemMessageToAsync(
+                    target,
+                    SystemMessageKind.Kicked,
+                    reason,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                RemoveClient(target);
+            }
+
+            return true;
         }
 
         private async Task BroadcastCoreAsync(

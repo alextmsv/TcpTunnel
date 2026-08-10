@@ -10,6 +10,7 @@ namespace TCPTunnel
         public int DelayMilliseconds;
         public ConsoleColor Color;
         public int Step;
+        public char Glyph;
     }
 
     internal enum SnakeUpdateKind
@@ -37,7 +38,8 @@ namespace TCPTunnel
                    profile.DelayMilliseconds + "|" +
                    (int)profile.Color + "|" +
                    profile.Step + "|" +
-                   (profile.Paused ? "1" : "0");
+                   (profile.Paused ? "1" : "0") + "|" +
+                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph);
         }
 
         public static bool TryParseClientProfile(string message, out SnakeProfile profile)
@@ -48,7 +50,7 @@ namespace TCPTunnel
                 return false;
 
             fields = message.Substring(Prefix.Length).Split('|');
-            if ((fields.Length != 5 && fields.Length != 6) || fields[0] != "PROFILE")
+            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7) || fields[0] != "PROFILE")
                 return false;
 
             int enabled;
@@ -56,15 +58,18 @@ namespace TCPTunnel
             int color;
             int step;
             int paused = 0;
+            int glyph = '-';
             if (!Int32.TryParse(fields[1], out enabled) || (enabled != 0 && enabled != 1) ||
                 !Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
                 !Int32.TryParse(fields[4], out step) ||
-                (fields.Length == 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))))
+                (fields.Length >= 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))) ||
+                (fields.Length == 7 && !Int32.TryParse(fields[6], out glyph)))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
-            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor))
+            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
+                !ConsoleGraphic.IsValidSnakeGlyph(((char)glyph).ToString()))
                 return false;
 
             profile.Enabled = enabled == 1;
@@ -72,6 +77,7 @@ namespace TCPTunnel
             profile.DelayMilliseconds = delay;
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
+            profile.Glyph = (char)glyph;
             return true;
         }
 
@@ -81,7 +87,8 @@ namespace TCPTunnel
                    profile.DelayMilliseconds + "|" +
                    (int)profile.Color + "|" +
                    NormalizeStep(profile.Step) + "|" +
-                   (profile.Paused ? "1" : "0");
+                   (profile.Paused ? "1" : "0") + "|" +
+                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph);
         }
 
         public static string CreateRemove(string nickname)
@@ -112,7 +119,7 @@ namespace TCPTunnel
                 return true;
             }
 
-            if ((fields.Length != 5 && fields.Length != 6) || fields[0] != "SET" ||
+            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7) || fields[0] != "SET" ||
                 !TryDecodeNickname(fields[1], out nickname))
                 return false;
 
@@ -120,14 +127,17 @@ namespace TCPTunnel
             int color;
             int step;
             int paused = 0;
+            int glyph = '-';
             if (!Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
                 !Int32.TryParse(fields[4], out step) ||
-                (fields.Length == 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))))
+                (fields.Length >= 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))) ||
+                (fields.Length == 7 && !Int32.TryParse(fields[6], out glyph)))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
-            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor))
+            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
+                !ConsoleGraphic.IsValidSnakeGlyph(((char)glyph).ToString()))
                 return false;
 
             profile.Enabled = true;
@@ -135,6 +145,7 @@ namespace TCPTunnel
             profile.DelayMilliseconds = delay;
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
+            profile.Glyph = (char)glyph;
             kind = SnakeUpdateKind.Set;
             return true;
         }
@@ -149,13 +160,14 @@ namespace TCPTunnel
                     Paused = true,
                     DelayMilliseconds = 125,
                     Color = ConsoleColor.Cyan,
-                    Step = 169
+                    Step = 169,
+                    Glyph = '~'
                 };
 
                 SnakeProfile parsedClient;
                 if (!TryParseClientProfile(CreateClientProfile(source), out parsedClient) ||
                     !parsedClient.Enabled || !parsedClient.Paused || parsedClient.DelayMilliseconds != source.DelayMilliseconds ||
-                    parsedClient.Color != source.Color || parsedClient.Step != source.Step)
+                    parsedClient.Color != source.Color || parsedClient.Step != source.Step || parsedClient.Glyph != '~')
                     return false;
 
                 SnakeUpdateKind kind;
@@ -168,7 +180,7 @@ namespace TCPTunnel
                         out parsedServer) ||
                     kind != SnakeUpdateKind.Set || nickname != "тестер" ||
                     !parsedServer.Paused || parsedServer.DelayMilliseconds != source.DelayMilliseconds ||
-                    parsedServer.Color != source.Color || parsedServer.Step != source.Step)
+                    parsedServer.Color != source.Color || parsedServer.Step != source.Step || parsedServer.Glyph != '~')
                     return false;
 
                 if (!TryParseServerUpdate(
@@ -181,7 +193,7 @@ namespace TCPTunnel
 
                 SnakeProfile legacyClient;
                 if (!TryParseClientProfile(Prefix + "PROFILE|1|75|10|5", out legacyClient) ||
-                    legacyClient.Paused)
+                    legacyClient.Paused || legacyClient.Glyph != '-')
                     return false;
 
                 SnakeProfile legacyServer;
@@ -190,7 +202,7 @@ namespace TCPTunnel
                         out kind,
                         out nickname,
                         out legacyServer) ||
-                    legacyServer.Paused)
+                    legacyServer.Paused || legacyServer.Glyph != '-')
                     return false;
 
                 return !TryParseClientProfile(Prefix + "PROFILE|1|1|10|0", out parsedClient);

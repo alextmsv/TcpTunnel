@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Diagnostics;
+using System.Text;
 
 namespace TCPTunnel
 {
@@ -18,13 +19,27 @@ namespace TCPTunnel
         const int resizeSettleMilliseconds = 180;
         static readonly int[] snakeSpeeds = { 35, 75, 125, 200 };
         static readonly ConsoleColor[] snakeColors = {
-            ConsoleColor.Green,
-            ConsoleColor.Cyan,
-            ConsoleColor.Yellow,
-            ConsoleColor.Red,
-            ConsoleColor.White,
-            ConsoleColor.Blue
+            ConsoleColor.DarkBlue, ConsoleColor.DarkGreen, ConsoleColor.DarkCyan,
+            ConsoleColor.DarkRed, ConsoleColor.DarkMagenta, ConsoleColor.DarkYellow,
+            ConsoleColor.Gray, ConsoleColor.Blue, ConsoleColor.Green, ConsoleColor.Cyan,
+            ConsoleColor.Red, ConsoleColor.Magenta, ConsoleColor.Yellow, ConsoleColor.White
         };
+        static readonly ConsoleColor[] interfaceColors = {
+            ConsoleColor.DarkBlue, ConsoleColor.DarkGreen, ConsoleColor.DarkCyan,
+            ConsoleColor.DarkRed, ConsoleColor.DarkMagenta, ConsoleColor.DarkYellow,
+            ConsoleColor.Gray, ConsoleColor.Blue, ConsoleColor.Green, ConsoleColor.Cyan,
+            ConsoleColor.Red, ConsoleColor.Magenta, ConsoleColor.Yellow, ConsoleColor.White
+        };
+        static readonly ConsoleColor[] borderColors = {
+            ConsoleColor.Black,
+            ConsoleColor.DarkBlue, ConsoleColor.DarkGreen, ConsoleColor.DarkCyan,
+            ConsoleColor.DarkRed, ConsoleColor.DarkMagenta, ConsoleColor.DarkYellow,
+            ConsoleColor.Gray, ConsoleColor.Blue, ConsoleColor.Green, ConsoleColor.Cyan,
+            ConsoleColor.Red, ConsoleColor.Magenta, ConsoleColor.Yellow, ConsoleColor.White
+        };
+        static readonly char[] snakeGlyphs = { '-', '~', '_', '=', '.', ':', '*', '+', '#' };
+        static int[] activePreviewStarts;
+        static ConsoleColor?[] activePreviewColors;
         bool skipped = false;
         bool graphicsOptionsAvailable = true;
         public void mainMatrix(
@@ -85,6 +100,7 @@ namespace TCPTunnel
         {
             ConsoleGraphic.ConfigureConsole(71, 16);
             ApplyGraphicsArguments(args);
+            OfferSavedProfile(args);
             args.Add("-skip");
             Console.ForegroundColor = ConsoleColor.White;
             if (args.Count > 0)
@@ -98,7 +114,10 @@ namespace TCPTunnel
                 {
                     int nicknameIndex = args.IndexOf("-nickname");
                     if (nicknameIndex + 1 < args.Count)
+                    {
                         NetWorker.nickname = NetWorker.filterNick(args[nicknameIndex + 1]);
+                        ApplicationSettings.SaveCurrentProfile(NetWorker.nickname);
+                    }
                 }
                 if (args.Contains("-create"))
                 {
@@ -259,9 +278,7 @@ namespace TCPTunnel
                 0,
                 3,
                 3);
-            Console.SetCursorPosition(2, inputTop++);
-            Program.matrix(Lang.Get(TextId.EnterNewNickname) + ": ");
-            string testname = Console.ReadLine();
+            string testname = ReadCenteredNickname(inputTop++);
             Console.SetCursorPosition(2, inputTop++);
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write(testname);
@@ -276,6 +293,7 @@ namespace TCPTunnel
 
             stopwatch.Stop();
             NetWorker.nickname = testname;
+            ApplicationSettings.SaveCurrentProfile(NetWorker.nickname);
             Console.SetCursorPosition(2, inputTop += 2);
             Program.matrix(Lang.Get(TextId.GoodName) + "\n", 8, ConsoleColor.Green);
             if (stopwatch.Elapsed.TotalSeconds > 25)
@@ -296,9 +314,7 @@ namespace TCPTunnel
                 Lang.Get(TextId.EnterNewNickname),
                 hintRow,
                 ConsoleColor.DarkGray);
-            ConsoleGraphic.WriteCenteredLine("> ", inputRow, ConsoleColor.Cyan);
-
-            string testname = Console.ReadLine();
+            string testname = ReadCenteredNickname(inputRow);
             for (int dots = 1; dots <= 3; dots++)
             {
                 ConsoleGraphic.WriteBottomStatus(
@@ -320,6 +336,7 @@ namespace TCPTunnel
 
             stopwatch.Stop();
             NetWorker.nickname = testname;
+            ApplicationSettings.SaveCurrentProfile(NetWorker.nickname);
             graphic.Clear(0, 0);
             ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.IdentityUpdated), titleRow, ConsoleColor.Cyan, true, 3);
             ConsoleGraphic.WriteCenteredLine(testname, inputRow, ConsoleColor.White, true, 4);
@@ -337,6 +354,76 @@ namespace TCPTunnel
                 ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.TookYourTime), inputRow + 3, ConsoleColor.DarkGray);
 
             Thread.Sleep(2000);
+        }
+
+        private static string ReadCenteredNickname(int row)
+        {
+            var value = new StringBuilder();
+            int cursor = 0;
+            int previousLeft = 0;
+            int previousLength = 0;
+            while (true)
+            {
+                try
+                {
+                    int width = Math.Max(1, Math.Min(Console.WindowWidth, Console.BufferWidth));
+                    int safeRow = Math.Max(0, Math.Min(row, Console.BufferHeight - 1));
+                    if (previousLength > 0 && previousLeft < Console.BufferWidth)
+                    {
+                        Console.SetCursorPosition(previousLeft, safeRow);
+                        Console.Write(new string(' ', Math.Min(previousLength, Console.BufferWidth - previousLeft)));
+                    }
+
+                    string text = "> " + value;
+                    int minimumLeft = ConsoleGraphic.Enabled ? ConsoleGraphic.ContentLeft : 0;
+                    int rightExclusive = ConsoleGraphic.Enabled ? width - 1 : width;
+                    int visibleLength = Math.Min(text.Length, Math.Max(1, rightExclusive - minimumLeft));
+                    int start = Math.Max(minimumLeft, (width - visibleLength) / 2);
+                    Console.SetCursorPosition(start, safeRow);
+                    Console.ForegroundColor = ConsoleTheme.InputPrompt;
+                    Console.Write("> ");
+                    Console.ForegroundColor = ConsoleTheme.InputText;
+                    if (visibleLength > 2)
+                        Console.Write(value.ToString(0, Math.Min(value.Length, visibleLength - 2)));
+                    Console.ResetColor();
+                    int cursorLeft = Math.Min(rightExclusive - 1, start + 2 + cursor);
+                    Console.SetCursorPosition(Math.Max(minimumLeft, cursorLeft), safeRow);
+                    previousLeft = start;
+                    previousLength = visibleLength;
+
+                    ConsoleKeyInfo key = Console.ReadKey(true);
+                    if (key.Key == ConsoleKey.Enter)
+                        return value.ToString();
+                    if (key.Key == ConsoleKey.LeftArrow && cursor > 0)
+                        cursor--;
+                    else if (key.Key == ConsoleKey.RightArrow && cursor < value.Length)
+                        cursor++;
+                    else if (key.Key == ConsoleKey.Home)
+                        cursor = 0;
+                    else if (key.Key == ConsoleKey.End)
+                        cursor = value.Length;
+                    else if (key.Key == ConsoleKey.Backspace && cursor > 0)
+                    {
+                        value.Remove(cursor - 1, 1);
+                        cursor--;
+                    }
+                    else if (key.Key == ConsoleKey.Delete && cursor < value.Length)
+                        value.Remove(cursor, 1);
+                    else if (!Char.IsControl(key.KeyChar) && value.Length < 20)
+                    {
+                        value.Insert(cursor, key.KeyChar);
+                        cursor++;
+                    }
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    Thread.Sleep(30);
+                }
+                catch (System.IO.IOException)
+                {
+                    Thread.Sleep(30);
+                }
+            }
         }
 
         private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)
@@ -438,6 +525,12 @@ namespace TCPTunnel
 
         private static bool DrawChoice(string text, int index, bool selected, bool animate)
         {
+            int previewStart = activePreviewStarts != null && index < activePreviewStarts.Length
+                ? activePreviewStarts[index]
+                : -1;
+            ConsoleColor? previewColor = activePreviewColors != null && index < activePreviewColors.Length
+                ? activePreviewColors[index]
+                : (ConsoleColor?)null;
             return ConsoleGraphic.DrawMenuOption(
                 text,
                 index,
@@ -445,7 +538,9 @@ namespace TCPTunnel
                 top,
                 selected,
                 animate && ConsoleGraphic.Enabled,
-                selectionAnimationDelay);
+                selectionAnimationDelay,
+                previewStart,
+                previewColor);
         }
 
         private void ShowConsoleGraphicsOptions()
@@ -476,14 +571,27 @@ namespace TCPTunnel
             int selectedOption = 0;
             while (true)
             {
-                string[] choices = { Lang.Get(TextId.Snake), Lang.Get(TextId.Back) };
+                string[] choices = {
+                    Lang.Get(TextId.Snake),
+                    Lang.Get(TextId.InterfaceColors),
+                    Lang.Get(TextId.ResetSettings),
+                    Lang.Get(TextId.Back)
+                };
                 int selection = ReadOptionsSelection(Lang.Get(TextId.Customization), choices, selectedOption);
-                if (selection < 0 || selection == 1)
+                if (selection < 0 || selection == 3)
                     return;
 
                 selectedOption = selection;
-
-                ShowSnakeOptions();
+                if (selection == 0)
+                    ShowSnakeOptions();
+                else if (selection == 1)
+                    ShowInterfaceColorOptions();
+                else
+                {
+                    ApplicationSettings.ResetCustomizations();
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.SettingsReset), ConsoleColor.Green);
+                    Thread.Sleep(500);
+                }
             }
         }
 
@@ -495,23 +603,146 @@ namespace TCPTunnel
                 string[] choices = {
                     Lang.Get(TextId.Speed, GetSnakeSpeedName(ConsoleGraphic.BorderAnimationDelayMilliseconds)),
                     Lang.Get(TextId.Color, GetSnakeColorName(ConsoleGraphic.BorderSnakeColor)),
+                    Lang.Get(TextId.GlyphValue, ConsoleGraphic.BorderSnakeGlyph),
                     Lang.Get(TextId.Back)
                 };
                 int selection = ReadOptionsSelection(Lang.Get(TextId.SnakeCustomization), choices, selectedOption);
-                if (selection < 0 || selection == 2)
+                if (selection < 0 || selection == 3)
                     return;
 
                 selectedOption = selection;
 
                 if (selection == 0)
                     ConsoleGraphic.BorderAnimationDelayMilliseconds = GetNextSnakeSpeed();
-                else
+                else if (selection == 1)
                     ConsoleGraphic.BorderSnakeColor = GetNextSnakeColor();
+                else
+                    ConsoleGraphic.BorderSnakeGlyph = GetNextSnakeGlyph();
+                ApplicationSettings.CaptureAndSave();
             }
         }
 
-        private int ReadOptionsSelection(string title, string[] choices, int selectedOption)
+        private void ShowInterfaceColorOptions()
         {
+            int selectedOption = 0;
+            while (true)
+            {
+                string testMessage = Lang.Get(TextId.PreviewMessage);
+                string[] previews = {
+                    "+----------------+",
+                    ">>> username: " + testMessage,
+                    "<<< username: " + testMessage,
+                    "<<< [you]: " + testMessage,
+                    Lang.Get(TextId.PreviewSystem),
+                    Lang.Get(TextId.PreviewMenuItem),
+                    String.Empty
+                };
+                ConsoleColor[] colors = {
+                    ConsoleTheme.Border,
+                    ConsoleTheme.IncomingMarker,
+                    ConsoleTheme.OutgoingMarker,
+                    ConsoleTheme.InputPrompt,
+                    ConsoleTheme.SystemText,
+                    ConsoleTheme.MenuText,
+                    ConsoleColor.White
+                };
+                TextId[] labels = {
+                    TextId.Border,
+                    TextId.IncomingMessages,
+                    TextId.OutgoingMessages,
+                    TextId.InputField,
+                    TextId.SystemMessages,
+                    TextId.MenuTextColor,
+                    TextId.Back
+                };
+                string[] choices = new string[labels.Length];
+                int[] previewStarts = new int[labels.Length];
+                ConsoleColor?[] previewColors = new ConsoleColor?[labels.Length];
+                for (int index = 0; index < labels.Length; index++)
+                {
+                    if (index == labels.Length - 1)
+                    {
+                        choices[index] = Lang.Get(labels[index]);
+                        previewStarts[index] = -1;
+                        continue;
+                    }
+                    string prefix = Lang.Get(labels[index]) + ": ";
+                    choices[index] = prefix + GetSnakeColorName(colors[index]) + "  " + previews[index];
+                    previewStarts[index] = prefix.Length;
+                    previewColors[index] = colors[index];
+                }
+
+                int selection = ReadOptionsSelection(
+                    Lang.Get(TextId.InterfaceColors),
+                    choices,
+                    selectedOption,
+                    previewStarts,
+                    previewColors);
+                if (selection < 0 || selection == 6)
+                    return;
+                selectedOption = selection;
+                if (selection == 0)
+                    ConsoleTheme.Border = GetNextBorderColor(ConsoleTheme.Border);
+                else if (selection == 1)
+                {
+                    ConsoleTheme.IncomingMarker = GetNextInterfaceColor(ConsoleTheme.IncomingMarker);
+                    ConsoleTheme.IncomingText = ConsoleTheme.IncomingMarker;
+                }
+                else if (selection == 2)
+                {
+                    ConsoleTheme.OutgoingMarker = GetNextInterfaceColor(ConsoleTheme.OutgoingMarker);
+                    ConsoleTheme.OutgoingText = ConsoleTheme.OutgoingMarker;
+                }
+                else if (selection == 3)
+                {
+                    ConsoleTheme.InputPrompt = GetNextInterfaceColor(ConsoleTheme.InputPrompt);
+                    ConsoleTheme.InputText = ConsoleTheme.InputPrompt;
+                }
+                else if (selection == 4)
+                    ConsoleTheme.SystemText = GetNextInterfaceColor(ConsoleTheme.SystemText);
+                else
+                    ConsoleTheme.MenuText = GetNextInterfaceColor(ConsoleTheme.MenuText);
+                ConsoleGraphic.InvalidateVisualTheme();
+                ApplicationSettings.CaptureAndSave();
+            }
+        }
+
+        private void OfferSavedProfile(List<string> args)
+        {
+            string pending = ApplicationSettings.PendingProfileNickname;
+            if (!NetWorker.IsNicknameValid(pending))
+                return;
+
+            string[] choices = {
+                Lang.Get(TextId.Yes),
+                Lang.Get(TextId.No),
+                Lang.Get(TextId.AlwaysImport, pending)
+            };
+            int selection = ReadOptionsSelection(
+                Lang.Get(TextId.ImportProfilePrompt, pending),
+                choices,
+                0);
+            if (selection == 0 || selection == 2)
+            {
+                ApplicationSettings.ImportPendingProfile(selection == 2);
+                Lang.ApplyArguments(args);
+                ApplyGraphicsArguments(args);
+            }
+            else
+            {
+                ApplicationSettings.DismissPendingProfile();
+            }
+        }
+
+        private int ReadOptionsSelection(
+            string title,
+            string[] choices,
+            int selectedOption,
+            int[] previewStarts = null,
+            ConsoleColor?[] previewColors = null)
+        {
+            activePreviewStarts = previewStarts;
+            activePreviewColors = previewColors;
             ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
             left = 10;
@@ -537,10 +768,14 @@ namespace TCPTunnel
                 }
                 else if (key == ConsoleKey.Enter || key == ConsoleKey.Spacebar)
                 {
+                    activePreviewStarts = null;
+                    activePreviewColors = null;
                     return arrow;
                 }
                 else if (key == ConsoleKey.Escape)
                 {
+                    activePreviewStarts = null;
+                    activePreviewColors = null;
                     return -1;
                 }
             }
@@ -568,6 +803,24 @@ namespace TCPTunnel
             return snakeColors[0];
         }
 
+        private static ConsoleColor GetNextInterfaceColor(ConsoleColor current)
+        {
+            int index = Array.IndexOf(interfaceColors, current);
+            return interfaceColors[(index + 1 + interfaceColors.Length) % interfaceColors.Length];
+        }
+
+        private static ConsoleColor GetNextBorderColor(ConsoleColor current)
+        {
+            int index = Array.IndexOf(borderColors, current);
+            return borderColors[(index + 1 + borderColors.Length) % borderColors.Length];
+        }
+
+        private static char GetNextSnakeGlyph()
+        {
+            int index = Array.IndexOf(snakeGlyphs, ConsoleGraphic.BorderSnakeGlyph);
+            return snakeGlyphs[(index + 1 + snakeGlyphs.Length) % snakeGlyphs.Length];
+        }
+
         private static string GetSnakeSpeedName(int delayMilliseconds)
         {
             switch (delayMilliseconds)
@@ -584,10 +837,19 @@ namespace TCPTunnel
         {
             switch (color)
             {
+                case ConsoleColor.Black: return Lang.Get(TextId.ColorBlack);
+                case ConsoleColor.DarkBlue: return Lang.Get(TextId.ColorDarkBlue);
+                case ConsoleColor.DarkGreen: return Lang.Get(TextId.ColorDarkGreen);
+                case ConsoleColor.DarkCyan: return Lang.Get(TextId.ColorDarkCyan);
+                case ConsoleColor.DarkRed: return Lang.Get(TextId.ColorDarkRed);
+                case ConsoleColor.DarkMagenta: return Lang.Get(TextId.ColorDarkMagenta);
+                case ConsoleColor.DarkYellow: return Lang.Get(TextId.ColorDarkYellow);
+                case ConsoleColor.Gray: return Lang.Get(TextId.ColorGray);
                 case ConsoleColor.Green: return Lang.Get(TextId.ColorGreen);
                 case ConsoleColor.Cyan: return Lang.Get(TextId.ColorCyan);
                 case ConsoleColor.Yellow: return Lang.Get(TextId.ColorYellow);
                 case ConsoleColor.Red: return Lang.Get(TextId.ColorRed);
+                case ConsoleColor.Magenta: return Lang.Get(TextId.ColorMagenta);
                 case ConsoleColor.White: return Lang.Get(TextId.ColorWhite);
                 case ConsoleColor.Blue: return Lang.Get(TextId.ColorBlue);
                 default: return color.ToString();

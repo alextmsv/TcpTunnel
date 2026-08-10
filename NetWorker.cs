@@ -350,6 +350,9 @@ namespace TCPTunnel
                     null,
                     SystemMessageProtocol.Create(SystemMessageKind.UserJoined, authenticatedNickname),
                     serverCancellationToken).ConfigureAwait(false);
+                await ServerInterface.TryStartGasterEventAsync(
+                    authenticatedNickname,
+                    serverCancellationToken).ConfigureAwait(false);
 
                 while (!serverCancellationToken.IsCancellationRequested)
                 {
@@ -359,13 +362,21 @@ namespace TCPTunnel
 
                     if (message.Length > MessageProtocol.MaxMessageCharacters)
                     {
-                        await client.SendAsync(SystemMessageProtocol.Create(SystemMessageKind.MessageTooLong), serverCancellationToken).ConfigureAwait(false);
+                        await broadcaster.SendSystemMessageToAsync(
+                            client,
+                            SystemMessageKind.MessageTooLong,
+                            null,
+                            serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
                     if (!client.TryConsumeMessageToken())
                     {
-                        await client.SendAsync(SystemMessageProtocol.Create(SystemMessageKind.TooManyMessages), serverCancellationToken).ConfigureAwait(false);
+                        await broadcaster.SendSystemMessageToAsync(
+                            client,
+                            SystemMessageKind.TooManyMessages,
+                            null,
+                            serverCancellationToken).ConfigureAwait(false);
                         return;
                     }
 
@@ -377,6 +388,8 @@ namespace TCPTunnel
                     }
 
                     if (SnakeProtocol.IsSnakeControlMessage(message))
+                        continue;
+                    if (HubEventProtocol.IsControlMessage(message))
                         continue;
 
                     await broadcaster.BroadcastAsync(client, $"[{authenticatedNickname}]: {message}", serverCancellationToken).ConfigureAwait(false);

@@ -66,7 +66,7 @@ namespace TCPTunnel
                     Window = window,
                     Flags = flags,
                     Count = count,
-                    Timeout = 0
+                    Timeout = 500
                 };
                 FlashWindowEx(ref info);
             }

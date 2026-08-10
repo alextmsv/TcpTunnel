@@ -94,6 +94,12 @@ namespace TCPTunnel
         private static long nextResizePollTimestamp;
         private static int mentionMonitorActive;
         private static int chatSessionVersion;
+        private static int gasterEventActive;
+        private static int gasterEventTick;
+        private static int gasterEventSeed;
+        private static string gasterEventNickname;
+        private static int gasterThemeStarted;
+        private static bool graphicsBeforeGasterEvent;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -103,6 +109,20 @@ namespace TCPTunnel
                 {
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
                     if (TryApplySnakeUpdate(message) || SnakeProtocol.IsSnakeControlMessage(message))
+                        continue;
+                    string eventNickname;
+                    int eventDuration;
+                    int eventSeed;
+                    if (HubEventProtocol.TryParseGasterEvent(
+                        message,
+                        out eventNickname,
+                        out eventDuration,
+                        out eventSeed))
+                    {
+                        BeginGasterEvent(eventNickname, eventDuration, eventSeed);
+                        continue;
+                    }
+                    if (HubEventProtocol.IsControlMessage(message))
                         continue;
 
                     string localizedSystemMessage;
@@ -120,8 +140,15 @@ namespace TCPTunnel
 
                         ConsoleColor? eventColor = systemKind == SystemMessageKind.UserJoined
                             ? ConsoleColor.Green
-                            : (systemKind == SystemMessageKind.UserLeft ? ConsoleColor.Red : (ConsoleColor?)null);
+                            : ((systemKind == SystemMessageKind.UserLeft || systemKind == SystemMessageKind.Kicked)
+                                ? ConsoleColor.Red
+                                : (ConsoleColor?)null);
                         WriteChatLine(">>> " + localizedSystemMessage, eventColor);
+                        if (systemKind == SystemMessageKind.Kicked)
+                        {
+                            connected = false;
+                            return;
+                        }
                     }
                     else
                     {
@@ -160,16 +187,18 @@ namespace TCPTunnel
             if (!EnsureNickname())
                 return false;
 
-            Program.matrix(Lang.Get(TextId.EnterServerAddress));
+            string defaultHost = ApplicationSettings.LastHost;
+            int defaultPort = ApplicationSettings.LastPort;
+            Program.matrix(Lang.Get(TextId.EnterServerAddressSaved, defaultHost));
             string ip = Console.ReadLine();
             if (String.IsNullOrWhiteSpace(ip))
-                ip = "localhost";
+                ip = defaultHost;
 
-            Program.matrix(Lang.Get(TextId.EnterServerPort));
+            Program.matrix(Lang.Get(TextId.EnterServerPortSaved, defaultPort));
             string rawPort = Console.ReadLine();
             int serverPort;
             if (String.IsNullOrWhiteSpace(rawPort))
-                serverPort = 9091;
+                serverPort = defaultPort;
             else if (!Int32.TryParse(rawPort, out serverPort) || serverPort < 1 || serverPort > 65535)
             {
                 ConsoleGraphic.WriteContentLine(Lang.Get(TextId.InvalidPortNumber));
@@ -223,6 +252,7 @@ namespace TCPTunnel
 
                     if (TryOpenConnection(client, address, port, out error))
                     {
+                        ApplicationSettings.RememberEndpoint(address, port);
                         try
                         {
                             RunClient(client);
@@ -323,7 +353,8 @@ namespace TCPTunnel
                     Paused = ConsoleGraphic.BorderSnakePaused,
                     DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
                     Color = ConsoleGraphic.BorderSnakeColor,
-                    Step = ConsoleGraphic.CurrentBorderSnakeStep
+                    Step = ConsoleGraphic.CurrentBorderSnakeStep,
+                    Glyph = ConsoleGraphic.BorderSnakeGlyph
                 };
                 MessageProtocol.WriteStringAsync(
                     stream,
@@ -343,7 +374,7 @@ namespace TCPTunnel
                 ? ServerInterface.DisplayAddress
                 : (remoteEndPoint == null ? "?" : remoteEndPoint.Address.ToString());
             serverCardPort = remoteEndPoint == null ? 0 : remoteEndPoint.Port;
-            ConsoleGraphic.SetReservedBottomRows(showServerCard ? 2 : 0);
+            ConsoleGraphic.SetReservedBottomRows(showServerCard ? 3 : 0);
             graphic.Clear();
             ResetChatSessionLayout();
             if (showServerCard)
@@ -352,78 +383,21 @@ namespace TCPTunnel
 
             var sessionCancellation = new CancellationTokenSource();
             Task receiverTask = ReceiveMessagesAsync(client, stream, sessionCancellation.Token);
+            CommandContext commandContext = CreateCommandContext(stream, sessionCancellation.Token);
 
             try
             {
                 while (connected)
                 {
                     string message = ReadChatMessage();
-                    if (message == null || message.Equals("/exit", StringComparison.OrdinalIgnoreCase))
+                    if (message == null)
                         break;
-                    if (message.Equals("/clear", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ClearChatLocally();
+                    CommandDisposition commandResult = Commands.InitCommand(message, commandContext);
+                    if (commandResult == CommandDisposition.EndSession)
+                        break;
+                    if (commandResult == CommandDisposition.Handled)
                         continue;
-                    }
-                    if (message.Equals("/ping", StringComparison.OrdinalIgnoreCase) ||
-                        message.StartsWith("/ping ", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string pingAddress;
-                        int pingPort;
-                        if (!TryParsePingCommand(message, out pingAddress, out pingPort))
-                        {
-                            WriteChatLine(Lang.Get(TextId.PingCommandUsage), ConsoleColor.Yellow);
-                            continue;
-                        }
 
-                        bool reachable = NetWorker.ping(pingAddress, pingPort);
-                        WriteChatLine(
-                            Lang.Get(reachable ? TextId.ServerAlive : TextId.ServerDead, pingAddress, pingPort),
-                            reachable ? ConsoleColor.Green : ConsoleColor.Red);
-                        continue;
-                    }
-                    if (message.Equals("/status", StringComparison.OrdinalIgnoreCase))
-                    {
-                        WriteChatLine(ServerInterface.IsRunning
-                            ? ServerInterface.PortMappingStatus
-                            : Lang.Get(TextId.LocalHubNotRunning));
-                        continue;
-                    }
-                    if (message.Equals("/stop", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (isLocalHubSession)
-                        {
-                            WriteChatLine(Lang.Get(TextId.StoppingLocalHub), ConsoleColor.Yellow);
-                            connected = false;
-                            ServerInterface.StopServer();
-                            break;
-                        }
-
-                        if (!ConsoleGraphic.Enabled)
-                        {
-                            WriteChatLine(Lang.Get(TextId.NoActiveSnake), ConsoleColor.Yellow);
-                            continue;
-                        }
-
-                        bool paused = ConsoleGraphic.ToggleBorderSnakePause();
-                        SnakeProfile updatedProfile = new SnakeProfile
-                        {
-                            Enabled = true,
-                            Paused = paused,
-                            DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
-                            Color = ConsoleGraphic.BorderSnakeColor,
-                            Step = ConsoleGraphic.CurrentBorderSnakeStep
-                        };
-                        MessageProtocol.WriteStringAsync(
-                            stream,
-                            SnakeProtocol.CreateClientProfile(updatedProfile),
-                            sessionCancellation.Token).GetAwaiter().GetResult();
-                        WriteChatLine(paused
-                            ? Lang.Get(TextId.SnakePaused)
-                            : Lang.Get(TextId.SnakeResumed),
-                            paused ? ConsoleColor.Yellow : ConsoleColor.Green);
-                        continue;
-                    }
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
@@ -455,6 +429,58 @@ namespace TCPTunnel
             }
         }
 
+        private static CommandContext CreateCommandContext(
+            NetworkStream stream,
+            CancellationToken cancellationToken)
+        {
+            return new CommandContext
+            {
+                IsLocalHubAdministrator = isLocalHubSession,
+                ClearChat = ClearChatLocally,
+                WriteLine = (text, color) => WriteChatLine(text, color),
+                GetStatus = () => ServerInterface.IsRunning
+                    ? Lang.Get(
+                        TextId.HubStatusWithClients,
+                        ServerInterface.PortMappingStatus,
+                        ServerInterface.ConnectedClientCount)
+                    : Lang.Get(TextId.LocalHubNotRunning),
+                StopLocalHub = () =>
+                {
+                    connected = false;
+                    ServerInterface.StopServer();
+                },
+                Kick = (target, reason) => ServerInterface.KickClientAsync(
+                    target,
+                    nickname,
+                    reason).GetAwaiter().GetResult(),
+                ToggleSnake = () => ToggleAndSynchronizeSnake(stream, cancellationToken)
+            };
+        }
+
+        private static SnakeCommandResult ToggleAndSynchronizeSnake(
+            NetworkStream stream,
+            CancellationToken cancellationToken)
+        {
+            if (!ConsoleGraphic.Enabled)
+                return SnakeCommandResult.Unavailable;
+
+            bool paused = ConsoleGraphic.ToggleBorderSnakePause();
+            SnakeProfile updatedProfile = new SnakeProfile
+            {
+                Enabled = true,
+                Paused = paused,
+                DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
+                Color = ConsoleGraphic.BorderSnakeColor,
+                Step = ConsoleGraphic.CurrentBorderSnakeStep,
+                Glyph = ConsoleGraphic.BorderSnakeGlyph
+            };
+            MessageProtocol.WriteStringAsync(
+                stream,
+                SnakeProtocol.CreateClientProfile(updatedProfile),
+                cancellationToken).GetAwaiter().GetResult();
+            return paused ? SnakeCommandResult.Paused : SnakeCommandResult.Resumed;
+        }
+
         private static string LocalizeAuthenticationError(string response)
         {
             if (String.Equals(response, AUTH_ERROR_MESSAGE + ":INVALID_REQUEST", StringComparison.Ordinal))
@@ -481,14 +507,16 @@ namespace TCPTunnel
             if (String.Equals(participant, nickname, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (kind == SnakeUpdateKind.Set && ConsoleGraphic.Enabled)
+            if (kind == SnakeUpdateKind.Set &&
+                (ConsoleGraphic.Enabled || ConsoleGraphic.IsTemporarilySuspended))
             {
                 ConsoleGraphic.SetRemoteSnake(
                     participant,
                     profile.DelayMilliseconds,
                     profile.Color,
                     profile.Step,
-                    profile.Paused);
+                    profile.Paused,
+                    profile.Glyph);
             }
             else
             {
@@ -616,48 +644,156 @@ namespace TCPTunnel
             Interlocked.Increment(ref chatSessionVersion);
             WindowAttention.StopFlashing();
             lock (consoleLock)
+            {
                 pendingMentionAnimations.Clear();
+                StopGasterEventLocked();
+            }
             lock (participantsLock)
                 activeParticipants.Clear();
         }
 
-        private static bool TryParsePingCommand(string message, out string address, out int port)
+        private static void BeginGasterEvent(string participant, int durationMilliseconds, int seed)
         {
-            address = null;
-            port = 0;
-            if (String.IsNullOrWhiteSpace(message))
+            int version;
+            lock (consoleLock)
+            {
+                if (Interlocked.CompareExchange(ref gasterEventActive, 1, 0) != 0)
+                    return;
+
+                version = Volatile.Read(ref chatSessionVersion);
+                graphicsBeforeGasterEvent = ConsoleGraphic.Enabled;
+                gasterEventNickname = participant;
+                gasterEventSeed = seed;
+                gasterEventTick = 0;
+                Volatile.Write(ref gasterThemeStarted, 0);
+                ConsoleGraphic.SuspendTemporarily();
+                ConsoleGraphic.SetReservedBottomRows(0);
+                RedrawChatLayoutLocked();
+            }
+
+            TryOpenGasterSFX();
+            Task.Run(async () =>
+            {
+                int elapsed = 0;
+                const int frameDelay = 250;
+                while (elapsed < durationMilliseconds &&
+                       connected &&
+                       version == Volatile.Read(ref chatSessionVersion) &&
+                       Volatile.Read(ref gasterEventActive) != 0)
+                {
+                    await Task.Delay(frameDelay).ConfigureAwait(false);
+                    elapsed += frameDelay;
+                    lock (consoleLock)
+                    {
+                        if (version != Volatile.Read(ref chatSessionVersion) ||
+                            Volatile.Read(ref gasterEventActive) == 0)
+                            return;
+                        gasterEventTick++;
+                        RedrawChatLayoutLocked();
+                    }
+                }
+
+                lock (consoleLock)
+                {
+                    if (version == Volatile.Read(ref chatSessionVersion))
+                    {
+                        StopGasterEventLocked();
+                        RedrawChatLayoutLocked();
+                    }
+                }
+            });
+        }
+
+        private static void StopGasterEventLocked()
+        {
+            if (Interlocked.Exchange(ref gasterEventActive, 0) == 0)
+                return;
+            if (graphicsBeforeGasterEvent)
+                ConsoleGraphic.ResumeTemporarily();
+            else
+                ConsoleGraphic.Enabled = false;
+            ConsoleGraphic.SetReservedBottomRows(showServerCard && ConsoleGraphic.Enabled ? 3 : 0);
+            if (ConsoleGraphic.Enabled)
+                MarkConsoleResizePendingLocked();
+            gasterEventNickname = null;
+            gasterEventTick = 0;
+            Volatile.Write(ref gasterThemeStarted, 0);
+        }
+
+        private static void TryOpenGasterSFX()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://www.myinstants.com/media/sounds/gaster-vanish.mp3",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryOpenGasterTheme()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://static.wikia.nocookie.net/tobyfox/images/a/a2/Mus_st_him.ogg",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        private static string GetRenderedChatText(ChatHistoryEntry entry)
+        {
+            string original = entry.Text;
+            if (Volatile.Read(ref gasterEventActive) == 0 ||
+                String.IsNullOrEmpty(gasterEventNickname) ||
+                !IsMessageFromParticipant(original, gasterEventNickname))
+                return original;
+
+            const string symbols = "☺☻♣♠•◘○♂▬";
+            char[] characters = original.ToCharArray();
+            int colon = original.IndexOf(':', 4);
+            for (int index = Math.Max(0, colon + 1); index < characters.Length; index++)
+            {
+                if (!Char.IsLetterOrDigit(characters[index]))
+                    continue;
+                int hash = unchecked(gasterEventSeed + gasterEventTick * 1103515245 + index * 397);
+                if ((hash & 3) == 0)
+                    characters[index] = symbols[(hash & Int32.MaxValue) % symbols.Length];
+            }
+            return new string(characters);
+        }
+
+        private static bool IsMessageFromParticipant(string message, string participant)
+        {
+            if (String.IsNullOrEmpty(message) || String.IsNullOrEmpty(participant))
                 return false;
 
-            string argument = message.Substring("/ping".Length).Trim();
-            int separator = argument.LastIndexOf(':');
-            if (separator <= 0 || separator == argument.Length - 1)
-                return false;
+            return message.StartsWith(">>> [" + participant + "]:", StringComparison.OrdinalIgnoreCase) ||
+                   message.StartsWith("<<< [" + participant + "]:", StringComparison.OrdinalIgnoreCase);
+        }
 
-            string parsedAddress = argument.Substring(0, separator).Trim();
-            string parsedPort = argument.Substring(separator + 1).Trim();
-            int portNumber;
-            if (parsedAddress.Length == 0 ||
-                !Int32.TryParse(parsedPort, out portNumber) ||
-                portNumber < 1 || portNumber > 65535)
-                return false;
+        private static void TryStartGasterThemeForMessageLocked(string message)
+        {
+            if (Volatile.Read(ref gasterEventActive) == 0 ||
+                !IsMessageFromParticipant(message, gasterEventNickname) ||
+                Interlocked.CompareExchange(ref gasterThemeStarted, 1, 0) != 0)
+                return;
 
-            address = parsedAddress;
-            port = portNumber;
-            return true;
+            Task.Run((Action)TryOpenGasterTheme);
         }
 
         internal static bool RunCommandSelfTest()
         {
-            string address;
-            int port;
-            bool commandsAreValid = TryParsePingCommand("/ping localhost:9091", out address, out port) &&
-                   address == "localhost" && port == 9091 &&
-                   TryParsePingCommand("/ping 127.0.0.1:1", out address, out port) &&
-                   address == "127.0.0.1" && port == 1 &&
-                   !TryParsePingCommand("/ping", out address, out port) &&
-                   !TryParsePingCommand("/ping localhost", out address, out port) &&
-                   !TryParsePingCommand("/ping localhost:0", out address, out port) &&
-                   !TryParsePingCommand("/ping localhost:65536", out address, out port);
+            bool commandsAreValid = Commands.RunSelfTest();
 
             string previousNickname = nickname;
             List<MentionSpan> validMentions;
@@ -677,6 +813,11 @@ namespace TCPTunnel
                 FindMentionSpans("hello @alextmsv"));
             ChatTextStyle mentionStyle = GetChatTextStyle(styleEntry, "hello ".Length);
             ChatTextStyle plainStyle = GetChatTextStyle(styleEntry, 0);
+            bool gasterMessageRecognition =
+                IsMessageFromParticipant(">>> [W_D_Gaster]: Hello", "W_D_Gaster") &&
+                IsMessageFromParticipant("<<< [w_d_gaster]: Hello", "W_D_Gaster") &&
+                !IsMessageFromParticipant(">>> [W_D_Gaster_2]: Hello", "W_D_Gaster") &&
+                !IsMessageFromParticipant(">>> W_D_Gaster: Hello", "W_D_Gaster");
             nickname = previousNickname;
             lock (participantsLock)
                 activeParticipants.Clear();
@@ -689,8 +830,9 @@ namespace TCPTunnel
                    validMentions[0].Length == "@alextmsv".Length &&
                    validMentions[0].IsLocalUser &&
                    !validMentions[1].IsLocalUser &&
-                   invalidMentions.Count == 0 &&
-                   mentionStyle.Foreground == ConsoleColor.Black &&
+                    invalidMentions.Count == 0 &&
+                    gasterMessageRecognition &&
+                    mentionStyle.Foreground == ConsoleColor.Black &&
                    mentionStyle.Background == ConsoleColor.White &&
                    plainStyle.Background == ConsoleColor.Black;
         }
@@ -1009,6 +1151,7 @@ namespace TCPTunnel
             {
                 bool consoleReady = EnsureConsoleGeometryLocked();
                 string safeMessage = SanitizeForConsole(message);
+                TryStartGasterThemeForMessageLocked(safeMessage);
                 List<MentionSpan> mentions = detectMentions
                     ? FindMentionSpans(safeMessage)
                     : new List<MentionSpan>();
@@ -1070,7 +1213,7 @@ namespace TCPTunnel
             ChatHistoryEntry entry,
             List<MentionFragment> localMentionFragments = null)
         {
-            string message = entry.Text;
+            string message = GetRenderedChatText(entry);
             if (!ConsoleGraphic.Enabled)
             {
                 MoveCursorToContentColumn();
@@ -1127,14 +1270,14 @@ namespace TCPTunnel
             int promptCharacters = Math.Max(0, Math.Min(count, inputPrompt.Length - originalTextIndex));
             if (promptCharacters > 0)
             {
-                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.ForegroundColor = ConsoleTheme.InputPrompt;
                 Console.Write(visibleText.Substring(sourceIndex, promptCharacters));
             }
 
             int messageCharacters = count - promptCharacters;
             if (messageCharacters > 0)
             {
-                Console.ForegroundColor = ConsoleColor.White;
+                Console.ForegroundColor = ConsoleTheme.InputText;
                 Console.Write(visibleText.Substring(sourceIndex + promptCharacters, messageCharacters));
             }
 
@@ -1208,7 +1351,7 @@ namespace TCPTunnel
                 {
                     Left = left + fragmentStart - offset,
                     Top = top,
-                    Text = entry.Text.Substring(fragmentStart, fragmentEnd - fragmentStart)
+                    Text = GetRenderedChatText(entry).Substring(fragmentStart, fragmentEnd - fragmentStart)
                 });
             }
         }
@@ -1239,7 +1382,7 @@ namespace TCPTunnel
                     {
                         Left = left,
                         Top = top,
-                        Text = entry.Text.Substring(mention.Start + consumed, length)
+                        Text = GetRenderedChatText(entry).Substring(mention.Start + consumed, length)
                     });
                     consumed += length;
                 }
@@ -1292,26 +1435,26 @@ namespace TCPTunnel
             if (outgoing || incoming)
             {
                 if (position < 3)
-                    return outgoing ? ConsoleColor.Cyan : ConsoleColor.Green;
+                    return outgoing ? ConsoleTheme.OutgoingMarker : ConsoleTheme.IncomingMarker;
 
                 int colon = message.IndexOf(':', 4);
                 if (colon >= 0 && position <= colon)
-                    return outgoing ? ConsoleColor.DarkCyan : ConsoleColor.Yellow;
+                    return outgoing ? ConsoleTheme.OutgoingNickname : ConsoleTheme.IncomingNickname;
 
-                return ConsoleColor.White;
+                return outgoing ? ConsoleTheme.OutgoingText : ConsoleTheme.IncomingText;
             }
 
             if (ContainsAny(message, "не удалось", "потеряно", "недоступен", "закрыто", "ошибка",
                 "failed", "lost", "unavailable", "closed", "error"))
-                return ConsoleColor.Red;
+                return ConsoleTheme.SystemError;
             if (ContainsAny(message, "подключено", "успешно", "запущен", "продолжила",
                 "connected", "success", "started", "resumed"))
-                return ConsoleColor.Green;
+                return ConsoleTheme.SystemSuccess;
             if (ContainsAny(message, "ожид", "настрой", "попытк", "остановлена", "останавливаю",
                 "wait", "configur", "attempt", "paused", "stopping"))
-                return ConsoleColor.Yellow;
+                return ConsoleTheme.SystemWarning;
 
-            return ConsoleColor.DarkGray;
+            return ConsoleTheme.SystemText;
         }
 
         private static bool ContainsAny(string text, params string[] values)
@@ -1648,13 +1791,14 @@ namespace TCPTunnel
             List<MentionFragment> localMentionFragments)
         {
             int width = GetContentWidth();
-            int wrappedRows = GetWrappedRowCount(entry.Text, width);
+            string renderedText = GetRenderedChatText(entry);
+            int wrappedRows = GetWrappedRowCount(renderedText, width);
             for (int wrappedRow = Math.Max(0, wrappedRowsToSkip);
                  wrappedRow < wrappedRows && targetRow < bottomExclusive;
                  wrappedRow++, targetRow++)
             {
                 int offset = wrappedRow * width;
-                int count = Math.Min(width, Math.Max(0, entry.Text.Length - offset));
+                int count = Math.Min(width, Math.Max(0, renderedText.Length - offset));
                 ConsoleGraphic.ClearContentRow(targetRow);
                 Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
                 if (count <= 0)
@@ -1667,7 +1811,7 @@ namespace TCPTunnel
                     ConsoleGraphic.ContentLeft,
                     targetRow,
                     localMentionFragments);
-                WriteStyledChatText(entry.Text, offset, count, entry);
+                WriteStyledChatText(renderedText, offset, count, entry);
             }
         }
 

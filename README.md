@@ -32,6 +32,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
 | 📦 | Single EXE | `Open.Nat.dll` is embedded into `TCPTunnel.exe`; no adjacent application DLLs are required. |
+| 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. |
 
 ## Quick start
 
@@ -58,10 +59,12 @@ The Hub runs in the background of the same process, while the host connects loca
 
 | Command | Action |
 |---|---|
+| `/help` | Show the available commands and their syntax. |
 | `/status` | Show the local Hub and UPnP status. |
 | `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
 | `/clear` | Clear only your local chat history while keeping the session and interface active. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
+| `/kick @nickname ["reason"]` | Local Hub owner: notify and disconnect one participant. |
 | `/exit` | Leave the current chat and return to the menu. |
 
 ## How it works
@@ -103,6 +106,7 @@ TCPTunnel.exe [options]
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded dependencies and argument parsing works correctly. |
+| `-stress-test` | `-stress-test` | Run the loopback broadcast, framing, ordering, and targeted-disconnect stress suite. |
 | `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
 
 Example:
@@ -152,6 +156,8 @@ dotnet build TCPTunnel.sln -c Release
 
 The Release directory also contains debugging and runtime metadata, but only `TCPTunnel.exe` needs to be distributed. The target computer still needs a compatible .NET Framework runtime.
 
+The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
+
 Verify a copied executable at any time:
 
 ```powershell
@@ -169,16 +175,20 @@ TCPTunnel self-test: OK
 ```text
 TCPTunnel
 ├── Broadcaster.cs              # Ordered multi-client broadcasting
+├── ApplicationSettings.cs      # Atomic per-user profile persistence
 ├── Client.cs                   # Client state, sending, and rate limits
 ├── ConsoleGraphic.cs           # Console frame and bounded output
 ├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
+├── ConsoleTheme.cs             # Customizable terminal color palette
 ├── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
+├── HubEventProtocol.cs         # Versioned Hub event messages
 ├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
 ├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
 ├── NetWorker.cs                # Authentication, sessions, and UPnP
 ├── ServerInterface.cs          # Hub lifecycle and accept loop
 ├── SnakeProtocol.cs            # Custom UI-snake profile transmission
+├── StabilityTests.cs           # Loopback network stress checks
 ├── SystemMessageProtocol.cs    # "Language" for system ivents
 ├── UserInterface.cs            # Interactive chat and input rendering
 ├── WindowAttention.cs          # Windows taskbar attention notifications

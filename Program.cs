@@ -11,12 +11,23 @@ namespace TCPTunnel
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             EmbeddedAssemblyResolver.Register();
+            ApplicationSettings.Initialize();
             Lang.ApplyArguments(args);
+
+            if (Array.Exists(args, argument => String.Equals(argument, "-stress-test", StringComparison.OrdinalIgnoreCase)))
+            {
+                bool stressSuccess = StabilityTests.Run();
+                Console.WriteLine(stressSuccess ? "TCPTunnel stress test: OK" : "TCPTunnel stress test: FAILED");
+                Environment.ExitCode = stressSuccess ? 0 : 1;
+                return;
+            }
 
             if (Array.Exists(args, argument => String.Equals(argument, "-self-test", StringComparison.OrdinalIgnoreCase)))
             {
                 bool success = EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat() &&
                                SnakeProtocol.RunSelfTest() &&
+                               ApplicationSettings.RunSelfTest() &&
+                               HubEventProtocol.RunSelfTest() &&
                                Lang.RunSelfTest() &&
                                SystemMessageProtocol.RunSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&
@@ -34,6 +45,7 @@ namespace TCPTunnel
             AppDomain.CurrentDomain.ProcessExit += delegate
             {
                 ConsoleTitleAnimator.Stop();
+                ApplicationSettings.CaptureAndSave();
                 ServerInterface.StopServer();
             };
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)

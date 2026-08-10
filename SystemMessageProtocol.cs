@@ -9,7 +9,8 @@ namespace TCPTunnel
         UserLeft,
         ParticipantPresent,
         MessageTooLong,
-        TooManyMessages
+        TooManyMessages,
+        Kicked
     }
 
     internal static class SystemMessageProtocol
@@ -63,6 +64,11 @@ namespace TCPTunnel
                 case SystemMessageKind.TooManyMessages:
                     localized = Lang.Get(TextId.TooManyMessages);
                     return true;
+                case SystemMessageKind.Kicked:
+                    localized = String.IsNullOrWhiteSpace(argument)
+                        ? Lang.Get(TextId.KickedDefault)
+                        : Lang.Get(TextId.KickedReason, argument);
+                    return true;
                 default:
                     return false;
             }
@@ -80,6 +86,8 @@ namespace TCPTunnel
                    localized.IndexOf(original, StringComparison.Ordinal) >= 0 &&
                    TryLocalize(Create(SystemMessageKind.ParticipantPresent, original), out localized, out kind, out argument) &&
                    kind == SystemMessageKind.ParticipantPresent && localized == null && argument == original &&
+                   TryLocalize(Create(SystemMessageKind.Kicked, "reason"), out localized, out kind, out argument) &&
+                   kind == SystemMessageKind.Kicked && argument == "reason" &&
                    !TryLocalize("ordinary chat message", out localized, out kind, out argument);
         }
     }
