@@ -107,7 +107,7 @@ TCPTunnel.exe [options]
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
 | `-self-test` | `-self-test` | Verify that the embedded dependencies and argument parsing works correctly. |
 | `-stress-test` | `-stress-test` | Run the loopback broadcast, framing, ordering, and targeted-disconnect stress suite. |
-| `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
+| `-lang <en/ru>` | `-lang ru (by default)` | Switch current language. Have the option in main menu. |
 
 Example:
 
