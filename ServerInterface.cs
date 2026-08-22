@@ -15,7 +15,6 @@ namespace TCPTunnel
         private static Task portMappingLifecycle = Task.CompletedTask;
         private static volatile bool isRunning;
         private static string displayAddress = "127.0.0.1";
-        private static int gasterEventStarted;
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
@@ -36,29 +35,6 @@ namespace TCPTunnel
                 reason,
                 CancellationToken.None).ConfigureAwait(false);
             return kicked ? KickCommandResult.Success : KickCommandResult.NotFound;
-        }
-
-        internal static async Task TryStartGasterEventAsync(
-            string nickname,
-            CancellationToken cancellationToken)
-        {
-            if (!IsGasterNickname(nickname) || Interlocked.CompareExchange(ref gasterEventStarted, 1, 0) != 0)
-                return;
-
-            int seed = unchecked(Environment.TickCount * 397 ^ nickname.GetHashCode());
-            await broadcaster.BroadcastAsync(
-                null,
-                HubEventProtocol.CreateGasterEvent(nickname, 60000, seed),
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        private static bool IsGasterNickname(string nickname)
-        {
-            return String.Equals(nickname, "W_D_Gaster", StringComparison.OrdinalIgnoreCase) ||
-                   String.Equals(nickname, "Mystery_Man", StringComparison.OrdinalIgnoreCase) ||
-                   String.Equals(nickname, "WDGaster", StringComparison.OrdinalIgnoreCase) ||
-                   String.Equals(nickname, "WDG", StringComparison.OrdinalIgnoreCase) ||
-                   String.Equals(nickname, "MysteryMan", StringComparison.OrdinalIgnoreCase);
         }
 
         public static void tryCreateServer()
@@ -177,7 +153,6 @@ namespace TCPTunnel
                     displayAddress = GetDisplayAddress();
                     ListeningPort = port;
                     isRunning = true;
-                    Interlocked.Exchange(ref gasterEventStarted, 0);
                     acceptTask = AcceptLoopAsync(listener, serverCancellation.Token);
                     error = null;
                     return true;

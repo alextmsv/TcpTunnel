@@ -10,7 +10,6 @@ namespace TCPTunnel
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
-            EmbeddedAssemblyResolver.Register();
             ApplicationSettings.Initialize();
             Lang.ApplyArguments(args);
 
@@ -24,10 +23,9 @@ namespace TCPTunnel
 
             if (Array.Exists(args, argument => String.Equals(argument, "-self-test", StringComparison.OrdinalIgnoreCase)))
             {
-                bool success = EmbeddedAssemblyResolver.VerifyEmbeddedOpenNat() &&
-                               SnakeProtocol.RunSelfTest() &&
+                bool success = SnakeProtocol.RunSelfTest() &&
                                ApplicationSettings.RunSelfTest() &&
-                               HubEventProtocol.RunSelfTest() &&
+                               LegacyEventProtocol.RunSelfTest() &&
                                Lang.RunSelfTest() &&
                                SystemMessageProtocol.RunSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&

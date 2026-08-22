@@ -94,12 +94,6 @@ namespace TCPTunnel
         private static long nextResizePollTimestamp;
         private static int mentionMonitorActive;
         private static int chatSessionVersion;
-        private static int gasterEventActive;
-        private static int gasterEventTick;
-        private static int gasterEventSeed;
-        private static string gasterEventNickname;
-        private static int gasterThemeStarted;
-        private static bool graphicsBeforeGasterEvent;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -110,19 +104,7 @@ namespace TCPTunnel
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
                     if (TryApplySnakeUpdate(message) || SnakeProtocol.IsSnakeControlMessage(message))
                         continue;
-                    string eventNickname;
-                    int eventDuration;
-                    int eventSeed;
-                    if (HubEventProtocol.TryParseGasterEvent(
-                        message,
-                        out eventNickname,
-                        out eventDuration,
-                        out eventSeed))
-                    {
-                        BeginGasterEvent(eventNickname, eventDuration, eventSeed);
-                        continue;
-                    }
-                    if (HubEventProtocol.IsControlMessage(message))
+                    if (LegacyEventProtocol.IsControlMessage(message))
                         continue;
 
                     string localizedSystemMessage;
@@ -644,151 +626,9 @@ namespace TCPTunnel
             Interlocked.Increment(ref chatSessionVersion);
             WindowAttention.StopFlashing();
             lock (consoleLock)
-            {
                 pendingMentionAnimations.Clear();
-                StopGasterEventLocked();
-            }
             lock (participantsLock)
                 activeParticipants.Clear();
-        }
-
-        private static void BeginGasterEvent(string participant, int durationMilliseconds, int seed)
-        {
-            int version;
-            lock (consoleLock)
-            {
-                if (Interlocked.CompareExchange(ref gasterEventActive, 1, 0) != 0)
-                    return;
-
-                version = Volatile.Read(ref chatSessionVersion);
-                graphicsBeforeGasterEvent = ConsoleGraphic.Enabled;
-                gasterEventNickname = participant;
-                gasterEventSeed = seed;
-                gasterEventTick = 0;
-                Volatile.Write(ref gasterThemeStarted, 0);
-                ConsoleGraphic.SuspendTemporarily();
-                ConsoleGraphic.SetReservedBottomRows(0);
-                RedrawChatLayoutLocked();
-            }
-
-            TryOpenGasterSFX();
-            Task.Run(async () =>
-            {
-                int elapsed = 0;
-                const int frameDelay = 250;
-                while (elapsed < durationMilliseconds &&
-                       connected &&
-                       version == Volatile.Read(ref chatSessionVersion) &&
-                       Volatile.Read(ref gasterEventActive) != 0)
-                {
-                    await Task.Delay(frameDelay).ConfigureAwait(false);
-                    elapsed += frameDelay;
-                    lock (consoleLock)
-                    {
-                        if (version != Volatile.Read(ref chatSessionVersion) ||
-                            Volatile.Read(ref gasterEventActive) == 0)
-                            return;
-                        gasterEventTick++;
-                        RedrawChatLayoutLocked();
-                    }
-                }
-
-                lock (consoleLock)
-                {
-                    if (version == Volatile.Read(ref chatSessionVersion))
-                    {
-                        StopGasterEventLocked();
-                        RedrawChatLayoutLocked();
-                    }
-                }
-            });
-        }
-
-        private static void StopGasterEventLocked()
-        {
-            if (Interlocked.Exchange(ref gasterEventActive, 0) == 0)
-                return;
-            if (graphicsBeforeGasterEvent)
-                ConsoleGraphic.ResumeTemporarily();
-            else
-                ConsoleGraphic.Enabled = false;
-            ConsoleGraphic.SetReservedBottomRows(showServerCard && ConsoleGraphic.Enabled ? 3 : 0);
-            if (ConsoleGraphic.Enabled)
-                MarkConsoleResizePendingLocked();
-            gasterEventNickname = null;
-            gasterEventTick = 0;
-            Volatile.Write(ref gasterThemeStarted, 0);
-        }
-
-        private static void TryOpenGasterSFX()
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "https://www.myinstants.com/media/sounds/gaster-vanish.mp3",
-                    UseShellExecute = true
-                });
-            }
-            catch
-            {
-            }
-        }
-
-        private static void TryOpenGasterTheme()
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "https://static.wikia.nocookie.net/tobyfox/images/a/a2/Mus_st_him.ogg",
-                    UseShellExecute = true
-                });
-            }
-            catch
-            {
-            }
-        }
-
-        private static string GetRenderedChatText(ChatHistoryEntry entry)
-        {
-            string original = entry.Text;
-            if (Volatile.Read(ref gasterEventActive) == 0 ||
-                String.IsNullOrEmpty(gasterEventNickname) ||
-                !IsMessageFromParticipant(original, gasterEventNickname))
-                return original;
-
-            const string symbols = "☺☻♣♠•◘○♂▬";
-            char[] characters = original.ToCharArray();
-            int colon = original.IndexOf(':', 4);
-            for (int index = Math.Max(0, colon + 1); index < characters.Length; index++)
-            {
-                if (!Char.IsLetterOrDigit(characters[index]))
-                    continue;
-                int hash = unchecked(gasterEventSeed + gasterEventTick * 1103515245 + index * 397);
-                if ((hash & 3) == 0)
-                    characters[index] = symbols[(hash & Int32.MaxValue) % symbols.Length];
-            }
-            return new string(characters);
-        }
-
-        private static bool IsMessageFromParticipant(string message, string participant)
-        {
-            if (String.IsNullOrEmpty(message) || String.IsNullOrEmpty(participant))
-                return false;
-
-            return message.StartsWith(">>> [" + participant + "]:", StringComparison.OrdinalIgnoreCase) ||
-                   message.StartsWith("<<< [" + participant + "]:", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static void TryStartGasterThemeForMessageLocked(string message)
-        {
-            if (Volatile.Read(ref gasterEventActive) == 0 ||
-                !IsMessageFromParticipant(message, gasterEventNickname) ||
-                Interlocked.CompareExchange(ref gasterThemeStarted, 1, 0) != 0)
-                return;
-
-            Task.Run((Action)TryOpenGasterTheme);
         }
 
         internal static bool RunCommandSelfTest()
@@ -813,11 +653,6 @@ namespace TCPTunnel
                 FindMentionSpans("hello @alextmsv"));
             ChatTextStyle mentionStyle = GetChatTextStyle(styleEntry, "hello ".Length);
             ChatTextStyle plainStyle = GetChatTextStyle(styleEntry, 0);
-            bool gasterMessageRecognition =
-                IsMessageFromParticipant(">>> [W_D_Gaster]: Hello", "W_D_Gaster") &&
-                IsMessageFromParticipant("<<< [w_d_gaster]: Hello", "W_D_Gaster") &&
-                !IsMessageFromParticipant(">>> [W_D_Gaster_2]: Hello", "W_D_Gaster") &&
-                !IsMessageFromParticipant(">>> W_D_Gaster: Hello", "W_D_Gaster");
             nickname = previousNickname;
             lock (participantsLock)
                 activeParticipants.Clear();
@@ -830,9 +665,8 @@ namespace TCPTunnel
                    validMentions[0].Length == "@alextmsv".Length &&
                    validMentions[0].IsLocalUser &&
                    !validMentions[1].IsLocalUser &&
-                    invalidMentions.Count == 0 &&
-                    gasterMessageRecognition &&
-                    mentionStyle.Foreground == ConsoleColor.Black &&
+                   invalidMentions.Count == 0 &&
+                   mentionStyle.Foreground == ConsoleColor.Black &&
                    mentionStyle.Background == ConsoleColor.White &&
                    plainStyle.Background == ConsoleColor.Black;
         }
@@ -1151,7 +985,6 @@ namespace TCPTunnel
             {
                 bool consoleReady = EnsureConsoleGeometryLocked();
                 string safeMessage = SanitizeForConsole(message);
-                TryStartGasterThemeForMessageLocked(safeMessage);
                 List<MentionSpan> mentions = detectMentions
                     ? FindMentionSpans(safeMessage)
                     : new List<MentionSpan>();
@@ -1213,7 +1046,7 @@ namespace TCPTunnel
             ChatHistoryEntry entry,
             List<MentionFragment> localMentionFragments = null)
         {
-            string message = GetRenderedChatText(entry);
+            string message = entry.Text;
             if (!ConsoleGraphic.Enabled)
             {
                 MoveCursorToContentColumn();
@@ -1351,7 +1184,7 @@ namespace TCPTunnel
                 {
                     Left = left + fragmentStart - offset,
                     Top = top,
-                    Text = GetRenderedChatText(entry).Substring(fragmentStart, fragmentEnd - fragmentStart)
+                    Text = entry.Text.Substring(fragmentStart, fragmentEnd - fragmentStart)
                 });
             }
         }
@@ -1382,7 +1215,7 @@ namespace TCPTunnel
                     {
                         Left = left,
                         Top = top,
-                        Text = GetRenderedChatText(entry).Substring(mention.Start + consumed, length)
+                        Text = entry.Text.Substring(mention.Start + consumed, length)
                     });
                     consumed += length;
                 }
@@ -1791,7 +1624,7 @@ namespace TCPTunnel
             List<MentionFragment> localMentionFragments)
         {
             int width = GetContentWidth();
-            string renderedText = GetRenderedChatText(entry);
+            string renderedText = entry.Text;
             int wrappedRows = GetWrappedRowCount(renderedText, width);
             for (int wrappedRow = Math.Max(0, wrappedRowsToSkip);
                  wrappedRow < wrappedRows && targetRow < bottomExclusive;

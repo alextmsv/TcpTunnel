@@ -4,7 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
-using Open.Nat;
+using SharpOpenNat;
 
 namespace TCPTunnel
 {
@@ -17,7 +17,7 @@ namespace TCPTunnel
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
         private static readonly SemaphoreSlim natLock = new SemaphoreSlim(1, 1);
         private static readonly object natStatusLock = new object();
-        private static NatDevice mappedDevice;
+        private static INatDevice mappedDevice;
         private static Mapping activeMapping;
         private static string activeMappingProtocol;
         private static Task mappingRenewalTask = Task.CompletedTask;
@@ -128,16 +128,15 @@ namespace TCPTunnel
             CancellationToken cancellationToken)
         {
             string protocolName = mapper == PortMapper.Upnp ? "UPnP" : "NAT-PMP";
-            NatDevice device;
+            INatDevice device;
 
             try
             {
-                var discoverer = new NatDiscoverer();
                 using (var discoveryCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
                     discoveryCancellation.CancelAfter(TimeSpan.FromSeconds(NatDiscoveryTimeoutSeconds));
-                    device = await discoverer
-                        .DiscoverDeviceAsync(mapper, discoveryCancellation)
+                    device = await OpenNat.Discoverer
+                        .DiscoverDeviceAsync(mapper, discoveryCancellation.Token)
                         .ConfigureAwait(false);
                 }
             }
@@ -163,10 +162,10 @@ namespace TCPTunnel
 
                 try
                 {
-                    await device.CreatePortMapAsync(mapping).ConfigureAwait(false);
+                    await device.CreatePortMapAsync(mapping, cancellationToken).ConfigureAwait(false);
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        try { await device.DeletePortMapAsync(mapping).ConfigureAwait(false); } catch { }
+                        try { await device.DeletePortMapAsync(mapping, CancellationToken.None).ConfigureAwait(false); } catch { }
                         cancellationToken.ThrowIfCancellationRequested();
                     }
 
@@ -192,7 +191,7 @@ namespace TCPTunnel
         }
 
         private static async Task RenewPortMappingAsync(
-            NatDevice device,
+            INatDevice device,
             Mapping mapping,
             CancellationToken cancellationToken)
         {
@@ -209,7 +208,7 @@ namespace TCPTunnel
                         if (!Object.ReferenceEquals(mappedDevice, device) || !Object.ReferenceEquals(activeMapping, mapping))
                             return;
 
-                        await device.CreatePortMapAsync(mapping).ConfigureAwait(false);
+                        await device.CreatePortMapAsync(mapping, cancellationToken).ConfigureAwait(false);
                         nextDelaySeconds = Math.Max(60, mapping.Lifetime / 2);
                     }
                     catch
@@ -252,7 +251,7 @@ namespace TCPTunnel
 
                 try
                 {
-                    await mappedDevice.DeletePortMapAsync(activeMapping).ConfigureAwait(false);
+                    await mappedDevice.DeletePortMapAsync(activeMapping, CancellationToken.None).ConfigureAwait(false);
                     return SetPortMappingStatus(TextId.NatPortClosed, activeMappingProtocol ?? "NAT", activeMapping.PublicPort);
                 }
                 catch (Exception ex)
@@ -350,9 +349,6 @@ namespace TCPTunnel
                     null,
                     SystemMessageProtocol.Create(SystemMessageKind.UserJoined, authenticatedNickname),
                     serverCancellationToken).ConfigureAwait(false);
-                await ServerInterface.TryStartGasterEventAsync(
-                    authenticatedNickname,
-                    serverCancellationToken).ConfigureAwait(false);
 
                 while (!serverCancellationToken.IsCancellationRequested)
                 {
@@ -389,7 +385,7 @@ namespace TCPTunnel
 
                     if (SnakeProtocol.IsSnakeControlMessage(message))
                         continue;
-                    if (HubEventProtocol.IsControlMessage(message))
+                    if (LegacyEventProtocol.IsControlMessage(message))
                         continue;
 
                     await broadcaster.BroadcastAsync(client, $"[{authenticatedNickname}]: {message}", serverCancellationToken).ConfigureAwait(false);

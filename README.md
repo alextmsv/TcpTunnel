@@ -4,7 +4,7 @@
 
 ### A lightweight multiplayer TCP chat for Windows cmd terminals
 
-[![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.7.2-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet-framework/net472)
+[![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows)](#requirements)
 [![Transport](https://img.shields.io/badge/transport-TCP-00B4D8?style=for-the-badge)](#how-it-works)
 [![Build](https://img.shields.io/badge/build-stable-2EA44F?style=for-the-badge)](#building-from-source)
@@ -31,7 +31,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
-| 📦 | Single EXE | `Open.Nat.dll` is embedded into `TCPTunnel.exe`; no adjacent application DLLs are required. |
+| 📦 | Single EXE | The .NET runtime and managed dependencies are bundled through supported SDK single-file publishing. |
 | 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. |
 
 ## Quick start
@@ -105,7 +105,7 @@ TCPTunnel.exe [options]
 | `-ping <host:port>` | `-ping cool.tcptunnel.hub:9091` | Check whether a TCP endpoint is reachable. |
 | `-no-graphics` | `-no-graphics` | Disable ConsoleGraphics without CG's option |
 | `-graphics <on\|off>` | `-graphics off` | Explicitly enable or disable ConsoleGraphics. (Can be switched in CG's options)|
-| `-self-test` | `-self-test` | Verify that the embedded dependencies and argument parsing works correctly. |
+| `-self-test` | `-self-test` | Verify protocols, configuration parsing, localization, and command handling. |
 | `-stress-test` | `-stress-test` | Run the loopback broadcast, framing, ordering, and targeted-disconnect stress suite. |
 | `-lang <en/ru>` | `-lang ru (by defaule)` | Switch current language. Have the option in main menu. |
 
@@ -130,10 +130,11 @@ If other people cannot connect, check the following:
 
 ## Requirements
 
-- Windows
-- .NET Framework **4.7.2 or newer**
+- Windows 10 or newer
 
-Modern Windows installations commonly include a compatible .NET Framework runtime. If the application does not start, install the [.NET Framework 4.7.2 runtime](https://dotnet.microsoft.com/download/dotnet-framework/net472) or a newer 4.x version.
+Official release builds are self-contained, so the target computer does not need a separately installed .NET runtime.
+
+Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or a newer SDK capable of targeting `net8.0-windows`.
 
 ## Building from source
 
@@ -141,8 +142,8 @@ Modern Windows installations commonly include a compatible .NET Framework runtim
 
 1. Open `TCPTunnel.sln`.
 2. Select the **Release** configuration.
-3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd>.
-4. Find the portable executable at `bin\Release\TCPTunnel.exe`.
+3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd> to compile and debug the project.
+4. Use **Publish** with `win-x64`, **Self-contained**, and **Produce single file** to create the distributable executable.
 
 
    or just go [releases](https://github.com/alextmsv/TcpTunnel/releases/latest) lol
@@ -150,11 +151,23 @@ Modern Windows installations commonly include a compatible .NET Framework runtim
 ### Command line
 
 ```powershell
-dotnet restore TCPTunnel.sln -p:RestorePackagesConfig=true
-dotnet build TCPTunnel.sln -c Release
+dotnet restore .\TCPTunnel.sln
+dotnet build .\TCPTunnel.sln -c Release
+dotnet publish .\TCPTunnel.csproj `
+  -c Release `
+  -r win-x64 `
+  --self-contained true `
+  -p:PublishSingleFile=true `
+  -p:PublishTrimmed=false
 ```
 
-The Release directory also contains debugging and runtime metadata, but only `TCPTunnel.exe` needs to be distributed. The target computer still needs a compatible .NET Framework runtime.
+The distributable executable is created under:
+
+```text
+bin\Release\net8.0-windows\win-x64\publish\TCPTunnel.exe
+```
+
+Only that executable needs to be distributed. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 
@@ -180,12 +193,11 @@ TCPTunnel
 ├── ConsoleGraphic.cs           # Console frame and bounded output
 ├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
 ├── ConsoleTheme.cs             # Customizable terminal color palette
-├── EmbeddedAssemblyResolver.cs # Single-EXE dependency loader
-├── HubEventProtocol.cs         # Versioned Hub event messages
+├── LegacyEventProtocol.cs      # Safely ignores event packets from older releases
 ├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
 ├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
-├── NetWorker.cs                # Authentication, sessions, and UPnP
+├── NetWorker.cs                # Authentication, sessions, UPnP, and NAT-PMP
 ├── ServerInterface.cs          # Hub lifecycle and accept loop
 ├── SnakeProtocol.cs            # Custom UI-snake profile transmission
 ├── StabilityTests.cs           # Loopback network stress checks
