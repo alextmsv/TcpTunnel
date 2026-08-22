@@ -28,6 +28,7 @@ namespace TCPTunnel
                                LegacyEventProtocol.RunSelfTest() &&
                                Lang.RunSelfTest() &&
                                SystemMessageProtocol.RunSelfTest() &&
+                               NetworkAddressResolver.RunSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&
                                UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));

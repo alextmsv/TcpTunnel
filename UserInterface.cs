@@ -350,18 +350,29 @@ namespace TCPTunnel
             isLocalHubSession = ServerInterface.IsRunning &&
                                 remoteEndPoint != null &&
                                 remoteEndPoint.Port == ServerInterface.ListeningPort &&
-                                IPAddress.IsLoopback(remoteEndPoint.Address);
+                                NetworkAddressResolver.IsLoopback(remoteEndPoint.Address);
             showServerCard = ConsoleGraphic.Enabled && remoteEndPoint != null;
             serverCardAddress = isLocalHubSession
                 ? ServerInterface.DisplayAddress
-                : (remoteEndPoint == null ? "?" : remoteEndPoint.Address.ToString());
+                : (remoteEndPoint == null
+                    ? "?"
+                    : NetworkAddressResolver.NormalizeAddressText(remoteEndPoint.Address));
             serverCardPort = remoteEndPoint == null ? 0 : remoteEndPoint.Port;
             ConsoleGraphic.SetReservedBottomRows(showServerCard ? 3 : 0);
             graphic.Clear();
             ResetChatSessionLayout();
             if (showServerCard)
                 ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
-            WriteChatLine(Lang.Get(TextId.ConnectedCommands, client.Client.RemoteEndPoint), ConsoleColor.Green);
+            string displayedEndpoint = isLocalHubSession
+                ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
+                : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
+            WriteChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint), ConsoleColor.Green);
+            if (isLocalHubSession && !ServerInterface.DisplayAddressIsPublic)
+            {
+                WriteChatLine(
+                    Lang.Get(TextId.PublicIPv4Unavailable, ServerInterface.DisplayAddress),
+                    ConsoleColor.Yellow);
+            }
 
             var sessionCancellation = new CancellationTokenSource();
             Task receiverTask = ReceiveMessagesAsync(client, stream, sessionCancellation.Token);

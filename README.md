@@ -45,7 +45,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 5. Share your public IP address and port with the other participants.
 6. Have fun!
 
-The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`.
+The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`. TCPTunnel displays the public IPv4 address when it can be resolved; otherwise it reports the fallback and shows the active local IPv4 address.
 
 ### Join a chat
 
@@ -118,6 +118,8 @@ TCPTunnel.exe -nickname VodkaMan -connect cool.tcptunnel.hub:9091 -graphics on -
 ## Internet connectivity and NAT
 
 TCPTunnel first attempts to create a UPnP mapping for the selected TCP port, then falls back to a renewable NAT-PMP lease. This works only when at least one of these protocols is enabled and supported by the router.
+
+When a Hub starts, TCPTunnel makes a short HTTPS request to [ipify](https://www.ipify.org/) to determine the public IPv4 address shown to the host. No nickname or chat data is sent. If the request cannot be completed within three seconds, the Hub continues normally and displays the active local IPv4 address instead.
 
 If other people cannot connect, check the following:
 
@@ -197,6 +199,7 @@ TCPTunnel
 ├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
 ├── MessageProtocol.cs          # Length-prefixed UTF-8 protocol
+├── NetworkAddressResolver.cs   # Public/local IPv4 discovery and endpoint formatting
 ├── NetWorker.cs                # Authentication, sessions, UPnP, and NAT-PMP
 ├── ServerInterface.cs          # Hub lifecycle and accept loop
 ├── SnakeProtocol.cs            # Custom UI-snake profile transmission

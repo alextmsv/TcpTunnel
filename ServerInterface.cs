@@ -14,12 +14,14 @@ namespace TCPTunnel
         private static Task acceptTask = Task.CompletedTask;
         private static Task portMappingLifecycle = Task.CompletedTask;
         private static volatile bool isRunning;
-        private static string displayAddress = "127.0.0.1";
+        private static volatile string displayAddress = "127.0.0.1";
+        private static volatile bool displayAddressIsPublic;
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
         public static string PortMappingStatus => GetPortMappingStatus();
         public static string DisplayAddress => displayAddress;
+        public static bool DisplayAddressIsPublic => displayAddressIsPublic;
         public static int ConnectedClientCount => broadcaster.AuthenticatedClientCount;
 
         internal static async Task<KickCommandResult> KickClientAsync(
@@ -101,6 +103,8 @@ namespace TCPTunnel
 
             StartPortMapping(port, serverCancellation.Token);
 
+            ResolveDisplayAddress(port, serverCancellation.Token);
+
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.DrawServerEndpointCard(DisplayAddress, port);
@@ -110,21 +114,28 @@ namespace TCPTunnel
             return UserInterface.DoConnect("127.0.0.1", port, 1);
         }
 
-        private static string GetDisplayAddress()
+        private static void ResolveDisplayAddress(int port, CancellationToken cancellationToken)
         {
+            HubAddressResolution resolution;
             try
             {
-                foreach (IPAddress address in Dns.GetHostAddresses(Dns.GetHostName()))
-                {
-                    if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
-                        return address.ToString();
-                }
+                resolution = NetworkAddressResolver.ResolveHubAddressAsync(cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
             }
-            catch
+            catch (OperationCanceledException)
             {
+                return;
             }
 
-            return "127.0.0.1";
+            lock (serverLock)
+            {
+                if (!isRunning || ListeningPort != port)
+                    return;
+
+                displayAddress = resolution.Address;
+                displayAddressIsPublic = resolution.IsPublic;
+            }
         }
 
         public static bool TryStartServer(int port, out string error)
@@ -150,7 +161,8 @@ namespace TCPTunnel
 
                     server = listener;
                     serverCancellation = new CancellationTokenSource();
-                    displayAddress = GetDisplayAddress();
+                    displayAddress = "127.0.0.1";
+                    displayAddressIsPublic = false;
                     ListeningPort = port;
                     isRunning = true;
                     acceptTask = AcceptLoopAsync(listener, serverCancellation.Token);
@@ -181,6 +193,7 @@ namespace TCPTunnel
 
                 isRunning = false;
                 ListeningPort = 0;
+                displayAddressIsPublic = false;
                 cancellation = serverCancellation;
                 listener = server;
                 serverCancellation = null;
