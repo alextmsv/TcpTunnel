@@ -31,7 +31,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
-| 📦 | Single EXE | The .NET runtime and managed dependencies are bundled through supported SDK single-file publishing. |
+| 📦 | Lightweight EXE | A native bootstrapper keeps the distributable close to the original size and opens the official .NET 8 download page when the runtime is missing. |
 | 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. |
 
 ## Quick start
@@ -134,9 +134,11 @@ If other people cannot connect, check the following:
 
 - Windows 10 or newer
 
-Official release builds are self-contained, so the target computer does not need a separately installed .NET runtime.
+Official lightweight builds require the [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). The native launcher checks this before starting managed code and automatically opens the official download page when a compatible x64 runtime is unavailable.
 
 Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or a newer SDK capable of targeting `net8.0-windows`.
+
+Creating the lightweight release EXE also requires Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. A normal Debug or Release build of the managed project only requires the .NET SDK.
 
 ## Building from source
 
@@ -145,7 +147,7 @@ Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/down
 1. Open `TCPTunnel.sln`.
 2. Select the **Release** configuration.
 3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd> to compile and debug the project.
-4. Use **Publish** with `win-x64`, **Self-contained**, and **Produce single file** to create the distributable executable.
+4. Open a terminal in the project directory and run `dotnet msbuild -t:PublishLite -p:Configuration=Release` to create the distributable executable.
 
 
    or just go [releases](https://github.com/alextmsv/TcpTunnel/releases/latest) lol
@@ -155,12 +157,9 @@ Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/down
 ```powershell
 dotnet restore .\TCPTunnel.sln
 dotnet build .\TCPTunnel.sln -c Release
-dotnet publish .\TCPTunnel.csproj `
-  -c Release `
-  -r win-x64 `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:PublishTrimmed=false
+dotnet msbuild .\TCPTunnel.csproj `
+  -t:PublishLite `
+  -p:Configuration=Release
 ```
 
 The distributable executable is created under:
@@ -169,7 +168,7 @@ The distributable executable is created under:
 bin\Release\net8.0-windows\win-x64\publish\TCPTunnel.exe
 ```
 
-Only that executable needs to be distributed. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
+Only that executable needs to be distributed. On first launch it extracts its small managed payload under `%LocalAppData%\TCPTunnel\runtime`, then hosts it inside the original `TCPTunnel.exe` process. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 
@@ -190,6 +189,7 @@ TCPTunnel self-test: OK
 ```text
 TCPTunnel
 ├── Broadcaster.cs              # Ordered multi-client broadcasting
+├── Bootstrapper/               # Native .NET 8 check and in-process launcher
 ├── ApplicationSettings.cs      # Atomic per-user profile persistence
 ├── Client.cs                   # Client state, sending, and rate limits
 ├── ConsoleGraphic.cs           # Console frame and bounded output
@@ -207,6 +207,7 @@ TCPTunnel
 ├── SystemMessageProtocol.cs    # "Language" for system ivents
 ├── UserInterface.cs            # Interactive chat and input rendering
 ├── WindowAttention.cs          # Windows taskbar attention notifications
+├── build-lite.ps1              # Reproducible lightweight release builder
 ```
 
 ## Roadmap
