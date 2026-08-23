@@ -75,6 +75,9 @@ Drag exactly one `.jpg`, `.jpeg`, `.png`, or `.gif` file from Explorer into the 
 
 `.webp` follows the same flow when a compatible Windows Imaging Component codec is installed. If the codec is unavailable, the error remains local and the chat connection stays active.
 
+
+https://github.com/user-attachments/assets/9b2cfa32-894c-4fa9-b963-77a680012443
+
 GIF frames are composed according to their disposal metadata and animate directly inside the existing chat rectangle. Large or heavily reduced images and GIFs remain compact inside the chat; use `/look` after the prompt to open the most recent one in a maximized plain console window.
 
 ### Chat commands
