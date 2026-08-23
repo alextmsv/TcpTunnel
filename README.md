@@ -15,10 +15,10 @@
 
 ---
 
-TCPTunnel is a nostalgic console chat brought back to life with a stable asynchronous TCP core, an animated terminal interface, automatic UPnP port mapping, and a portable single-file application binary.
+TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a stable asynchronous TCP core, an animated terminal interface, automatic UPnP port mapping, and a portable single-file application binary.
 
 > [!IMPORTANT]
-> Chat traffic is currently sent as **plain TCP without encryption**. Do not use TCPTunnel for confidential conversations on untrusted networks, encryption in my plans!
+> Chat traffic is currently sent as plain TCP **without encryption**. Do not use TCPTunnel for confidential conversations on untrusted networks, encryption in my plans!
 
 ## Highlights
 
@@ -27,15 +27,27 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 | 🌐 | Multiplayer Hub | One process hosts the TCP Hub and connects the local user—no second console window required. |
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
 | 🖼️ | ASCII images | Drag a JPEG or PNG into the input to share a tiny grayscale preview; optional WebP works when Windows has a WIC codec. |
-| @ | Mentions | Existing participants are highlighted by `@durak go drink vodka`; direct mentions blink in-chat and request attention on the Windows taskbar. |
+| @  | Mentions | Existing participants are highlighted by `@durak go drink vodka`; direct mentions blink in-chat and request attention on the Windows taskbar. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
 | 📦 | Lightweight EXE | A native bootstrapper keeps the distributable close to the original size and opens the official .NET 8 download page when the runtime is missing. |
-| 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. |
+| 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. **(Testing)** |
+
+## Recent updates
+
+- Added safe ASCII image sharing for JPEG, PNG, and optional WebP sources without transmitting the original file or its metadata.
+- Added consistent sender/receiver image sizing and the `/look` viewer for previews that need substantial downscaling.
+- Expanded `.cfg` profiles with the full interface palette, live color previews, and reliable theme application after import.
+- System messages, Hub startup notices, and the endpoint card now follow the configured system color instead of hard-coded success colors.
+- Added the lightweight native launcher, automatic .NET 8 runtime check, and a reproducible lite publish command.
 
 ## Quick start
+
+### [Download latest TCPTunnel release version](https://github.com/alextmsv/TcpTunnel/releases/latest)
+
+Attention! TCPTunnel **above** v1.3.0 requires [.NET 8.0 **desktop runtime**](https://dotnet.microsoft.com/download/dotnet/8.0) installed!
 
 ### Host a chat
 
@@ -46,7 +58,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 5. Share your public IP address and port with the other participants.
 6. Have fun!
 
-The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`. TCPTunnel displays the public IPv4 address when it can be resolved; otherwise it reports the fallback and shows the active local IPv4 address.
+The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`. TCPTunnel displays the public IPv4 address from [ipify](https://api.ipify.org) when it can be resolved; otherwise it reports the fallback and shows the active local IPv4 address. !**(ipify not available in Russia)**
 
 ### Join a chat
 
@@ -210,6 +222,11 @@ TCPTunnel
 ├── ConsoleGraphic.cs           # Console frame and bounded output
 ├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
 ├── ConsoleTheme.cs             # Customizable terminal color palette
+├── ImageCodec.cs               # Safe image decoding and grayscale packing
+├── ImageInput.cs               # Drag-and-drop image path recognition
+├── ImageProtocol.cs            # Compact image transfer frames and validation
+├── ImageRenderer.cs            # Stable ASCII conversion and chat previews
+├── ImageViewer.cs              # Separate full-size /look console viewer
 ├── LegacyEventProtocol.cs      # Safely ignores event packets from older releases
 ├── Localization.cs             # Translations container
 ├── Menu.cs                     # Menu and launch arguments
@@ -237,6 +254,6 @@ TCPTunnel
 
 <div align="center">
 
-Made with nostalgia by **alextmsv**.
+Made with nostalgic vibes by **alextmsv**.
 
 </div>
