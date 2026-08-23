@@ -49,7 +49,7 @@ namespace TCPTunnel
                     ConsoleColor.Cyan,
                     true,
                     4);
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ChooseTcpPort), ConsoleColor.DarkGray);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ChooseTcpPort), ConsoleTheme.SystemText);
                 ConsoleGraphic.TrySetContentCursor(2, ConsoleGraphic.ContentTop + 3);
                 Program.matrix(Lang.Get(TextId.EnterServerPort), 4, ConsoleColor.Yellow, false);
             }
@@ -65,7 +65,7 @@ namespace TCPTunnel
             else if (!Int32.TryParse(rawPort, out port) || port < 1 || port > 65535)
             {
                 if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.InvalidPortNumber), ConsoleColor.Red);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.InvalidPortNumber), ConsoleTheme.SystemText);
                 else
                     ConsoleGraphic.WriteContentLine(Lang.Get(TextId.InvalidPortNumber));
                 return;
@@ -77,13 +77,13 @@ namespace TCPTunnel
         public static bool doCreateServer(int port)
         {
             if (ConsoleGraphic.Enabled)
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.StartingListener), ConsoleColor.Yellow, 0, true, 3);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.StartingListener), ConsoleTheme.SystemText, 0, true, 3);
 
             string error;
             if (!TryStartServer(port, out error))
             {
                 if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.CreateHubFailed, error), ConsoleColor.Red);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.CreateHubFailed, error), ConsoleTheme.SystemText);
                 else
                     ConsoleGraphic.WriteContentLine(Lang.Get(TextId.CreateHubFailed, error));
                 return false;
@@ -91,9 +91,9 @@ namespace TCPTunnel
 
             if (ConsoleGraphic.Enabled)
             {
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ListenerStarted), ConsoleColor.Green);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ListenerStarted), ConsoleTheme.SystemText);
                 Thread.Sleep(180);
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConfiguringNat), ConsoleColor.Yellow);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConfiguringNat), ConsoleTheme.SystemText);
             }
             else
             {
@@ -108,7 +108,7 @@ namespace TCPTunnel
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.DrawServerEndpointCard(DisplayAddress, port);
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.LocalClientConnecting), ConsoleColor.Yellow, 3);
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.LocalClientConnecting), ConsoleTheme.SystemText, 3);
             }
 
             return UserInterface.DoConnect("127.0.0.1", port, 1);

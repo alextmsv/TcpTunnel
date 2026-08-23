@@ -356,6 +356,34 @@ namespace TCPTunnel
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
+                    if (ImageProtocol.IsImageControlMessage(message))
+                    {
+                        if (!client.TryConsumeImageToken())
+                        {
+                            await broadcaster.SendSystemMessageToAsync(
+                                client,
+                                SystemMessageKind.TooManyImages,
+                                null,
+                                serverCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        ImagePacket imagePacket;
+                        if (!ImageProtocol.TryParseClientFrame(message, out imagePacket))
+                        {
+                            await broadcaster.SendSystemMessageToAsync(
+                                client,
+                                SystemMessageKind.InvalidImage,
+                                null,
+                                serverCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        string imageFrame = ImageProtocol.CreateServerFrame(imagePacket, authenticatedNickname);
+                        await broadcaster.BroadcastAsync(client, imageFrame, serverCancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     if (message.Length > MessageProtocol.MaxMessageCharacters)
                     {
                         await broadcaster.SendSystemMessageToAsync(

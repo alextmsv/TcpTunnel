@@ -14,16 +14,32 @@ namespace TCPTunnel
     {
         private sealed class ChatHistoryEntry
         {
-            public ChatHistoryEntry(string text, ConsoleColor? forcedColor, List<MentionSpan> mentions)
+            public ChatHistoryEntry(
+                string text,
+                ConsoleColor? forcedColor,
+                List<MentionSpan> mentions,
+                bool useSystemTheme = false)
             {
                 Text = text;
                 ForcedColor = forcedColor;
                 Mentions = mentions ?? new List<MentionSpan>();
+                UseSystemTheme = useSystemTheme;
+            }
+
+            public ChatHistoryEntry(FrozenImage image)
+            {
+                Image = image ?? throw new ArgumentNullException(nameof(image));
+                Text = (image.IsOutgoing ? "<<<" : ">>>") +
+                       " [" + image.Sender + "]: [" + Lang.Get(TextId.ImageLabel) + "]";
+                Mentions = new List<MentionSpan>();
             }
 
             public string Text { get; }
             public ConsoleColor? ForcedColor { get; }
             public List<MentionSpan> Mentions { get; }
+            public bool UseSystemTheme { get; }
+            public FrozenImage Image { get; }
+            public bool IsImage { get { return Image != null; } }
             public bool MentionsLocalUser
             {
                 get { return Mentions.Exists(mention => mention.IsLocalUser); }
@@ -59,6 +75,7 @@ namespace TCPTunnel
         private const int ConnectionTimeoutMilliseconds = 3000;
         private const int RetryDelayMilliseconds = 1000;
         private const int MaxVisibleInputRows = 3;
+        private const int ImageInputRowReservation = 1;
         private const int MaxChatHistoryLines = 200;
         private const int ResizePollMilliseconds = 100;
         private const int ResizeSettleMilliseconds = 180;
@@ -94,6 +111,9 @@ namespace TCPTunnel
         private static long nextResizePollTimestamp;
         private static int mentionMonitorActive;
         private static int chatSessionVersion;
+        private static int imageHistoryBytes;
+        private static int imageHistoryVersion;
+        private static ImagePacket lastLargeImagePacket;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -102,6 +122,17 @@ namespace TCPTunnel
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
+                    ImagePacket imagePacket;
+                    if (ImageProtocol.TryParseServerFrame(message, out imagePacket))
+                    {
+                        await ReceiveImageAsync(imagePacket).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (ImageProtocol.IsImageControlMessage(message))
+                    {
+                        WriteSystemChatLine(Lang.Get(TextId.InvalidImagePacket));
+                        continue;
+                    }
                     if (TryApplySnakeUpdate(message) || SnakeProtocol.IsSnakeControlMessage(message))
                         continue;
                     if (LegacyEventProtocol.IsControlMessage(message))
@@ -120,12 +151,7 @@ namespace TCPTunnel
                         if (systemKind == SystemMessageKind.ParticipantPresent)
                             continue;
 
-                        ConsoleColor? eventColor = systemKind == SystemMessageKind.UserJoined
-                            ? ConsoleColor.Green
-                            : ((systemKind == SystemMessageKind.UserLeft || systemKind == SystemMessageKind.Kicked)
-                                ? ConsoleColor.Red
-                                : (ConsoleColor?)null);
-                        WriteChatLine(">>> " + localizedSystemMessage, eventColor);
+                        WriteSystemChatLine(">>> " + localizedSystemMessage);
                         if (systemKind == SystemMessageKind.Kicked)
                         {
                             connected = false;
@@ -157,7 +183,7 @@ namespace TCPTunnel
             finally
             {
                 if (connected)
-                    WriteChatLine(Lang.Get(TextId.HubConnectionLost), ConsoleColor.Red);
+                    WriteSystemChatLine(Lang.Get(TextId.HubConnectionLost));
                 connected = false;
                 client.Close();
                 WindowAttention.StopFlashing();
@@ -224,7 +250,7 @@ namespace TCPTunnel
                     {
                         ConsoleGraphic.WriteBottomStatus(
                             Lang.Get(TextId.ConnectingCompact, address, port, attempt, attempts),
-                            ConsoleColor.Yellow,
+                            ConsoleTheme.SystemText,
                             ServerInterface.IsRunning ? 3 : 0);
                     }
                     else
@@ -244,7 +270,7 @@ namespace TCPTunnel
                         {
                             client.Close();
                             if (ConsoleGraphic.Enabled)
-                                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.SessionStartFailed, ex.Message), ConsoleColor.Red);
+                                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.SessionStartFailed, ex.Message), ConsoleTheme.SystemText);
                             else
                                 ConsoleGraphic.WriteContentLine(Lang.Get(TextId.SessionStartFailed, ex.Message));
                             return false;
@@ -253,7 +279,7 @@ namespace TCPTunnel
 
                     client.Close();
                     if (ConsoleGraphic.Enabled)
-                        ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConnectFailed, error), ConsoleColor.Red);
+                        ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConnectFailed, error), ConsoleTheme.SystemText);
                     else
                         ConsoleGraphic.WriteContentLine(Lang.Get(TextId.ConnectFailed, error));
                     if (attempt < attempts)
@@ -264,7 +290,7 @@ namespace TCPTunnel
                 {
                     ConsoleGraphic.WriteBottomStatus(
                         Lang.Get(TextId.HubUnavailableCompact, address, port),
-                        ConsoleColor.Red);
+                        ConsoleTheme.SystemText);
                 }
                 else
                 {
@@ -366,12 +392,11 @@ namespace TCPTunnel
             string displayedEndpoint = isLocalHubSession
                 ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
                 : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
-            WriteChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint), ConsoleColor.Green);
+            WriteSystemChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint));
             if (isLocalHubSession && !ServerInterface.DisplayAddressIsPublic)
             {
-                WriteChatLine(
-                    Lang.Get(TextId.PublicIPv4Unavailable, ServerInterface.DisplayAddress),
-                    ConsoleColor.Yellow);
+                WriteSystemChatLine(
+                    Lang.Get(TextId.PublicIPv4Unavailable, ServerInterface.DisplayAddress));
             }
 
             var sessionCancellation = new CancellationTokenSource();
@@ -394,13 +419,25 @@ namespace TCPTunnel
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
+                    string imagePath;
+                    ImageInputKind imageKind = ImageInput.Classify(message, out imagePath);
+                    if (imageKind != ImageInputKind.NotImage)
+                    {
+                        PrepareAndSendImage(
+                            stream,
+                            sessionCancellation.Token,
+                            imagePath,
+                            imageKind == ImageInputKind.WebPImage);
+                        continue;
+                    }
+
                     MessageProtocol.WriteStringAsync(stream, message, sessionCancellation.Token).GetAwaiter().GetResult();
                     WriteChatLine($"<<< [{nickname}]: {message}", null, true);
                 }
             }
             catch (IOException)
             {
-                WriteChatLine(Lang.Get(TextId.SendFailedClosed), ConsoleColor.Red);
+                WriteSystemChatLine(Lang.Get(TextId.SendFailedClosed));
             }
             finally
             {
@@ -430,7 +467,8 @@ namespace TCPTunnel
             {
                 IsLocalHubAdministrator = isLocalHubSession,
                 ClearChat = ClearChatLocally,
-                WriteLine = (text, color) => WriteChatLine(text, color),
+                LookImage = LookAtLastLargeImage,
+                WriteLine = (text, color) => WriteSystemChatLine(text),
                 GetStatus = () => ServerInterface.IsRunning
                     ? Lang.Get(
                         TextId.HubStatusWithClients,
@@ -448,6 +486,117 @@ namespace TCPTunnel
                     reason).GetAwaiter().GetResult(),
                 ToggleSnake = () => ToggleAndSynchronizeSnake(stream, cancellationToken)
             };
+        }
+
+        private static async Task ReceiveImageAsync(ImagePacket packet)
+        {
+            int viewportWidth;
+            int usableRows;
+            int historyVersion;
+            SnapshotImageViewport(out viewportWidth, out usableRows, out historyVersion);
+            FrozenImage frozen = await Task.Run(() => ImageRenderer.Freeze(
+                packet,
+                viewportWidth,
+                usableRows,
+                packet.Sender,
+                false)).ConfigureAwait(false);
+
+            WriteChatImage(frozen, frozen.ShouldOfferLook ? packet : null, historyVersion);
+        }
+
+        private static void PrepareAndSendImage(
+            NetworkStream stream,
+            CancellationToken cancellationToken,
+            string path,
+            bool isWebP)
+        {
+            WriteSystemChatLine(Lang.Get(TextId.PreparingImage));
+            try
+            {
+                ImagePacket packet = Task.Run(() => ImageCodec.Prepare(path, isWebP))
+                    .GetAwaiter().GetResult();
+                string frame = ImageProtocol.CreateClientFrame(packet);
+                MessageProtocol.WriteStringAsync(stream, frame, cancellationToken).GetAwaiter().GetResult();
+
+                int viewportWidth;
+                int usableRows;
+                int ignoredHistoryVersion;
+                SnapshotImageViewport(out viewportWidth, out usableRows, out ignoredHistoryVersion);
+                FrozenImage frozen = Task.Run(() => ImageRenderer.Freeze(
+                    packet,
+                    viewportWidth,
+                    usableRows,
+                    nickname,
+                    true)).GetAwaiter().GetResult();
+                WriteChatImage(frozen, frozen.ShouldOfferLook ? packet : null);
+            }
+            catch (ImagePreparationException ex)
+            {
+                WriteSystemChatLine(Lang.Get(GetImageErrorText(ex.Error)));
+            }
+            catch (Exception ex) when (ex is InvalidDataException || ex is FormatException)
+            {
+                WriteSystemChatLine(Lang.Get(TextId.ImageDecodeFailed));
+            }
+        }
+
+        private static TextId GetImageErrorText(ImagePreparationError error)
+        {
+            switch (error)
+            {
+                case ImagePreparationError.FileTooLarge:
+                    return TextId.ImageFileTooLarge;
+                case ImagePreparationError.DimensionsTooLarge:
+                    return TextId.ImageDimensionsTooLarge;
+                case ImagePreparationError.CodecUnavailable:
+                    return TextId.ImageCodecUnavailable;
+                case ImagePreparationError.DecodeFailed:
+                    return TextId.ImageDecodeFailed;
+                default:
+                    return TextId.ImageInvalidFile;
+            }
+        }
+
+        private static void SnapshotImageViewport(
+            out int viewportWidth,
+            out int usableRows,
+            out int historyVersion)
+        {
+            lock (consoleLock)
+            {
+                EnsureConsoleGeometryLocked();
+                viewportWidth = Math.Max(1, GetContentWidth());
+                int totalRows = ConsoleGraphic.Enabled
+                    ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1)
+                    : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight) - 1);
+                // Image size must not depend on whether the input editor happens
+                // to be active at the instant the packet is frozen. The sender is
+                // between input loops after Enter while receivers normally still
+                // have an active prompt, which previously produced different sizes
+                // for identical console geometry.
+                usableRows = GetStableImageUsableRows(totalRows);
+                historyVersion = imageHistoryVersion;
+            }
+        }
+
+        private static int GetStableImageUsableRows(int totalRows)
+        {
+            return Math.Max(2, totalRows - ImageInputRowReservation);
+        }
+
+        private static void LookAtLastLargeImage()
+        {
+            ImagePacket packet;
+            lock (consoleLock)
+                packet = lastLargeImagePacket;
+            if (packet == null)
+            {
+                WriteSystemChatLine(Lang.Get(TextId.NoLargeImage));
+                return;
+            }
+
+            if (!ImageViewer.Launch(packet))
+                WriteSystemChatLine(Lang.Get(TextId.ImageViewerFailed));
         }
 
         private static SnakeCommandResult ToggleAndSynchronizeSnake(
@@ -664,6 +813,25 @@ namespace TCPTunnel
                 FindMentionSpans("hello @alextmsv"));
             ChatTextStyle mentionStyle = GetChatTextStyle(styleEntry, "hello ".Length);
             ChatTextStyle plainStyle = GetChatTextStyle(styleEntry, 0);
+            ConsoleColor previousSystemColor = ConsoleTheme.SystemText;
+            ConsoleTheme.SystemText = ConsoleColor.DarkYellow;
+            var systemStyleEntry = new ChatHistoryEntry(
+                ">>> user joined",
+                ConsoleColor.Green,
+                null,
+                true);
+            ChatTextStyle systemStyle = GetChatTextStyle(systemStyleEntry, 0);
+            var inferredSystemStyleEntry = new ChatHistoryEntry(
+                ">>> user joined",
+                null,
+                null);
+            ChatTextStyle inferredSystemStyle = GetChatTextStyle(inferredSystemStyleEntry, 0);
+            var incomingStyleEntry = new ChatHistoryEntry(
+                ">>> [user]: connected",
+                null,
+                null);
+            ChatTextStyle incomingStyle = GetChatTextStyle(incomingStyleEntry, 0);
+            ConsoleTheme.SystemText = previousSystemColor;
             nickname = previousNickname;
             lock (participantsLock)
                 activeParticipants.Clear();
@@ -679,12 +847,16 @@ namespace TCPTunnel
                    invalidMentions.Count == 0 &&
                    mentionStyle.Foreground == ConsoleColor.Black &&
                    mentionStyle.Background == ConsoleColor.White &&
-                   plainStyle.Background == ConsoleColor.Black;
+                   plainStyle.Background == ConsoleColor.Black &&
+                   systemStyle.Foreground == ConsoleColor.DarkYellow &&
+                   inferredSystemStyle.Foreground == ConsoleColor.DarkYellow &&
+                   incomingStyle.Foreground == ConsoleTheme.IncomingMarker;
         }
 
         private static bool RunChatLayoutModelSelfTest()
         {
             var savedHistory = new List<ChatHistoryEntry>(chatHistory);
+            int savedImageHistoryBytes = imageHistoryBytes;
             try
             {
                 chatHistory.Clear();
@@ -701,12 +873,32 @@ namespace TCPTunnel
                 FindVisibleHistoryStart(10, 2, out firstEntry, out rowsToSkip);
                 bool longLineSelectionIsValid = firstEntry == 0 && rowsToSkip == 1;
 
-                return tailSelectionIsValid && longLineSelectionIsValid;
+                chatHistory.Clear();
+                chatHistory.Add(new ChatHistoryEntry("before", null, null));
+                chatHistory.Add(new ChatHistoryEntry(new FrozenImage
+                {
+                    Width = 8,
+                    Height = 2,
+                    PackedPixels = new byte[8],
+                    Sender = "alex"
+                }));
+                chatHistory.Add(new ChatHistoryEntry("after", null, null));
+                FindVisibleHistoryStart(40, 4, out firstEntry, out rowsToSkip);
+                bool mixedHistoryIsValid = firstEntry == 1 && rowsToSkip == 0 &&
+                                           GetHistoryRowCount(chatHistory[1], 40) == 3;
+
+                bool imageViewportIsStable =
+                    GetStableImageUsableRows(20) == 19 &&
+                    GetStableImageUsableRows(1) == 2;
+
+                return tailSelectionIsValid && longLineSelectionIsValid &&
+                       mixedHistoryIsValid && imageViewportIsStable;
             }
             finally
             {
                 chatHistory.Clear();
                 chatHistory.AddRange(savedHistory);
+                imageHistoryBytes = savedImageHistoryBytes;
             }
         }
 
@@ -715,6 +907,9 @@ namespace TCPTunnel
             lock (consoleLock)
             {
                 chatHistory.Clear();
+                imageHistoryBytes = 0;
+                lastLargeImagePacket = null;
+                imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
                 if (!RedrawChatLayoutLocked())
                     MarkConsoleResizePendingLocked();
@@ -990,7 +1185,8 @@ namespace TCPTunnel
         private static void WriteChatLine(
             string message,
             ConsoleColor? forcedColor = null,
-            bool detectMentions = false)
+            bool detectMentions = false,
+            bool useSystemTheme = false)
         {
             lock (consoleLock)
             {
@@ -999,7 +1195,11 @@ namespace TCPTunnel
                 List<MentionSpan> mentions = detectMentions
                     ? FindMentionSpans(safeMessage)
                     : new List<MentionSpan>();
-                ChatHistoryEntry entry = AppendChatHistoryLocked(safeMessage, forcedColor, mentions);
+                ChatHistoryEntry entry = AppendChatHistoryLocked(
+                    safeMessage,
+                    forcedColor,
+                    mentions,
+                    useSystemTheme);
                 bool localMention = entry.MentionsLocalUser;
                 bool deferAnimation = localMention && WindowAttention.IsMinimized;
                 if (deferAnimation)
@@ -1050,6 +1250,91 @@ namespace TCPTunnel
                     return;
                 }
 
+            }
+        }
+
+        private static void WriteSystemChatLine(string message)
+        {
+            WriteChatLine(message, null, false, true);
+        }
+
+        private static void WriteChatImage(
+            FrozenImage image,
+            ImagePacket largePacket = null,
+            int expectedHistoryVersion = -1)
+        {
+            lock (consoleLock)
+            {
+                if (expectedHistoryVersion >= 0 && expectedHistoryVersion != imageHistoryVersion)
+                    return;
+                if (largePacket != null)
+                    lastLargeImagePacket = largePacket;
+                bool consoleReady = EnsureConsoleGeometryLocked();
+                ChatHistoryEntry entry = AppendImageHistoryLocked(image);
+                if (!consoleReady)
+                    return;
+
+                if (ConsoleGraphic.Enabled)
+                {
+                    if (!RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                    return;
+                }
+
+                bool restoreInput = inputActive;
+                if (restoreInput)
+                    EraseRenderedInput();
+                try
+                {
+                    WritePlainHistoryEntry(entry);
+                    if (restoreInput)
+                    {
+                        inputStartRow = Console.CursorTop;
+                        RenderInputLine();
+                    }
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    MarkConsoleResizePendingLocked();
+                }
+                catch (IOException)
+                {
+                    MarkConsoleResizePendingLocked();
+                }
+            }
+        }
+
+        private static void WritePlainHistoryEntry(ChatHistoryEntry entry)
+        {
+            if (!entry.IsImage)
+            {
+                WriteWrappedChatLine(entry);
+                return;
+            }
+
+            MoveCursorToContentColumn();
+            WriteStyledChatText(entry.Text, 0, entry.Text.Length, entry);
+            Console.WriteLine();
+            int width = Math.Max(1, Math.Min(GetContentWidth(), entry.Image.Width));
+            char[] row = new char[width];
+            Console.ForegroundColor = ConsoleColor.Gray;
+            for (int y = 0; y < entry.Image.Height; y++)
+            {
+                MoveCursorToContentColumn();
+                ImageRenderer.FillAsciiRow(entry.Image, y, row);
+                Console.Write(row);
+                Console.WriteLine();
+            }
+            Console.ResetColor();
+            if (entry.Image.ShouldOfferLook)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                List<string> promptBox = BuildImagePromptBox(
+                    entry.Image,
+                    Math.Max(1, GetContentWidth()));
+                foreach (string line in promptBox)
+                    Console.WriteLine(line);
+                Console.ResetColor();
             }
         }
 
@@ -1164,9 +1449,28 @@ namespace TCPTunnel
 
             return new ChatTextStyle
             {
-                Foreground = entry.ForcedColor ?? GetChatColor(entry.Text, position),
+                Foreground = entry.UseSystemTheme || IsSystemDisplayLine(entry.Text)
+                    ? ConsoleTheme.SystemText
+                    : entry.ForcedColor ?? GetChatColor(entry.Text, position),
                 Background = ConsoleColor.Black
             };
+        }
+
+        private static bool IsSystemDisplayLine(string message)
+        {
+            if (String.IsNullOrEmpty(message))
+                return true;
+
+            bool hasDirectionMarker = message.StartsWith(">>> ", StringComparison.Ordinal) ||
+                                      message.StartsWith("<<< ", StringComparison.Ordinal);
+            if (!hasDirectionMarker)
+                return false;
+
+            // A real chat frame always has the form ">>> [nickname]: text".
+            // System protocol lines also use the direction marker for readability,
+            // but do not have a nickname envelope and must not inherit chat colors.
+            return message.Length <= 4 || message[4] != '[' ||
+                   message.IndexOf("]: ", 4, StringComparison.Ordinal) < 0;
         }
 
         private static void CollectMentionFragments(
@@ -1288,28 +1592,7 @@ namespace TCPTunnel
                 return outgoing ? ConsoleTheme.OutgoingText : ConsoleTheme.IncomingText;
             }
 
-            if (ContainsAny(message, "не удалось", "потеряно", "недоступен", "закрыто", "ошибка",
-                "failed", "lost", "unavailable", "closed", "error"))
-                return ConsoleTheme.SystemError;
-            if (ContainsAny(message, "подключено", "успешно", "запущен", "продолжила",
-                "connected", "success", "started", "resumed"))
-                return ConsoleTheme.SystemSuccess;
-            if (ContainsAny(message, "ожид", "настрой", "попытк", "остановлена", "останавливаю",
-                "wait", "configur", "attempt", "paused", "stopping"))
-                return ConsoleTheme.SystemWarning;
-
             return ConsoleTheme.SystemText;
-        }
-
-        private static bool ContainsAny(string text, params string[] values)
-        {
-            foreach (string value in values)
-            {
-                if (text.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return true;
-            }
-
-            return false;
         }
 
         private static string SanitizeForConsole(string message)
@@ -1337,6 +1620,9 @@ namespace TCPTunnel
             lock (consoleLock)
             {
                 chatHistory.Clear();
+                imageHistoryBytes = 0;
+                lastLargeImagePacket = null;
+                imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
                 inputActive = false;
                 inputBuffer.Clear();
@@ -1353,18 +1639,42 @@ namespace TCPTunnel
         private static ChatHistoryEntry AppendChatHistoryLocked(
             string message,
             ConsoleColor? forcedColor,
-            List<MentionSpan> mentions)
+            List<MentionSpan> mentions,
+            bool useSystemTheme = false)
         {
-            var entry = new ChatHistoryEntry(message ?? String.Empty, forcedColor, mentions);
+            var entry = new ChatHistoryEntry(
+                message ?? String.Empty,
+                forcedColor,
+                mentions,
+                useSystemTheme);
             chatHistory.Add(entry);
-            if (chatHistory.Count > MaxChatHistoryLines)
-            {
-                int removeCount = chatHistory.Count - MaxChatHistoryLines;
-                for (int index = 0; index < removeCount; index++)
-                    pendingMentionAnimations.Remove(chatHistory[index]);
-                chatHistory.RemoveRange(0, removeCount);
-            }
+            TrimChatHistoryLocked();
             return entry;
+        }
+
+        private static ChatHistoryEntry AppendImageHistoryLocked(FrozenImage image)
+        {
+            var entry = new ChatHistoryEntry(image);
+            chatHistory.Add(entry);
+            imageHistoryBytes += image.PackedPixels.Length;
+            TrimChatHistoryLocked();
+            return entry;
+        }
+
+        private static void TrimChatHistoryLocked()
+        {
+            int removeCount = 0;
+            while (removeCount < chatHistory.Count &&
+                   (chatHistory.Count - removeCount > MaxChatHistoryLines ||
+                    imageHistoryBytes > ImageRenderer.MaxHistoryImageBytes))
+            {
+                ChatHistoryEntry removed = chatHistory[removeCount++];
+                pendingMentionAnimations.Remove(removed);
+                if (removed.IsImage)
+                    imageHistoryBytes -= removed.Image.PackedPixels.Length;
+            }
+            if (removeCount > 0)
+                chatHistory.RemoveRange(0, removeCount);
         }
 
         private static void CheckForConsoleResize()
@@ -1464,11 +1774,14 @@ namespace TCPTunnel
                 for (int index = firstVisibleEntry; index < chatHistory.Count; index++)
                 {
                     ChatHistoryEntry historyLine = chatHistory[index];
-                    WriteWrappedChatLine(
-                        historyLine,
-                        animateEntries != null && animateEntries.Contains(historyLine)
-                            ? mentionFragments
-                            : null);
+                    if (historyLine.IsImage)
+                        WritePlainHistoryEntry(historyLine);
+                    else
+                        WriteWrappedChatLine(
+                            historyLine,
+                            animateEntries != null && animateEntries.Contains(historyLine)
+                                ? mentionFragments
+                                : null);
                 }
 
                 inputStartRow = Console.CursorTop;
@@ -1614,7 +1927,7 @@ namespace TCPTunnel
             while (firstEntry > 0 && remainingRows > 0)
             {
                 int candidate = firstEntry - 1;
-                int candidateRows = GetWrappedRowCount(chatHistory[candidate].Text, width);
+                int candidateRows = GetHistoryRowCount(chatHistory[candidate], width);
                 firstEntry = candidate;
                 if (candidateRows <= remainingRows)
                 {
@@ -1635,6 +1948,11 @@ namespace TCPTunnel
             List<MentionFragment> localMentionFragments)
         {
             int width = GetContentWidth();
+            if (entry.IsImage)
+            {
+                WriteGraphicalImageEntryAt(entry, wrappedRowsToSkip, ref targetRow, bottomExclusive, width);
+                return;
+            }
             string renderedText = entry.Text;
             int wrappedRows = GetWrappedRowCount(renderedText, width);
             for (int wrappedRow = Math.Max(0, wrappedRowsToSkip);
@@ -1659,13 +1977,67 @@ namespace TCPTunnel
             }
         }
 
+        private static void WriteGraphicalImageEntryAt(
+            ChatHistoryEntry entry,
+            int rowsToSkip,
+            ref int targetRow,
+            int bottomExclusive,
+            int width)
+        {
+            int captionRows = GetWrappedRowCount(entry.Text, width);
+            List<string> promptBox = entry.Image.ShouldOfferLook
+                ? BuildImagePromptBox(entry.Image, width)
+                : null;
+            int promptRows = promptBox == null ? 0 : promptBox.Count;
+            int totalRows = captionRows + entry.Image.Height + promptRows;
+            int visibleWidth = Math.Min(width, entry.Image.Width);
+            char[] imageRow = visibleWidth > 0 ? new char[visibleWidth] : Array.Empty<char>();
+
+            for (int logicalRow = Math.Max(0, rowsToSkip);
+                 logicalRow < totalRows && targetRow < bottomExclusive;
+                 logicalRow++, targetRow++)
+            {
+                ConsoleGraphic.ClearContentRow(targetRow);
+                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                if (logicalRow < captionRows)
+                {
+                    int offset = logicalRow * width;
+                    int count = Math.Min(width, Math.Max(0, entry.Text.Length - offset));
+                    if (count > 0)
+                        WriteStyledChatText(entry.Text, offset, count, entry);
+                    continue;
+                }
+
+                int imageRowIndex = logicalRow - captionRows;
+                if (imageRowIndex < entry.Image.Height)
+                {
+                    if (visibleWidth > 0)
+                    {
+                        ImageRenderer.FillAsciiRow(entry.Image, imageRowIndex, imageRow);
+                        Console.ForegroundColor = ConsoleColor.Gray;
+                        Console.Write(imageRow);
+                        Console.ResetColor();
+                    }
+                    continue;
+                }
+
+                int promptRow = imageRowIndex - entry.Image.Height;
+                if (promptRow >= 0 && promptRow < promptRows)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.Write(promptBox[promptRow]);
+                    Console.ResetColor();
+                }
+            }
+        }
+
         private static int GetFirstVisibleHistoryEntry(int width, int availableRows)
         {
             int rows = 0;
             int first = chatHistory.Count;
             while (first > 0)
             {
-                int candidateRows = GetWrappedRowCount(chatHistory[first - 1].Text, width);
+                int candidateRows = GetHistoryRowCount(chatHistory[first - 1], width);
                 if (rows > 0 && rows + candidateRows > availableRows)
                     break;
 
@@ -1682,6 +2054,65 @@ namespace TCPTunnel
         {
             return Math.Max(1, (Math.Max(0, text == null ? 0 : text.Length) + Math.Max(1, width) - 1) /
                 Math.Max(1, width));
+        }
+
+        private static int GetHistoryRowCount(ChatHistoryEntry entry, int width)
+        {
+            if (!entry.IsImage)
+                return GetWrappedRowCount(entry.Text, width);
+
+            int rows = GetWrappedRowCount(entry.Text, width) + entry.Image.Height;
+            if (entry.Image.ShouldOfferLook)
+                rows += GetImagePromptBoxRowCount(entry.Image, width);
+            return rows;
+        }
+
+        private static int GetImagePromptBoxRowCount(
+            FrozenImage image,
+            int availableWidth)
+        {
+            string prompt = GetImageLookPrompt(image);
+            int width = Math.Max(1, Math.Min(Math.Max(1, availableWidth), prompt.Length + 4));
+            if (width < 5)
+                return 1;
+            int innerWidth = width - 4;
+            return 2 + Math.Max(1, (prompt.Length + innerWidth - 1) / innerWidth);
+        }
+
+        private static List<string> BuildImagePromptBox(
+            FrozenImage image,
+            int availableWidth)
+        {
+            string prompt = GetImageLookPrompt(image);
+            int width = Math.Max(1, Math.Min(Math.Max(1, availableWidth), prompt.Length + 4));
+            var rows = new List<string>();
+            if (width < 5)
+            {
+                rows.Add(prompt.Substring(0, Math.Min(width, prompt.Length)));
+                return rows;
+            }
+
+            string border = "+" + new string('-', width - 2) + "+";
+            rows.Add(border);
+            int innerWidth = width - 4;
+            int offset = 0;
+            do
+            {
+                int count = Math.Min(innerWidth, Math.Max(0, prompt.Length - offset));
+                string part = count > 0 ? prompt.Substring(offset, count) : String.Empty;
+                rows.Add("| " + part.PadRight(innerWidth) + " |");
+                offset += count;
+            }
+            while (offset < prompt.Length);
+            rows.Add(border);
+            return rows;
+        }
+
+        private static string GetImageLookPrompt(FrozenImage image)
+        {
+            return Lang.Get(image.IsOversized
+                ? TextId.ImageTooLargePrompt
+                : TextId.ImageStronglyCompressedPrompt);
         }
 
         private static void RecoverChatLayout()

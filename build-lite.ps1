@@ -11,6 +11,8 @@ $payloadDirectory = Join-Path $projectRoot "obj\LitePayload"
 $bootstrapperDirectory = Join-Path $projectRoot "obj\LiteBootstrapper"
 $publishDirectory = Join-Path $projectRoot "bin\$Configuration\net8.0-windows\win-x64\publish"
 $bootstrapperSource = Join-Path $projectRoot "Bootstrapper\TCPTunnel.Bootstrapper.c"
+$maximumLiteBytes = 20 * 1024 * 1024
+$recordedBaselineBytes = 442368
 
 function Reset-BuildDirectory([string]$Path) {
     $objectRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "obj"))
@@ -111,5 +113,10 @@ if ($LASTEXITCODE -ne 0) {
 Copy-Item -LiteralPath $stagedExecutable -Destination $outputExecutable -Force
 
 $result = Get-Item -LiteralPath $outputExecutable
+$delta = $result.Length - $recordedBaselineBytes
 Write-Host "Lite TCPTunnel build created: $($result.FullName)"
 Write-Host ("Size: {0:N0} bytes ({1:N2} MiB)" -f $result.Length, ($result.Length / 1MB))
+Write-Host ("Delta from recorded 442,368-byte baseline: {0:+#,#;-#,#;0} bytes" -f $delta)
+if ($result.Length -gt $maximumLiteBytes) {
+    throw ("Lite executable exceeds the hard 20 MiB limit: {0:N0} > {1:N0} bytes." -f $result.Length, $maximumLiteBytes)
+}

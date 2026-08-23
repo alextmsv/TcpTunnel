@@ -10,13 +10,17 @@ namespace TCPTunnel
     {
         private const double MessagesPerSecond = 5.0;
         private const double BurstCapacity = 20.0;
+        private const double ImagesPerSecond = 0.2;
+        private const double ImageBurstCapacity = 2.0;
         private const int SendTimeoutMilliseconds = 5000;
 
         private readonly object rateLock = new object();
         private readonly object snakeProfileLock = new object();
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private double availableTokens = BurstCapacity;
+        private double availableImageTokens = ImageBurstCapacity;
         private long lastRefillTimestamp = Stopwatch.GetTimestamp();
+        private long lastImageRefillTimestamp = Stopwatch.GetTimestamp();
         private SnakeProfile snakeProfile;
         private long snakeProfileTimestamp;
         private bool hasSnakeProfile;
@@ -77,6 +81,25 @@ namespace TCPTunnel
                     return false;
 
                 availableTokens -= 1.0;
+                return true;
+            }
+        }
+
+        public bool TryConsumeImageToken()
+        {
+            lock (rateLock)
+            {
+                long now = Stopwatch.GetTimestamp();
+                double elapsedSeconds = (double)(now - lastImageRefillTimestamp) / Stopwatch.Frequency;
+                availableImageTokens = Math.Min(
+                    ImageBurstCapacity,
+                    availableImageTokens + elapsedSeconds * ImagesPerSecond);
+                lastImageRefillTimestamp = now;
+
+                if (availableImageTokens < 1.0)
+                    return false;
+
+                availableImageTokens -= 1.0;
                 return true;
             }
         }

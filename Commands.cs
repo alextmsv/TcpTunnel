@@ -27,6 +27,7 @@ namespace TCPTunnel
     internal sealed class CommandContext
     {
         public Action ClearChat { get; set; }
+        public Action LookImage { get; set; }
         public Action StopLocalHub { get; set; }
         public Action<string, ConsoleColor?> WriteLine { get; set; }
         public Func<string> GetStatus { get; set; }
@@ -70,6 +71,12 @@ namespace TCPTunnel
                     if (!HasExactArgumentCount(tokens, 0))
                         return WriteUsage(context, TextId.CommandHelp);
                     context.ClearChat();
+                    return CommandDisposition.Handled;
+
+                case "/look":
+                    if (!HasExactArgumentCount(tokens, 0))
+                        return WriteUsage(context, TextId.CommandHelp);
+                    context.LookImage();
                     return CommandDisposition.Handled;
 
                 case "/ping":
@@ -132,6 +139,7 @@ namespace TCPTunnel
             {
                 IsLocalHubAdministrator = true,
                 ClearChat = () => { },
+                LookImage = () => { },
                 StopLocalHub = () => { },
                 WriteLine = (text, color) => writes++,
                 GetStatus = () => "status",

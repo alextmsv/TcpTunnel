@@ -10,6 +10,8 @@ namespace TCPTunnel
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
+            if (ImageViewer.TryRun(args))
+                return;
             ApplicationSettings.Initialize();
             Lang.ApplyArguments(args);
 
@@ -29,6 +31,10 @@ namespace TCPTunnel
                                Lang.RunSelfTest() &&
                                SystemMessageProtocol.RunSelfTest() &&
                                NetworkAddressResolver.RunSelfTest() &&
+                               ImageProtocol.RunSelfTest() &&
+                               ImageInput.RunSelfTest() &&
+                               ImageRenderer.RunSelfTest() &&
+                               ImageViewer.RunSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&
                                UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));

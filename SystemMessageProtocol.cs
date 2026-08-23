@@ -10,6 +10,8 @@ namespace TCPTunnel
         ParticipantPresent,
         MessageTooLong,
         TooManyMessages,
+        InvalidImage,
+        TooManyImages,
         Kicked
     }
 
@@ -63,6 +65,12 @@ namespace TCPTunnel
                     return true;
                 case SystemMessageKind.TooManyMessages:
                     localized = Lang.Get(TextId.TooManyMessages);
+                    return true;
+                case SystemMessageKind.InvalidImage:
+                    localized = Lang.Get(TextId.InvalidImagePacket);
+                    return true;
+                case SystemMessageKind.TooManyImages:
+                    localized = Lang.Get(TextId.TooManyImages);
                     return true;
                 case SystemMessageKind.Kicked:
                     localized = String.IsNullOrWhiteSpace(argument)

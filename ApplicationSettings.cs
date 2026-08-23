@@ -130,7 +130,6 @@ namespace TCPTunnel
                 Current.InputTextColor = defaults.InputTextColor;
                 Current.SystemColor = defaults.SystemColor;
                 ApplyCurrent();
-                ConsoleGraphic.InvalidateVisualTheme();
                 SaveCurrentProfileLocked(NetWorker.nickname);
             }
         }
@@ -155,11 +154,87 @@ namespace TCPTunnel
                 { "borderColor", ((int)ConsoleColor.Black).ToString(CultureInfo.InvariantCulture) },
                 { "menuTextColor", ((int)ConsoleColor.Yellow).ToString(CultureInfo.InvariantCulture) }
             }, new AppProfile());
-            return profile.Nickname == "Тестер" && profile.LastHost == "127.0.0.1" &&
-                   profile.LastPort == 9091 && !profile.GraphicsEnabled &&
-                   profile.SnakeDelay == 125 && profile.SnakeColor == ConsoleColor.Cyan &&
-                   profile.SnakeGlyph == '~' && profile.BorderColor == ConsoleColor.Black &&
-                   profile.MenuTextColor == ConsoleColor.Yellow;
+            profile.Language = AppLanguage.English;
+            profile.CornerColor = ConsoleColor.DarkBlue;
+            profile.SelectionColor = ConsoleColor.White;
+            profile.IncomingColor = ConsoleColor.Green;
+            profile.IncomingTextColor = ConsoleColor.DarkGreen;
+            profile.OutgoingColor = ConsoleColor.Cyan;
+            profile.OutgoingTextColor = ConsoleColor.DarkCyan;
+            profile.InputColor = ConsoleColor.Blue;
+            profile.InputTextColor = ConsoleColor.Gray;
+            profile.SystemColor = ConsoleColor.DarkYellow;
+
+            AppProfile roundTrip = ParseProfile(
+                ParseLines(Serialize(profile)),
+                new AppProfile());
+            bool roundTripIsValid =
+                roundTrip.Nickname == profile.Nickname &&
+                roundTrip.LastHost == profile.LastHost &&
+                roundTrip.LastPort == profile.LastPort &&
+                roundTrip.GraphicsEnabled == profile.GraphicsEnabled &&
+                roundTrip.Language == profile.Language &&
+                roundTrip.SnakeDelay == profile.SnakeDelay &&
+                roundTrip.SnakeColor == profile.SnakeColor &&
+                roundTrip.SnakeGlyph == profile.SnakeGlyph &&
+                roundTrip.BorderColor == profile.BorderColor &&
+                roundTrip.CornerColor == profile.CornerColor &&
+                roundTrip.SelectionColor == profile.SelectionColor &&
+                roundTrip.MenuTextColor == profile.MenuTextColor &&
+                roundTrip.IncomingColor == profile.IncomingColor &&
+                roundTrip.IncomingTextColor == profile.IncomingTextColor &&
+                roundTrip.OutgoingColor == profile.OutgoingColor &&
+                roundTrip.OutgoingTextColor == profile.OutgoingTextColor &&
+                roundTrip.InputColor == profile.InputColor &&
+                roundTrip.InputTextColor == profile.InputTextColor &&
+                roundTrip.SystemColor == profile.SystemColor;
+
+            AppProfile partial = ParseProfile(new Dictionary<string, string>
+            {
+                { "borderColor", ((int)ConsoleColor.Yellow).ToString(CultureInfo.InvariantCulture) }
+            }, roundTrip);
+            bool partialImportIsValid =
+                partial.BorderColor == ConsoleColor.Yellow &&
+                partial.CornerColor == roundTrip.CornerColor &&
+                partial.MenuTextColor == roundTrip.MenuTextColor &&
+                partial.SnakeColor == roundTrip.SnakeColor;
+
+            AppProfile savedCurrent = Current;
+            string savedNickname = NetWorker.nickname;
+            int revisionBeforeApply = ConsoleGraphic.VisualThemeRevision;
+            bool applyIsValid;
+            try
+            {
+                Current = Clone(roundTrip);
+                ApplyCurrent();
+                applyIsValid =
+                    ConsoleGraphic.Enabled == roundTrip.GraphicsEnabled &&
+                    Lang.Current == roundTrip.Language &&
+                    ConsoleGraphic.BorderAnimationDelayMilliseconds == roundTrip.SnakeDelay &&
+                    ConsoleGraphic.BorderSnakeColor == roundTrip.SnakeColor &&
+                    ConsoleGraphic.BorderSnakeGlyph == roundTrip.SnakeGlyph &&
+                    NetWorker.nickname == roundTrip.Nickname &&
+                    ConsoleTheme.Border == roundTrip.BorderColor &&
+                    ConsoleTheme.Corners == roundTrip.CornerColor &&
+                    ConsoleTheme.SelectionBackground == roundTrip.SelectionColor &&
+                    ConsoleTheme.MenuText == roundTrip.MenuTextColor &&
+                    ConsoleTheme.IncomingMarker == roundTrip.IncomingColor &&
+                    ConsoleTheme.IncomingText == roundTrip.IncomingTextColor &&
+                    ConsoleTheme.OutgoingMarker == roundTrip.OutgoingColor &&
+                    ConsoleTheme.OutgoingText == roundTrip.OutgoingTextColor &&
+                    ConsoleTheme.InputPrompt == roundTrip.InputColor &&
+                    ConsoleTheme.InputText == roundTrip.InputTextColor &&
+                    ConsoleTheme.SystemText == roundTrip.SystemColor &&
+                    ConsoleGraphic.VisualThemeRevision > revisionBeforeApply;
+            }
+            finally
+            {
+                Current = savedCurrent;
+                ApplyCurrent();
+                NetWorker.nickname = savedNickname;
+            }
+
+            return roundTripIsValid && partialImportIsValid && applyIsValid;
         }
 
         private static void SaveCurrentProfileLocked(string nickname)
@@ -222,6 +297,7 @@ namespace TCPTunnel
             ConsoleTheme.SystemText = Current.SystemColor;
             if (NetWorker.IsNicknameValid(Current.Nickname))
                 NetWorker.nickname = Current.Nickname;
+            ConsoleGraphic.InvalidateVisualTheme();
         }
 
         private static AppProfile LoadEmbeddedDefaults()

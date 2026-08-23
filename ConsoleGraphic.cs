@@ -115,6 +115,7 @@ namespace TCPTunnel
         private static int signatureLeft;
         private static int signatureTop;
         private static int signatureLength;
+        private static int visualThemeRevision;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr GetStdHandle(int standardHandle);
@@ -826,10 +827,10 @@ namespace TCPTunnel
 
             string endpoint = safeAddress + ":" + port;
             int separatorLength = Math.Max(8, Math.Min(24, endpoint.Length + 4));
-            ConsoleColor stateColor = online ? ConsoleColor.Green : ConsoleColor.Red;
+            ConsoleColor stateColor = ConsoleTheme.SystemText;
             WriteBottomStatus(Lang.Get(online ? TextId.HubOnline : TextId.HubOffline), stateColor, 2);
             WriteBottomStatus(endpoint, stateColor, 1);
-            WriteBottomStatus(new string('-', separatorLength), ConsoleColor.DarkGray);
+            WriteBottomStatus(new string('-', separatorLength), stateColor);
             TrySetContentCursor(ContentLeft, ContentTop);
         }
 
@@ -1200,8 +1201,13 @@ namespace TCPTunnel
         public static void InvalidateVisualTheme()
         {
             lock (borderAnimationLock)
+            {
                 InvalidateBorderLocked();
+                Interlocked.Increment(ref visualThemeRevision);
+            }
         }
+
+        internal static int VisualThemeRevision => Volatile.Read(ref visualThemeRevision);
 
         private static void ResetBorderAttributeCacheLocked(int width, int height)
         {

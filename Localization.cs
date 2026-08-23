@@ -38,7 +38,7 @@ namespace TCPTunnel
         LocalHubNotRunning,
         StoppingLocalHub, NoActiveSnake, SnakePaused, SnakeResumed,
         SendFailedClosed, ServerDidNotRespond, HubConnectionLost,
-        UserJoined, UserLeft, MessageTooLong, TooManyMessages,
+        UserJoined, UserLeft, MessageTooLong, TooManyMessages, InvalidImagePacket, TooManyImages,
         AuthInvalidRequest, AuthInvalidNickname, AuthNicknameTaken, AuthTimedOut,
         ClientNotReceiving, FrameTooLarge, InvalidFrameLength, InvalidFramePrefix,
         HubOnline, HubOffline,
@@ -49,7 +49,11 @@ namespace TCPTunnel
         ResetSettings, SettingsReset, InterfaceColors, IncomingMessages,
         OutgoingMessages, InputField, SystemMessages, Border,
         GlyphValue, EnterServerAddressSaved, EnterServerPortSaved,
-        MenuTextColor, PreviewMessage, PreviewSystem, PreviewMenuItem
+        MenuTextColor, PreviewMessage, PreviewSystem, PreviewMenuItem,
+        PreparingImage, ImageInvalidFile, ImageFileTooLarge, ImageDimensionsTooLarge,
+        ImageCodecUnavailable, ImageDecodeFailed, ImageLabel, ImageTooLargePrompt,
+        ImageStronglyCompressedPrompt,
+        NoLargeImage, ImageViewerFailed, ImageViewerClose, ImageViewerTooSmall
     }
 
     internal sealed class LocalizedText
@@ -165,7 +169,7 @@ namespace TCPTunnel
                 { TextId.ConnectionTimedOut, T("превышено время ожидания", "connection timed out") },
                 { TextId.UnknownAuthProtocol, T("Сервер использует неизвестный протокол авторизации.", "The server uses an unknown authentication protocol.") },
                 { TextId.NicknameRejected, T("Сервер отклонил псевдоним.", "The server rejected the nickname.") },
-                { TextId.ConnectedCommands, T("Подключено к {0}. Команды: /help, /status, /ping, /clear, /stop, /exit.", "Connected to {0}. Commands: /help, /status, /ping, /clear, /stop, /exit.") },
+                { TextId.ConnectedCommands, T("Подключено к {0}. Команды: /help, /status, /ping, /clear, /look, /stop, /exit.", "Connected to {0}. Commands: /help, /status, /ping, /clear, /look, /stop, /exit.") },
                 { TextId.PublicIPv4Unavailable, T("Публичный IPv4 определить не удалось: доступ к интернету или сервис определения адреса недоступен. Используется локальный IPv4: {0}.", "The public IPv4 address could not be determined: internet access or the address lookup service is unavailable. Using local IPv4: {0}.") },
                 { TextId.LocalHubNotRunning, T("В этом процессе локальный хаб не запущен.", "No local hub is running in this process.") },
                 { TextId.StoppingLocalHub, T("Останавливаю локальный хаб...", "Stopping local hub...") },
@@ -179,6 +183,8 @@ namespace TCPTunnel
                 { TextId.UserLeft, T("{0} отключился от хаба.", "{0} left the hub.") },
                 { TextId.MessageTooLong, T("Сообщение слишком длинное.", "Message is too long.") },
                 { TextId.TooManyMessages, T("Слишком много сообщений. Соединение закрыто.", "Too many messages. Connection closed.") },
+                { TextId.InvalidImagePacket, T("Некорректный пакет изображения отклонён.", "Malformed image packet rejected.") },
+                { TextId.TooManyImages, T("Изображения отправляются слишком часто. Подождите несколько секунд.", "Images are being sent too quickly. Wait a few seconds.") },
                 { TextId.AuthInvalidRequest, T("Неверный запрос авторизации.", "Invalid authentication request.") },
                 { TextId.AuthInvalidNickname, T("Некорректный псевдоним.", "Invalid nickname.") },
                 { TextId.AuthNicknameTaken, T("Псевдоним уже занят.", "Nickname is already in use.") },
@@ -189,7 +195,7 @@ namespace TCPTunnel
                 { TextId.InvalidFramePrefix, T("Некорректный префикс длины сообщения.", "Invalid message length prefix.") },
                 { TextId.HubOnline, T("ХАБ В СЕТИ", "HUB ONLINE") },
                 { TextId.HubOffline, T("ХАБ ОТКЛЮЧЁН", "HUB OFFLINE") },
-                { TextId.CommandHelp, T("Команды: /help, /status, /ping host:port, /clear, /stop, /exit. Администратор локального хаба: /kick @псевдоним \"причина\".", "Commands: /help, /status, /ping host:port, /clear, /stop, /exit. Local hub administrator: /kick @nickname \"reason\".") },
+                { TextId.CommandHelp, T("Команды: /help, /status, /ping host:port, /clear, /look, /stop, /exit. Администратор локального хаба: /kick @псевдоним \"причина\".", "Commands: /help, /status, /ping host:port, /clear, /look, /stop, /exit. Local hub administrator: /kick @nickname \"reason\".") },
                 { TextId.UnknownCommand, T("Неизвестная команда: {0}. Используйте /help.", "Unknown command: {0}. Use /help.") },
                 { TextId.CommandNoPermission, T("Эта команда доступна только администратору локального хаба.", "This command is available only to the local hub administrator.") },
                 { TextId.KickUsage, T("Использование: /kick @псевдоним [\"причина\"]", "Usage: /kick @nickname [\"reason\"]") },
@@ -217,7 +223,20 @@ namespace TCPTunnel
                 { TextId.MenuTextColor, T("Текст меню", "Menu text") },
                 { TextId.PreviewMessage, T("Тестовое сообщение!", "Test message!") },
                 { TextId.PreviewSystem, T("[+] Хаб запущен", "[+] Hub started") },
-                { TextId.PreviewMenuItem, T("Пункт меню", "Menu item") }
+                { TextId.PreviewMenuItem, T("Пункт меню", "Menu item") },
+                { TextId.PreparingImage, T("Подготавливаю изображение...", "Preparing image...") },
+                { TextId.ImageInvalidFile, T("Не удалось прочитать файл изображения.", "Could not read the image file.") },
+                { TextId.ImageFileTooLarge, T("Файл изображения превышает лимит 32 МиБ.", "The image file exceeds the 32 MiB limit.") },
+                { TextId.ImageDimensionsTooLarge, T("Размеры изображения превышают безопасный лимит.", "The image dimensions exceed the safe limit.") },
+                { TextId.ImageCodecUnavailable, T("WebP-кодек WIC не установлен в этой системе.", "A WIC WebP codec is not installed on this system.") },
+                { TextId.ImageDecodeFailed, T("Не удалось декодировать изображение.", "Could not decode the image.") },
+                { TextId.ImageLabel, T("изображение", "image") },
+                { TextId.ImageTooLargePrompt, T("Картинка слишком большая, всё равно посмотреть? /look", "This image is very large. View it anyway? /look") },
+                { TextId.ImageStronglyCompressedPrompt, T("Изображение сильно уменьшено. Открыть подробнее? /look", "This image was heavily reduced. Open a larger view? /look") },
+                { TextId.NoLargeImage, T("Нет изображения, доступного для /look.", "There is no image available for /look.") },
+                { TextId.ImageViewerFailed, T("Не удалось открыть отдельное окно изображения.", "Could not open the separate image window.") },
+                { TextId.ImageViewerClose, T("Нажмите любую клавишу, чтобы закрыть окно.", "Press any key to close this window.") },
+                { TextId.ImageViewerTooSmall, T("Окно консоли слишком мало для изображения.", "The console window is too small for this image.") }
             };
 
         private static AppLanguage current = DetectLanguage();

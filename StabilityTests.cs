@@ -14,7 +14,10 @@ namespace TCPTunnel
         {
             try
             {
-                return RunLoopbackBroadcastStressAsync().GetAwaiter().GetResult() &&
+                return ImageProtocol.RunSelfTest() &&
+                       ImageInput.RunSelfTest() &&
+                       ImageRenderer.RunSelfTest() &&
+                       RunLoopbackBroadcastStressAsync().GetAwaiter().GetResult() &&
                        RunAuthenticatedSessionStressAsync().GetAwaiter().GetResult();
             }
             catch
@@ -91,6 +94,71 @@ namespace TCPTunnel
                         string received = await MessageProtocol.ReadStringAsync(
                             rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
                         if (received != "[session0]: ordered payload")
+                            return false;
+                    }
+
+                    var image = new ImagePacket
+                    {
+                        Width = 3,
+                        Height = 1,
+                        PackedPixels = new byte[] { 0x19, 0xF0 }
+                    };
+                    await MessageProtocol.WriteStringAsync(
+                        rawClients[0].GetStream(),
+                        ImageProtocol.CreateClientFrame(image),
+                        cancellation.Token).ConfigureAwait(false);
+                    await MessageProtocol.WriteStringAsync(
+                        rawClients[0].GetStream(),
+                        "after image",
+                        cancellation.Token).ConfigureAwait(false);
+                    for (int recipient = 1; recipient < clientCount; recipient++)
+                    {
+                        string imageFrame = await MessageProtocol.ReadStringAsync(
+                            rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
+                        ImagePacket receivedImage;
+                        if (!ImageProtocol.TryParseServerFrame(imageFrame, out receivedImage) ||
+                            receivedImage.Sender != "session0" || receivedImage.Width != 3)
+                            return false;
+                        string afterImage = await MessageProtocol.ReadStringAsync(
+                            rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
+                        if (afterImage != "[session0]: after image")
+                            return false;
+                    }
+
+                    await MessageProtocol.WriteStringAsync(
+                        rawClients[0].GetStream(),
+                        "\u001eTCPTUNNEL|IMAGE|1|C|0|3|1|%%%",
+                        cancellation.Token).ConfigureAwait(false);
+                    string rejected = await MessageProtocol.ReadStringAsync(
+                        rawClients[0].GetStream(), cancellation.Token).ConfigureAwait(false);
+                    string rejectedText;
+                    string rejectedArgument;
+                    SystemMessageKind rejectedKind;
+                    if (!SystemMessageProtocol.TryLocalize(
+                        rejected, out rejectedText, out rejectedKind, out rejectedArgument) ||
+                        rejectedKind != SystemMessageKind.InvalidImage)
+                        return false;
+
+                    await MessageProtocol.WriteStringAsync(
+                        rawClients[0].GetStream(),
+                        ImageProtocol.CreateClientFrame(image),
+                        cancellation.Token).ConfigureAwait(false);
+                    string rateLimited = await MessageProtocol.ReadStringAsync(
+                        rawClients[0].GetStream(), cancellation.Token).ConfigureAwait(false);
+                    if (!SystemMessageProtocol.TryLocalize(
+                        rateLimited, out rejectedText, out rejectedKind, out rejectedArgument) ||
+                        rejectedKind != SystemMessageKind.TooManyImages)
+                        return false;
+
+                    await MessageProtocol.WriteStringAsync(
+                        rawClients[0].GetStream(),
+                        "after malformed image",
+                        cancellation.Token).ConfigureAwait(false);
+                    for (int recipient = 1; recipient < clientCount; recipient++)
+                    {
+                        string afterMalformed = await MessageProtocol.ReadStringAsync(
+                            rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
+                        if (afterMalformed != "[session0]: after malformed image")
                             return false;
                     }
                     return NetWorker.broadcaster.AuthenticatedClientCount == clientCount;

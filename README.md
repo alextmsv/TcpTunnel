@@ -26,6 +26,7 @@ TCPTunnel is a nostalgic console chat brought back to life with a stable asynchr
 |:--:|---|---|
 | 🌐 | Multiplayer Hub | One process hosts the TCP Hub and connects the local user—no second console window required. |
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
+| 🖼️ | ASCII images | Drag a JPEG or PNG into the input to share a tiny grayscale preview; optional WebP works when Windows has a WIC codec. |
 | @ | Mentions | Existing participants are highlighted by `@durak go drink vodka`; direct mentions blink in-chat and request attention on the Windows taskbar. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
@@ -55,6 +56,14 @@ The Hub runs in the background of the same process, while the host connects loca
 4. Enter the server port.
 5. Have fun! x2
 
+### Share an image
+
+Drag exactly one `.jpg`, `.jpeg`, or `.png` file from Explorer into the chat input and press <kbd>Enter</kbd>. TCPTunnel decodes only the first frame locally, removes all container metadata, and sends a small 4-bit grayscale raster—not the original file, filename, or path. Paths containing spaces and quoted paths are supported.
+
+`.webp` follows the same flow when a compatible Windows Imaging Component codec is installed. If the codec is unavailable, the error remains local and the chat connection stays active.
+
+Large source images remain compact inside the chat. Use `/look` after the prompt to open the most recent large image as ASCII in a separate plain console window.
+
 ### Chat commands
 
 | Command | Action |
@@ -63,6 +72,7 @@ The Hub runs in the background of the same process, while the host connects loca
 | `/status` | Show the local Hub and UPnP status. |
 | `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
 | `/clear` | Clear only your local chat history while keeping the session and interface active. |
+| `/look` | Open the most recent large image in a separate plain console window. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
 | `/kick @nickname ["reason"]` | Local Hub owner: notify and disconnect one participant. |
 | `/exit` | Leave the current chat and return to the menu. |
@@ -87,8 +97,11 @@ Even if you hosting an other hub, you can connect to anyone and checking by doin
 
 - Maximum encoded frame: **16 KiB**
 - Maximum chat message: **2,000 characters**
+- Maximum image raster: **160 × 72**, packed at **4 bits/pixel**
+- Maximum image control frame: **8 KiB**
 - Authentication timeout: **7 seconds**
 - Rate limit: **5 messages/second**, with a short burst allowance
+- Image rate limit: **1 image per 5 seconds**, with a burst of 2
 - Nickname length: **3–20 characters**, unique per Hub
 
 ## Command-line options
@@ -169,6 +182,8 @@ bin\Release\net8.0-windows\win-x64\publish\TCPTunnel.exe
 ```
 
 Only that executable needs to be distributed. On first launch it extracts its small managed payload under `%LocalAppData%\TCPTunnel\runtime`, then hosts it inside the original `TCPTunnel.exe` process. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
+
+The lite build has a hard **20 MiB** size gate and fails if the final executable exceeds it.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 
