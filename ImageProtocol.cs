@@ -158,22 +158,22 @@ namespace TCPTunnel
                 return false;
 
             int position = prefix.Length;
-            string oversizedText;
-            string widthText;
-            string heightText;
-            string senderText = null;
-            string payloadText;
+            ReadOnlySpan<char> value = frame.AsSpan();
+            ReadOnlySpan<char> oversizedText;
+            ReadOnlySpan<char> widthText;
+            ReadOnlySpan<char> heightText;
+            ReadOnlySpan<char> senderText = default(ReadOnlySpan<char>);
             if (!TryReadField(frame, ref position, out oversizedText) ||
                 !TryReadField(frame, ref position, out widthText) ||
                 !TryReadField(frame, ref position, out heightText) ||
                 (hasSender && !TryReadField(frame, ref position, out senderText)))
                 return false;
-            payloadText = frame.Substring(position);
+            ReadOnlySpan<char> payloadText = value.Slice(position);
 
             bool oversized;
-            if (oversizedText == "0")
+            if (oversizedText.Length == 1 && oversizedText[0] == '0')
                 oversized = false;
-            else if (oversizedText == "1")
+            else if (oversizedText.Length == 1 && oversizedText[0] == '1')
                 oversized = true;
             else
                 return false;
@@ -190,9 +190,8 @@ namespace TCPTunnel
                 return false;
 
             byte[] pixels;
-            try { pixels = Convert.FromBase64String(payloadText); }
-            catch (FormatException) { return false; }
-            if (pixels.Length != expectedLength)
+            if (!TryDecodeBase64(payloadText, expectedLength, out pixels) ||
+                pixels.Length != expectedLength)
                 return false;
             if (((width * height) & 1) != 0 && (pixels[pixels.Length - 1] & 0x0F) != 0)
                 return false;
@@ -201,8 +200,8 @@ namespace TCPTunnel
             if (hasSender)
             {
                 byte[] senderBytes;
-                try { senderBytes = Convert.FromBase64String(senderText); }
-                catch (FormatException) { return false; }
+                if (!TryDecodeBase64(senderText, MessageProtocol.MaxFrameBytes, out senderBytes))
+                    return false;
                 try { sender = StrictUtf8.GetString(senderBytes); }
                 catch (DecoderFallbackException) { return false; }
                 if (!NetWorker.IsNicknameValid(sender))
@@ -220,15 +219,44 @@ namespace TCPTunnel
             return true;
         }
 
-        private static bool TryReadField(string value, ref int position, out string field)
+        internal static bool TryDecodeBase64(
+            ReadOnlySpan<char> value,
+            int maximumDecodedBytes,
+            out byte[] decoded)
+        {
+            decoded = null;
+            if (value.Length == 0 || (value.Length & 3) != 0)
+                return false;
+
+            int padding = value[value.Length - 1] == '=' ? 1 : 0;
+            if (value.Length > 1 && value[value.Length - 2] == '=')
+                padding++;
+            int decodedLength = (value.Length / 4) * 3 - padding;
+            if (decodedLength < 0 || decodedLength > maximumDecodedBytes)
+                return false;
+
+            byte[] buffer = new byte[decodedLength];
+            int bytesWritten;
+            if (!Convert.TryFromBase64Chars(value, buffer, out bytesWritten) ||
+                bytesWritten != decodedLength)
+                return false;
+
+            decoded = buffer;
+            return true;
+        }
+
+        private static bool TryReadField(
+            string value,
+            scoped ref int position,
+            out ReadOnlySpan<char> field)
         {
             int separator = value.IndexOf('|', position);
             if (separator < position)
             {
-                field = null;
+                field = default(ReadOnlySpan<char>);
                 return false;
             }
-            field = value.Substring(position, separator - position);
+            field = value.AsSpan(position, separator - position);
             position = separator + 1;
             return field.Length > 0;
         }

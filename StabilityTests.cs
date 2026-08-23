@@ -15,8 +15,11 @@ namespace TCPTunnel
             try
             {
                 return ImageProtocol.RunSelfTest() &&
+                       ImageAnimationProtocol.RunSelfTest() &&
                        ImageInput.RunSelfTest() &&
                        ImageRenderer.RunSelfTest() &&
+                       ImageRenderer.RunAnimationSelfTest() &&
+                       ImageViewer.RunAnimationSelfTest() &&
                        RunLoopbackBroadcastStressAsync().GetAwaiter().GetResult() &&
                        RunAuthenticatedSessionStressAsync().GetAwaiter().GetResult();
             }
@@ -125,6 +128,66 @@ namespace TCPTunnel
                             return false;
                     }
 
+                    int animationLength = ImageProtocol.GetPackedLength(3, 2);
+                    var animation = new AnimatedImagePacket
+                    {
+                        Width = 3,
+                        Height = 2,
+                        PackedFrames = new[]
+                        {
+                            new byte[animationLength],
+                            new byte[animationLength]
+                        },
+                        FrameDelays = new ushort[] { 90, 110 }
+                    };
+                    string animationId = ImageAnimationProtocol.CreateTransferId();
+                    NetworkStream animationSender = rawClients[1].GetStream();
+                    await MessageProtocol.WriteStringAsync(
+                        animationSender,
+                        ImageAnimationProtocol.CreateClientBegin(animationId, animation),
+                        cancellation.Token).ConfigureAwait(false);
+                    for (int frameIndex = 0; frameIndex < animation.FrameCount; frameIndex++)
+                    {
+                        await MessageProtocol.WriteStringAsync(
+                            animationSender,
+                            ImageAnimationProtocol.CreateClientFrame(
+                                animationId,
+                                frameIndex,
+                                animation.FrameDelays[frameIndex],
+                                animation.PackedFrames[frameIndex]),
+                            cancellation.Token).ConfigureAwait(false);
+                    }
+                    await MessageProtocol.WriteStringAsync(
+                        animationSender,
+                        ImageAnimationProtocol.CreateClientEnd(animationId),
+                        cancellation.Token).ConfigureAwait(false);
+                    await MessageProtocol.WriteStringAsync(
+                        animationSender,
+                        "after animation",
+                        cancellation.Token).ConfigureAwait(false);
+
+                    for (int recipient = 0; recipient < clientCount; recipient += 2)
+                    {
+                        var assembler = new ImageAnimationAssembler();
+                        AnimatedImagePacket receivedAnimation = null;
+                        for (int part = 0; part < animation.FrameCount + 2; part++)
+                        {
+                            string animationFrame = await MessageProtocol.ReadStringAsync(
+                                rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
+                            ImageAnimationControlFrame control;
+                            if (!ImageAnimationProtocol.TryParseServer(animationFrame, out control) ||
+                                assembler.Accept(control, out receivedAnimation) == ImageAnimationAssemblyResult.Invalid)
+                                return false;
+                        }
+                        if (receivedAnimation == null || receivedAnimation.Sender != "session1" ||
+                            receivedAnimation.FrameCount != animation.FrameCount)
+                            return false;
+                        string afterAnimation = await MessageProtocol.ReadStringAsync(
+                            rawClients[recipient].GetStream(), cancellation.Token).ConfigureAwait(false);
+                        if (afterAnimation != "[session1]: after animation")
+                            return false;
+                    }
+
                     await MessageProtocol.WriteStringAsync(
                         rawClients[0].GetStream(),
                         "\u001eTCPTUNNEL|IMAGE|1|C|0|3|1|%%%",
@@ -210,13 +273,15 @@ namespace TCPTunnel
                     Task<List<string>>[] readers = receivingClients
                         .Select(client => ReadMessagesAsync(client.GetStream(), messageCount, timeout.Token))
                         .ToArray();
+                    var broadcasts = new Task[messageCount];
                     for (int index = 0; index < messageCount; index++)
                     {
-                        await broadcaster.BroadcastAsync(
+                        broadcasts[index] = broadcaster.BroadcastAsync(
                             null,
                             "stress-message-" + index,
-                            timeout.Token).ConfigureAwait(false);
+                            timeout.Token);
                     }
+                    await Task.WhenAll(broadcasts).ConfigureAwait(false);
 
                     List<string>[] received = await Task.WhenAll(readers).ConfigureAwait(false);
                     for (int clientIndex = 0; clientIndex < received.Length; clientIndex++)

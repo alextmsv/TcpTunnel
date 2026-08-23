@@ -74,6 +74,31 @@ namespace TCPTunnel
             return BroadcastCoreAsync(sender, message, false, cancellationToken);
         }
 
+        public async Task BroadcastBatchAsync(
+            Client sender,
+            IReadOnlyList<string> messages,
+            CancellationToken cancellationToken)
+        {
+            if (messages == null || messages.Count == 0)
+                return;
+
+            await broadcastLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            Task[] deliveries;
+            try
+            {
+                Client[] recipients = GetAuthenticatedClients(sender);
+                deliveries = new Task[recipients.Length];
+                for (int index = 0; index < recipients.Length; index++)
+                    deliveries[index] = SendBatchSafelyAsync(recipients[index], messages, cancellationToken);
+            }
+            finally
+            {
+                broadcastLock.Release();
+            }
+
+            await Task.WhenAll(deliveries).ConfigureAwait(false);
+        }
+
         public Task BroadcastSnakeAsync(Client sender, string message, CancellationToken cancellationToken)
         {
             return BroadcastCoreAsync(sender, message, true, cancellationToken);
@@ -132,6 +157,7 @@ namespace TCPTunnel
             CancellationToken cancellationToken)
         {
             await broadcastLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            Task[] deliveries;
             try
             {
                 Client[] recipients;
@@ -145,15 +171,16 @@ namespace TCPTunnel
                         .ToArray();
                 }
 
-                Task[] deliveries = recipients
+                deliveries = recipients
                     .Select(recipient => SendSafelyAsync(recipient, message, cancellationToken))
                     .ToArray();
-                await Task.WhenAll(deliveries).ConfigureAwait(false);
             }
             finally
             {
                 broadcastLock.Release();
             }
+
+            await Task.WhenAll(deliveries).ConfigureAwait(false);
         }
 
         private static bool HasSnakeProfile(Client client)
@@ -180,6 +207,21 @@ namespace TCPTunnel
             try
             {
                 await recipient.SendAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                RemoveClient(recipient);
+            }
+        }
+
+        private async Task SendBatchSafelyAsync(
+            Client recipient,
+            IReadOnlyList<string> messages,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await recipient.SendBatchAsync(messages, cancellationToken).ConfigureAwait(false);
             }
             catch
             {

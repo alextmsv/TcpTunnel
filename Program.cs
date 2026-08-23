@@ -32,12 +32,17 @@ namespace TCPTunnel
                                SystemMessageProtocol.RunSelfTest() &&
                                NetworkAddressResolver.RunSelfTest() &&
                                ImageProtocol.RunSelfTest() &&
+                               ImageAnimationProtocol.RunSelfTest() &&
                                ImageInput.RunSelfTest() &&
+                               ImageCodec.RunAnimationSelfTest() &&
                                ImageRenderer.RunSelfTest() &&
+                               ImageRenderer.RunAnimationSelfTest() &&
                                ImageViewer.RunSelfTest() &&
+                               ImageViewer.RunAnimationSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&
                                UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));
+                Environment.ExitCode = success ? 0 : 1;
                 return;
             }
 

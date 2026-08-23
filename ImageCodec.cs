@@ -10,7 +10,8 @@ namespace TCPTunnel
         FileTooLarge,
         DimensionsTooLarge,
         CodecUnavailable,
-        DecodeFailed
+        DecodeFailed,
+        AnimationTooLarge
     }
 
     internal sealed class ImagePreparationException : Exception
@@ -24,7 +25,7 @@ namespace TCPTunnel
         public ImagePreparationError Error { get; }
     }
 
-    internal static class ImageCodec
+    internal static partial class ImageCodec
     {
         public const long MaxSourceFileBytes = 32L * 1024 * 1024;
         public const int MaxSourceDimension = 16384;

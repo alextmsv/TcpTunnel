@@ -7,7 +7,8 @@ namespace TCPTunnel
     {
         NotImage,
         SupportedImage,
-        WebPImage
+        WebPImage,
+        AnimatedGif
     }
 
     internal static class ImageInput
@@ -42,6 +43,8 @@ namespace TCPTunnel
                 kind = ImageInputKind.SupportedImage;
             else if (extension.Equals(".webp", StringComparison.OrdinalIgnoreCase))
                 kind = ImageInputKind.WebPImage;
+            else if (extension.Equals(".gif", StringComparison.OrdinalIgnoreCase))
+                kind = ImageInputKind.AnimatedGif;
             else
                 return ImageInputKind.NotImage;
 
@@ -60,13 +63,15 @@ namespace TCPTunnel
                 value.Equals(@"C:\x\a.jpeg", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\x\a.png", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\my images\a.png", StringComparison.OrdinalIgnoreCase) ||
-                value.Equals(@"C:\x\a.webp", StringComparison.OrdinalIgnoreCase);
+                value.Equals(@"C:\x\a.webp", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals(@"C:\x\a.gif", StringComparison.OrdinalIgnoreCase);
             string path;
             return Classify(@"C:\x\a.JPG", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify(@"C:\x\a.JPEG", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify(@"C:\x\a.PNG", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify("\"C:\\my images\\a.png\"", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify(@"C:\x\a.webp", exists, out path) == ImageInputKind.WebPImage &&
+                   Classify(@"C:\x\a.gif", exists, out path) == ImageInputKind.AnimatedGif &&
                    Classify(@"C:\missing.png", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"/ping C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"look C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&

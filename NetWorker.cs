@@ -305,6 +305,7 @@ namespace TCPTunnel
         {
             bool authenticated = false;
             string authenticatedNickname = null;
+            var animationAssembler = new ImageAnimationAssembler();
 
             try
             {
@@ -355,6 +356,57 @@ namespace TCPTunnel
                     string message = await MessageProtocol.ReadStringAsync(client.Stream, serverCancellationToken).ConfigureAwait(false);
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
+
+                    if (ImageAnimationProtocol.IsAnimationControlMessage(message))
+                    {
+                        ImageAnimationControlFrame control;
+                        if (!ImageAnimationProtocol.TryParseClient(message, out control))
+                        {
+                            animationAssembler.Reset();
+                            await broadcaster.SendSystemMessageToAsync(
+                                client,
+                                SystemMessageKind.InvalidImage,
+                                null,
+                                serverCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        if (control.Kind == ImageAnimationControlKind.Begin && !animationAssembler.IsActive &&
+                            !client.TryConsumeImageToken())
+                        {
+                            await broadcaster.SendSystemMessageToAsync(
+                                client,
+                                SystemMessageKind.TooManyImages,
+                                null,
+                                serverCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        AnimatedImagePacket animationPacket;
+                        ImageAnimationAssemblyResult assemblyResult =
+                            animationAssembler.Accept(control, out animationPacket);
+                        if (assemblyResult == ImageAnimationAssemblyResult.Invalid)
+                        {
+                            await broadcaster.SendSystemMessageToAsync(
+                                client,
+                                SystemMessageKind.InvalidImage,
+                                null,
+                                serverCancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        if (assemblyResult == ImageAnimationAssemblyResult.Completed)
+                        {
+                            string[] transfer = ImageAnimationProtocol.CreateServerTransfer(
+                                animationPacket,
+                                authenticatedNickname);
+                            await broadcaster.BroadcastBatchAsync(
+                                client,
+                                transfer,
+                                serverCancellationToken).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
 
                     if (ImageProtocol.IsImageControlMessage(message))
                     {
@@ -501,17 +553,14 @@ namespace TCPTunnel
         private static async Task<string> ReadStringWithTimeoutAsync(Client client, int timeoutMilliseconds, CancellationToken cancellationToken)
         {
             Task<string> readTask = MessageProtocol.ReadStringAsync(client.Stream, cancellationToken);
-            using (var timeoutCancellation = new CancellationTokenSource())
+            try
             {
-                Task timeoutTask = Task.Delay(timeoutMilliseconds, timeoutCancellation.Token);
-                Task completed = await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false);
-                if (completed == readTask)
-                {
-                    timeoutCancellation.Cancel();
-                    return await readTask.ConfigureAwait(false);
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
+                return await readTask.WaitAsync(
+                    TimeSpan.FromMilliseconds(timeoutMilliseconds),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
                 client.Close();
                 try { await readTask.ConfigureAwait(false); } catch { }
                 throw new TimeoutException(Lang.Get(TextId.AuthTimedOut));

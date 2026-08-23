@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace TCPTunnel
 {
-    public class UserInterface : NetWorker
+    public partial class UserInterface : NetWorker
     {
         private sealed class ChatHistoryEntry
         {
@@ -34,12 +34,31 @@ namespace TCPTunnel
                 Mentions = new List<MentionSpan>();
             }
 
+            public ChatHistoryEntry(FrozenAnimation animation)
+            {
+                Animation = animation ?? throw new ArgumentNullException(nameof(animation));
+                Text = (animation.IsOutgoing ? "<<<" : ">>>") +
+                       " [" + animation.Sender + "]: [" + Lang.Get(TextId.AnimationLabel) + "]";
+                Mentions = new List<MentionSpan>();
+                AnimationStartedTimestamp = Stopwatch.GetTimestamp();
+            }
+
             public string Text { get; }
             public ConsoleColor? ForcedColor { get; }
             public List<MentionSpan> Mentions { get; }
             public bool UseSystemTheme { get; }
             public FrozenImage Image { get; }
             public bool IsImage { get { return Image != null; } }
+            public FrozenAnimation Animation { get; }
+            public bool IsAnimation { get { return Animation != null; } }
+            public bool IsVisual { get { return Image != null || Animation != null; } }
+            public int AnimationTop { get; set; } = -1;
+            public int AnimationFirstSourceRow { get; set; }
+            public int AnimationVisibleRows { get; set; }
+            public int AnimationVisibleWidth { get; set; }
+            public int LastRenderedAnimationFrame { get; set; } = -1;
+            public long AnimationStartedTimestamp { get; }
+            public char[] AnimationRowBuffer { get; set; }
             public bool MentionsLocalUser
             {
                 get { return Mentions.Exists(mention => mention.IsLocalUser); }
@@ -114,14 +133,32 @@ namespace TCPTunnel
         private static int imageHistoryBytes;
         private static int imageHistoryVersion;
         private static ImagePacket lastLargeImagePacket;
+        private static AnimatedImagePacket lastLargeAnimationPacket;
+        private static int animationMonitorActive;
 
         private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
+            var animationAssembler = new ImageAnimationAssembler();
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
+                    if (ImageAnimationProtocol.IsAnimationControlMessage(message))
+                    {
+                        ImageAnimationControlFrame animationControl;
+                        AnimatedImagePacket animationPacket;
+                        if (!ImageAnimationProtocol.TryParseServer(message, out animationControl) ||
+                            animationAssembler.Accept(animationControl, out animationPacket) == ImageAnimationAssemblyResult.Invalid)
+                        {
+                            animationAssembler.Reset();
+                            WriteSystemChatLine(Lang.Get(TextId.InvalidImagePacket));
+                            continue;
+                        }
+                        if (animationPacket != null)
+                            await ReceiveAnimationAsync(animationPacket).ConfigureAwait(false);
+                        continue;
+                    }
                     ImagePacket imagePacket;
                     if (ImageProtocol.TryParseServerFrame(message, out imagePacket))
                     {
@@ -423,11 +460,14 @@ namespace TCPTunnel
                     ImageInputKind imageKind = ImageInput.Classify(message, out imagePath);
                     if (imageKind != ImageInputKind.NotImage)
                     {
-                        PrepareAndSendImage(
-                            stream,
-                            sessionCancellation.Token,
-                            imagePath,
-                            imageKind == ImageInputKind.WebPImage);
+                        if (imageKind == ImageInputKind.AnimatedGif)
+                            PrepareAndSendAnimation(stream, sessionCancellation.Token, imagePath);
+                        else
+                            PrepareAndSendImage(
+                                stream,
+                                sessionCancellation.Token,
+                                imagePath,
+                                imageKind == ImageInputKind.WebPImage);
                         continue;
                     }
 
@@ -548,6 +588,8 @@ namespace TCPTunnel
                     return TextId.ImageFileTooLarge;
                 case ImagePreparationError.DimensionsTooLarge:
                     return TextId.ImageDimensionsTooLarge;
+                case ImagePreparationError.AnimationTooLarge:
+                    return TextId.ImageAnimationTooLarge;
                 case ImagePreparationError.CodecUnavailable:
                     return TextId.ImageCodecUnavailable;
                 case ImagePreparationError.DecodeFailed:
@@ -587,15 +629,22 @@ namespace TCPTunnel
         private static void LookAtLastLargeImage()
         {
             ImagePacket packet;
+            AnimatedImagePacket animation;
             lock (consoleLock)
+            {
                 packet = lastLargeImagePacket;
-            if (packet == null)
+                animation = lastLargeAnimationPacket;
+            }
+            if (packet == null && animation == null)
             {
                 WriteSystemChatLine(Lang.Get(TextId.NoLargeImage));
                 return;
             }
 
-            if (!ImageViewer.Launch(packet))
+            bool launched = animation != null
+                ? ImageViewer.Launch(animation)
+                : ImageViewer.Launch(packet);
+            if (!launched)
                 WriteSystemChatLine(Lang.Get(TextId.ImageViewerFailed));
         }
 
@@ -887,12 +936,27 @@ namespace TCPTunnel
                 bool mixedHistoryIsValid = firstEntry == 1 && rowsToSkip == 0 &&
                                            GetHistoryRowCount(chatHistory[1], 40) == 3;
 
+                var animationEntry = new ChatHistoryEntry(new FrozenAnimation
+                {
+                    Width = 8,
+                    Height = 2,
+                    PackedFrames = new[] { new byte[8], new byte[8] },
+                    ToneMaps = new[] { new byte[16], new byte[16] },
+                    FrameDelays = new ushort[] { 90, 110 },
+                    FrameEndMilliseconds = new[] { 90, 200 },
+                    DurationMilliseconds = 200,
+                    Sender = "alex"
+                });
+                bool animationLayoutIsValid = animationEntry.IsVisual &&
+                                              GetHistoryRowCount(animationEntry, 40) == 3 &&
+                                              GetCurrentAnimationFrame(animationEntry) >= 0;
+
                 bool imageViewportIsStable =
                     GetStableImageUsableRows(20) == 19 &&
                     GetStableImageUsableRows(1) == 2;
 
                 return tailSelectionIsValid && longLineSelectionIsValid &&
-                       mixedHistoryIsValid && imageViewportIsStable;
+                       mixedHistoryIsValid && animationLayoutIsValid && imageViewportIsStable;
             }
             finally
             {
@@ -909,6 +973,7 @@ namespace TCPTunnel
                 chatHistory.Clear();
                 imageHistoryBytes = 0;
                 lastLargeImagePacket = null;
+                lastLargeAnimationPacket = null;
                 imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
                 if (!RedrawChatLayoutLocked())
@@ -919,16 +984,14 @@ namespace TCPTunnel
         private static async Task<string> ReadWithTimeoutAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
         {
             Task<string> readTask = MessageProtocol.ReadStringAsync(stream, cancellationToken);
-            using (var timeoutCancellation = new CancellationTokenSource())
+            try
             {
-                Task timeoutTask = Task.Delay(ConnectionTimeoutMilliseconds, timeoutCancellation.Token);
-                Task completed = await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false);
-                if (completed == readTask)
-                {
-                    timeoutCancellation.Cancel();
-                    return await readTask.ConfigureAwait(false);
-                }
-
+                return await readTask.WaitAsync(
+                    TimeSpan.FromMilliseconds(ConnectionTimeoutMilliseconds),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
                 client.Close();
                 try { await readTask.ConfigureAwait(false); } catch { }
                 throw new TimeoutException(Lang.Get(TextId.ServerDidNotRespond));
@@ -1221,6 +1284,14 @@ namespace TCPTunnel
                     return;
                 }
 
+                if (HasAnimationHistoryLocked())
+                {
+                    if (!RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                    ScheduleAnimationMonitor();
+                    return;
+                }
+
                 bool restoreInput = inputActive;
                 if (restoreInput)
                     EraseRenderedInput();
@@ -1268,7 +1339,10 @@ namespace TCPTunnel
                 if (expectedHistoryVersion >= 0 && expectedHistoryVersion != imageHistoryVersion)
                     return;
                 if (largePacket != null)
+                {
                     lastLargeImagePacket = largePacket;
+                    lastLargeAnimationPacket = null;
+                }
                 bool consoleReady = EnsureConsoleGeometryLocked();
                 ChatHistoryEntry entry = AppendImageHistoryLocked(image);
                 if (!consoleReady)
@@ -1278,6 +1352,14 @@ namespace TCPTunnel
                 {
                     if (!RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
+                    return;
+                }
+
+                if (HasAnimationHistoryLocked())
+                {
+                    if (!RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                    ScheduleAnimationMonitor();
                     return;
                 }
 
@@ -1306,7 +1388,7 @@ namespace TCPTunnel
 
         private static void WritePlainHistoryEntry(ChatHistoryEntry entry)
         {
-            if (!entry.IsImage)
+            if (!entry.IsVisual)
             {
                 WriteWrappedChatLine(entry);
                 return;
@@ -1315,23 +1397,33 @@ namespace TCPTunnel
             MoveCursorToContentColumn();
             WriteStyledChatText(entry.Text, 0, entry.Text.Length, entry);
             Console.WriteLine();
-            int width = Math.Max(1, Math.Min(GetContentWidth(), entry.Image.Width));
+            int visualWidth = GetVisualWidth(entry);
+            int visualHeight = GetVisualHeight(entry);
+            int width = Math.Max(1, Math.Min(GetContentWidth(), visualWidth));
             char[] row = new char[width];
+            int animationFrame = entry.IsAnimation ? GetCurrentAnimationFrame(entry) : 0;
+            if (entry.IsAnimation)
+            {
+                entry.AnimationTop = Console.CursorTop;
+                entry.AnimationFirstSourceRow = 0;
+                entry.AnimationVisibleRows = visualHeight;
+                entry.AnimationVisibleWidth = width;
+                entry.AnimationRowBuffer = row;
+                entry.LastRenderedAnimationFrame = animationFrame;
+            }
             Console.ForegroundColor = ConsoleColor.Gray;
-            for (int y = 0; y < entry.Image.Height; y++)
+            for (int y = 0; y < visualHeight; y++)
             {
                 MoveCursorToContentColumn();
-                ImageRenderer.FillAsciiRow(entry.Image, y, row);
+                FillVisualAsciiRow(entry, animationFrame, y, row);
                 Console.Write(row);
                 Console.WriteLine();
             }
             Console.ResetColor();
-            if (entry.Image.ShouldOfferLook)
+            if (VisualShouldOfferLook(entry))
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                List<string> promptBox = BuildImagePromptBox(
-                    entry.Image,
-                    Math.Max(1, GetContentWidth()));
+                List<string> promptBox = BuildVisualPromptBox(entry, Math.Max(1, GetContentWidth()));
                 foreach (string line in promptBox)
                     Console.WriteLine(line);
                 Console.ResetColor();
@@ -1622,6 +1714,7 @@ namespace TCPTunnel
                 chatHistory.Clear();
                 imageHistoryBytes = 0;
                 lastLargeImagePacket = null;
+                lastLargeAnimationPacket = null;
                 imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
                 inputActive = false;
@@ -1661,6 +1754,15 @@ namespace TCPTunnel
             return entry;
         }
 
+        private static ChatHistoryEntry AppendAnimationHistoryLocked(FrozenAnimation animation)
+        {
+            var entry = new ChatHistoryEntry(animation);
+            chatHistory.Add(entry);
+            imageHistoryBytes += animation.PackedByteCount;
+            TrimChatHistoryLocked();
+            return entry;
+        }
+
         private static void TrimChatHistoryLocked()
         {
             int removeCount = 0;
@@ -1672,6 +1774,8 @@ namespace TCPTunnel
                 pendingMentionAnimations.Remove(removed);
                 if (removed.IsImage)
                     imageHistoryBytes -= removed.Image.PackedPixels.Length;
+                else if (removed.IsAnimation)
+                    imageHistoryBytes -= removed.Animation.PackedByteCount;
             }
             if (removeCount > 0)
                 chatHistory.RemoveRange(0, removeCount);
@@ -1744,6 +1848,7 @@ namespace TCPTunnel
 
         private static bool RedrawChatLayoutLocked(ISet<ChatHistoryEntry> animateEntries = null)
         {
+            InvalidateAnimationTargetsLocked();
             ConsoleGraphic.ConsoleGeometry targetGeometry;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out targetGeometry))
                 return false;
@@ -1774,7 +1879,7 @@ namespace TCPTunnel
                 for (int index = firstVisibleEntry; index < chatHistory.Count; index++)
                 {
                     ChatHistoryEntry historyLine = chatHistory[index];
-                    if (historyLine.IsImage)
+                    if (historyLine.IsVisual)
                         WritePlainHistoryEntry(historyLine);
                     else
                         WriteWrappedChatLine(
@@ -1802,6 +1907,8 @@ namespace TCPTunnel
                 knownConsoleGeometry = renderedGeometry;
                 hasKnownConsoleGeometry = true;
                 consoleResizePending = false;
+                if (HasAnimationHistoryLocked())
+                    ScheduleAnimationMonitor();
                 return true;
             }
             catch (ArgumentOutOfRangeException)
@@ -1899,6 +2006,8 @@ namespace TCPTunnel
             knownConsoleGeometry = renderedGeometry;
             hasKnownConsoleGeometry = true;
             consoleResizePending = false;
+            if (HasAnimationHistoryLocked())
+                ScheduleAnimationMonitor();
             return true;
         }
 
@@ -1948,7 +2057,7 @@ namespace TCPTunnel
             List<MentionFragment> localMentionFragments)
         {
             int width = GetContentWidth();
-            if (entry.IsImage)
+            if (entry.IsVisual)
             {
                 WriteGraphicalImageEntryAt(entry, wrappedRowsToSkip, ref targetRow, bottomExclusive, width);
                 return;
@@ -1985,13 +2094,15 @@ namespace TCPTunnel
             int width)
         {
             int captionRows = GetWrappedRowCount(entry.Text, width);
-            List<string> promptBox = entry.Image.ShouldOfferLook
-                ? BuildImagePromptBox(entry.Image, width)
+            List<string> promptBox = VisualShouldOfferLook(entry)
+                ? BuildVisualPromptBox(entry, width)
                 : null;
             int promptRows = promptBox == null ? 0 : promptBox.Count;
-            int totalRows = captionRows + entry.Image.Height + promptRows;
-            int visibleWidth = Math.Min(width, entry.Image.Width);
+            int visualHeight = GetVisualHeight(entry);
+            int totalRows = captionRows + visualHeight + promptRows;
+            int visibleWidth = Math.Min(width, GetVisualWidth(entry));
             char[] imageRow = visibleWidth > 0 ? new char[visibleWidth] : Array.Empty<char>();
+            int animationFrame = entry.IsAnimation ? GetCurrentAnimationFrame(entry) : 0;
 
             for (int logicalRow = Math.Max(0, rowsToSkip);
                  logicalRow < totalRows && targetRow < bottomExclusive;
@@ -2009,11 +2120,24 @@ namespace TCPTunnel
                 }
 
                 int imageRowIndex = logicalRow - captionRows;
-                if (imageRowIndex < entry.Image.Height)
+                if (imageRowIndex < visualHeight)
                 {
                     if (visibleWidth > 0)
                     {
-                        ImageRenderer.FillAsciiRow(entry.Image, imageRowIndex, imageRow);
+                        if (entry.IsAnimation)
+                        {
+                            if (entry.AnimationTop < 0)
+                            {
+                                entry.AnimationTop = targetRow;
+                                entry.AnimationFirstSourceRow = imageRowIndex;
+                                entry.AnimationVisibleRows = 0;
+                                entry.AnimationVisibleWidth = visibleWidth;
+                                entry.AnimationRowBuffer = imageRow;
+                                entry.LastRenderedAnimationFrame = animationFrame;
+                            }
+                            entry.AnimationVisibleRows++;
+                        }
+                        FillVisualAsciiRow(entry, animationFrame, imageRowIndex, imageRow);
                         Console.ForegroundColor = ConsoleColor.Gray;
                         Console.Write(imageRow);
                         Console.ResetColor();
@@ -2021,7 +2145,7 @@ namespace TCPTunnel
                     continue;
                 }
 
-                int promptRow = imageRowIndex - entry.Image.Height;
+                int promptRow = imageRowIndex - visualHeight;
                 if (promptRow >= 0 && promptRow < promptRows)
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
@@ -2058,12 +2182,12 @@ namespace TCPTunnel
 
         private static int GetHistoryRowCount(ChatHistoryEntry entry, int width)
         {
-            if (!entry.IsImage)
+            if (!entry.IsVisual)
                 return GetWrappedRowCount(entry.Text, width);
 
-            int rows = GetWrappedRowCount(entry.Text, width) + entry.Image.Height;
-            if (entry.Image.ShouldOfferLook)
-                rows += GetImagePromptBoxRowCount(entry.Image, width);
+            int rows = GetWrappedRowCount(entry.Text, width) + GetVisualHeight(entry);
+            if (VisualShouldOfferLook(entry))
+                rows += GetVisualPromptBoxRowCount(entry, width);
             return rows;
         }
 

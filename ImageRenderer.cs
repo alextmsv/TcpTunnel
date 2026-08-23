@@ -16,9 +16,9 @@ namespace TCPTunnel
         public bool ShouldOfferLook => IsOversized || IsStronglyCompressed;
     }
 
-    internal static class ImageRenderer
+    internal static partial class ImageRenderer
     {
-        public const int MaxHistoryImageBytes = 256 * 1024;
+        public const int MaxHistoryImageBytes = 4 * 1024 * 1024;
         private const int HeightPercent = 55;
         private const int ConsoleCellAspectNumerator = 2;
         private const int StrongCompressionPercent = 50;
@@ -39,21 +39,15 @@ namespace TCPTunnel
             if (ImageProtocol.GetPackedLength(packet.Width, packet.Height) != packet.PackedPixels.Length)
                 throw new ArgumentException("Invalid image packet.", nameof(packet));
 
-            int width = Math.Max(1, Math.Min(packet.Width, viewportWidth));
-            int height = Math.Max(1,
-                (int)Math.Round((double)packet.Height * width /
-                    (packet.Width * ConsoleCellAspectNumerator)));
-            int maxRows = Math.Max(1, usableChatRows * HeightPercent / 100);
-            if (height > maxRows)
-            {
-                height = maxRows;
-                width = Math.Max(1, Math.Min(width,
-                    (int)Math.Round((double)packet.Width * height * ConsoleCellAspectNumerator /
-                        packet.Height)));
-            }
-
-            width = Math.Min(width, packet.Width);
-            height = Math.Min(height, packet.Height);
+            int width;
+            int height;
+            CalculateDisplayDimensions(
+                packet.Width,
+                packet.Height,
+                viewportWidth,
+                usableChatRows,
+                out width,
+                out height);
             byte[] frozen = Resample(packet.PackedPixels, packet.Width, packet.Height, width, height);
             return new FrozenImage
             {

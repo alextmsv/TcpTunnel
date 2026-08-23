@@ -26,7 +26,7 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 |:--:|---|---|
 | 🌐 | Multiplayer Hub | One process hosts the TCP Hub and connects the local user—no second console window required. |
 | 💬 | Reliable chat | Ordered message delivery, preserved input during incoming messages, and clean disconnect handling. |
-| 🖼️ | ASCII images | Drag a JPEG or PNG into the input to share a tiny grayscale preview; optional WebP works when Windows has a WIC codec. |
+| 🖼️ | ASCII media | Drag a JPEG, PNG, GIF, or optional WebP into the input. GIF previews animate in-place without redrawing the whole console. |
 | @  | Mentions | Existing participants are highlighted by `@durak go drink vodka`; direct mentions blink in-chat and request attention on the Windows taskbar. |
 | 🧵 | Asynchronous server | Multiple clients are handled without creating a dedicated thread for every connection. |
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
@@ -38,6 +38,7 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 ## Recent updates
 
 - Added safe ASCII image sharing for JPEG, PNG, and optional WebP sources without transmitting the original file or its metadata.
+- Added animated GIF sharing with WIC frame composition, bounded frame timing, atomic Hub delivery, in-chat playback, and an animated `/look` viewer.
 - Added consistent sender/receiver image sizing and the `/look` viewer for previews that need substantial downscaling.
 - Expanded `.cfg` profiles with the full interface palette, live color previews, and reliable theme application after import.
 - System messages, Hub startup notices, and the endpoint card now follow the configured system color instead of hard-coded success colors.
@@ -70,11 +71,11 @@ The Hub runs in the background of the same process, while the host connects loca
 
 ### Share an image
 
-Drag exactly one `.jpg`, `.jpeg`, or `.png` file from Explorer into the chat input and press <kbd>Enter</kbd>. TCPTunnel decodes only the first frame locally, removes all container metadata, and sends a small 4-bit grayscale raster—not the original file, filename, or path. Paths containing spaces and quoted paths are supported.
+Drag exactly one `.jpg`, `.jpeg`, `.png`, or `.gif` file from Explorer into the chat input and press <kbd>Enter</kbd>. TCPTunnel decodes it locally, removes all container metadata, and sends a small 4-bit grayscale raster—not the original file, filename, or path. Paths containing spaces and quoted paths are supported.
 
 `.webp` follows the same flow when a compatible Windows Imaging Component codec is installed. If the codec is unavailable, the error remains local and the chat connection stays active.
 
-Large source images remain compact inside the chat. Use `/look` after the prompt to open the most recent large image as ASCII in a separate plain console window.
+GIF frames are composed according to their disposal metadata and animate directly inside the existing chat rectangle. Large or heavily reduced images and GIFs remain compact inside the chat; use `/look` after the prompt to open the most recent one in a maximized plain console window.
 
 ### Chat commands
 
@@ -84,7 +85,7 @@ Large source images remain compact inside the chat. Use `/look` after the prompt
 | `/status` | Show the local Hub and UPnP status. |
 | `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
 | `/clear` | Clear only your local chat history while keeping the session and interface active. |
-| `/look` | Open the most recent large image in a separate plain console window. |
+| `/look` | Open the most recent large image or GIF in a separate plain console window. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
 | `/kick @nickname ["reason"]` | Local Hub owner: notify and disconnect one participant. |
 | `/exit` | Leave the current chat and return to the menu. |
@@ -111,6 +112,7 @@ Even if you hosting an other hub, you can connect to anyone and checking by doin
 - Maximum chat message: **2,000 characters**
 - Maximum image raster: **160 × 72**, packed at **4 bits/pixel**
 - Maximum image control frame: **8 KiB**
+- Maximum GIF: **500 frames**, **60 seconds**, **90–2,000 ms** per composed frame
 - Authentication timeout: **7 seconds**
 - Rate limit: **5 messages/second**, with a short burst allowance
 - Image rate limit: **1 image per 5 seconds**, with a burst of 2
@@ -223,8 +225,10 @@ TCPTunnel
 ├── ConsoleTitleAnimator.cs     # Console title live animation, works only when CG's ON
 ├── ConsoleTheme.cs             # Customizable terminal color palette
 ├── ImageCodec.cs               # Safe image decoding and grayscale packing
+├── ImageCodec.Animation.cs     # Bounded WIC GIF decoding and frame composition
 ├── ImageInput.cs               # Drag-and-drop image path recognition
 ├── ImageProtocol.cs            # Compact image transfer frames and validation
+├── ImageAnimationProtocol.cs   # Ordered BEGIN/FRAME/END animation transport
 ├── ImageRenderer.cs            # Stable ASCII conversion and chat previews
 ├── ImageViewer.cs              # Separate full-size /look console viewer
 ├── LegacyEventProtocol.cs      # Safely ignores event packets from older releases

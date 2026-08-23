@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading;
@@ -13,10 +14,13 @@ namespace TCPTunnel
         private const double ImagesPerSecond = 0.2;
         private const double ImageBurstCapacity = 2.0;
         private const int SendTimeoutMilliseconds = 5000;
+        private const int MaxPendingSendOperations = 256;
 
         private readonly object rateLock = new object();
         private readonly object snakeProfileLock = new object();
-        private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
+        private readonly object sendQueueLock = new object();
+        private Task sendTail = Task.CompletedTask;
+        private int pendingSendOperations;
         private double availableTokens = BurstCapacity;
         private double availableImageTokens = ImageBurstCapacity;
         private long lastRefillTimestamp = Stopwatch.GetTimestamp();
@@ -104,35 +108,125 @@ namespace TCPTunnel
             }
         }
 
-        public async Task SendAsync(string message, CancellationToken cancellationToken)
+        public Task SendAsync(string message, CancellationToken cancellationToken)
         {
-            if (Volatile.Read(ref closed) != 0)
-                throw new ObjectDisposedException(nameof(Client));
+            if (message == null)
+                throw new ArgumentNullException(nameof(message));
 
-            await sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lock (sendQueueLock)
+            {
+                ThrowIfClosed();
+                ReserveSendSlot();
+                sendTail = SendQueuedAsync(sendTail, message, cancellationToken);
+                return sendTail;
+            }
+        }
+
+        internal Task SendBatchAsync(IReadOnlyList<string> messages, CancellationToken cancellationToken)
+        {
+            if (messages == null)
+                throw new ArgumentNullException(nameof(messages));
+            if (messages.Count == 0)
+                return Task.CompletedTask;
+
+            lock (sendQueueLock)
+            {
+                ThrowIfClosed();
+                ReserveSendSlot();
+                sendTail = SendBatchQueuedAsync(sendTail, messages, cancellationToken);
+                return sendTail;
+            }
+        }
+
+        private async Task SendQueuedAsync(
+            Task previous,
+            string message,
+            CancellationToken cancellationToken)
+        {
             try
             {
-                Task writeTask = MessageProtocol.WriteStringAsync(Stream, message, cancellationToken);
-                using (var timeoutCancellation = new CancellationTokenSource())
-                {
-                    Task timeoutTask = Task.Delay(SendTimeoutMilliseconds, timeoutCancellation.Token);
-                    Task completed = await Task.WhenAny(writeTask, timeoutTask).ConfigureAwait(false);
-                    if (completed != writeTask)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        Close();
-                        try { await writeTask.ConfigureAwait(false); } catch { }
-                        throw new TimeoutException(Lang.Get(TextId.ClientNotReceiving));
-                    }
+                await WaitForPreviousSendAsync(previous, cancellationToken).ConfigureAwait(false);
+                ThrowIfClosed();
+                await WriteWithTimeoutAsync(message, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref pendingSendOperations);
+            }
+        }
 
-                    timeoutCancellation.Cancel();
-                    await writeTask.ConfigureAwait(false);
+        private async Task SendBatchQueuedAsync(
+            Task previous,
+            IReadOnlyList<string> messages,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await WaitForPreviousSendAsync(previous, cancellationToken).ConfigureAwait(false);
+                ThrowIfClosed();
+
+                for (int index = 0; index < messages.Count; index++)
+                {
+                    string message = messages[index];
+                    if (message == null)
+                        throw new ArgumentException("A message batch cannot contain null values.", nameof(messages));
+                    await WriteWithTimeoutAsync(message, cancellationToken).ConfigureAwait(false);
                 }
             }
             finally
             {
-                sendLock.Release();
+                Interlocked.Decrement(ref pendingSendOperations);
             }
+        }
+
+        private static async Task WaitForPreviousSendAsync(Task previous, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await previous.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // Ошибка предыдущей отправки уже получена её вызывающей стороной.
+            }
+        }
+
+        private async Task WriteWithTimeoutAsync(string message, CancellationToken cancellationToken)
+        {
+            Task writeTask = MessageProtocol.WriteStringAsync(Stream, message, cancellationToken);
+
+            try
+            {
+                await writeTask.WaitAsync(
+                    TimeSpan.FromMilliseconds(SendTimeoutMilliseconds),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                Close();
+                try { await writeTask.ConfigureAwait(false); } catch { }
+                throw new TimeoutException(Lang.Get(TextId.ClientNotReceiving));
+            }
+        }
+
+        private void ThrowIfClosed()
+        {
+            if (Volatile.Read(ref closed) != 0)
+                throw new ObjectDisposedException(nameof(Client));
+        }
+
+        private void ReserveSendSlot()
+        {
+            if (pendingSendOperations >= MaxPendingSendOperations)
+            {
+                Close();
+                throw new TimeoutException(Lang.Get(TextId.ClientNotReceiving));
+            }
+            pendingSendOperations++;
         }
 
         public void Close()
@@ -146,7 +240,6 @@ namespace TCPTunnel
         public void Dispose()
         {
             Close();
-            sendLock.Dispose();
         }
     }
 }

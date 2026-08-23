@@ -5,7 +5,7 @@ using System.Threading;
 
 namespace TCPTunnel
 {
-    internal static class ImageViewer
+    internal static partial class ImageViewer
     {
         private const string ViewerArgument = "--image-view";
         private const uint CreateNewConsole = 0x00000010;
@@ -14,6 +14,8 @@ namespace TCPTunnel
 
         public static bool TryRun(string[] args)
         {
+            if (TryRunAnimation(args))
+                return true;
             if (args == null || args.Length == 0 ||
                 !String.Equals(args[0], ViewerArgument, StringComparison.Ordinal))
                 return false;
