@@ -23,8 +23,6 @@ namespace TCPTunnel
         private const int ConsoleCellAspectNumerator = 2;
         private const int StrongCompressionPercent = 50;
 
-        // One glyph for every 4-bit luminance level, from black to white.
-        // Keep level 15 as the only blank so pale subjects remain visible on white.
         private const string DensityLut = "@%#8&MW*o=-:;,. ";
 
         public static FrozenImage Freeze(

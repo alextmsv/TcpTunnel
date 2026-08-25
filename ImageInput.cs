@@ -23,14 +23,25 @@ namespace TCPTunnel
             path = null;
             if (String.IsNullOrWhiteSpace(input) || fileExists == null)
                 return ImageInputKind.NotImage;
-
             string candidate = input.Trim();
             if (candidate.StartsWith("/", StringComparison.Ordinal))
                 return ImageInputKind.NotImage;
-            if (candidate.Length >= 2 && candidate[0] == '"' && candidate[candidate.Length - 1] == '"')
+            if (candidate.StartsWith("& ", StringComparison.Ordinal))
+                candidate = candidate.Substring(2).TrimStart();
+            if (candidate.Length >= 2 &&
+                ((candidate[0] == '"' && candidate[candidate.Length - 1] == '"') ||
+                 (candidate[0] == '\'' && candidate[candidate.Length - 1] == '\'')))
                 candidate = candidate.Substring(1, candidate.Length - 2);
-            else if (candidate.IndexOf('"') >= 0)
+            else if (candidate.IndexOf('"') >= 0 || candidate.IndexOf('\'') >= 0)
                 return ImageInputKind.NotImage;
+
+            Uri fileUri;
+            if (candidate.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!Uri.TryCreate(candidate, UriKind.Absolute, out fileUri) || !fileUri.IsFile)
+                    return ImageInputKind.NotImage;
+                candidate = fileUri.LocalPath;
+            }
 
             if (candidate.Length == 0 || !fileExists(candidate))
                 return ImageInputKind.NotImage;
@@ -72,6 +83,9 @@ namespace TCPTunnel
                    Classify("\"C:\\my images\\a.png\"", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify(@"C:\x\a.webp", exists, out path) == ImageInputKind.WebPImage &&
                    Classify(@"C:\x\a.gif", exists, out path) == ImageInputKind.AnimatedGif &&
+                   Classify("'C:\\x\\a.gif'", exists, out path) == ImageInputKind.AnimatedGif &&
+                   Classify("& \"C:\\x\\a.gif\"", exists, out path) == ImageInputKind.AnimatedGif &&
+                   Classify("file:///C:/x/a.gif", exists, out path) == ImageInputKind.AnimatedGif &&
                    Classify(@"C:\missing.png", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"/ping C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"look C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&
