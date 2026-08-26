@@ -102,7 +102,8 @@ namespace TCPTunnel
             }
             catch (Exception ex) when (
                 ex is IOException || ex is UnauthorizedAccessException ||
-                ex is InvalidDataException || ex is ArgumentOutOfRangeException)
+                ex is InvalidDataException || ex is ArgumentException ||
+                ex is InvalidOperationException)
             {
                 Console.ResetColor();
                 Console.WriteLine(Lang.Get(TextId.ImageViewerTooSmall));
@@ -122,6 +123,7 @@ namespace TCPTunnel
             int previousWindowWidth = -1;
             int previousWindowHeight = -1;
             FrozenAnimation animation = null;
+            ViewerLayout layout = new ViewerLayout();
             char[] row = Array.Empty<char>();
             int lastFrame = -1;
             var clock = Stopwatch.StartNew();
@@ -129,51 +131,68 @@ namespace TCPTunnel
             Console.CursorVisible = false;
             try
             {
-                while (!Console.KeyAvailable)
+                while (true)
                 {
-                    int windowWidth = Console.WindowWidth;
-                    int windowHeight = Console.WindowHeight;
-                    if (animation == null || windowWidth != previousWindowWidth ||
-                        windowHeight != previousWindowHeight)
+                    try
                     {
-                        previousWindowWidth = windowWidth;
-                        previousWindowHeight = windowHeight;
-                        int width;
-                        int height;
-                        CalculateDisplayDimensions(
-                            packet.Width,
-                            packet.Height,
-                            windowWidth,
-                            windowHeight,
-                            out width,
-                            out height);
-                        animation = FreezeAnimationForViewer(packet, width, height);
-                        row = new char[animation.Width];
-                        Console.Clear();
-                        lastFrame = -1;
-                    }
-
-                    int frame = ImageRenderer.GetFrameIndex(animation, clock.ElapsedMilliseconds);
-                    if (frame != lastFrame)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Gray;
-                        for (int y = 0; y < animation.Height; y++)
+                        if (Console.KeyAvailable)
                         {
-                            Console.SetCursorPosition(0, y);
-                            ImageRenderer.FillAsciiRow(animation, frame, y, row);
-                            Console.Write(row);
+                            Console.ReadKey(true);
+                            break;
                         }
-                        Console.ResetColor();
-                        Console.SetCursorPosition(0, Math.Min(Console.BufferHeight - 1, animation.Height + 1));
-                        Console.Write(Lang.Get(TextId.ImageViewerClose));
-                        lastFrame = frame;
+
+                        int windowWidth = Console.WindowWidth;
+                        int windowHeight = Console.WindowHeight;
+                        if (animation == null || windowWidth != previousWindowWidth ||
+                            windowHeight != previousWindowHeight)
+                        {
+                            previousWindowWidth = windowWidth;
+                            previousWindowHeight = windowHeight;
+                            layout = CalculateViewerLayout(
+                                packet.Width,
+                                packet.Height,
+                                windowWidth,
+                                windowHeight);
+                            animation = FreezeAnimationForViewer(packet, layout);
+                            row = new char[animation.Width];
+                            Console.Clear();
+                            lastFrame = -1;
+                        }
+
+                        int frame = ImageRenderer.GetFrameIndex(animation, clock.ElapsedMilliseconds);
+                        if (frame != lastFrame)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Gray;
+                            for (int y = 0; y < animation.Height; y++)
+                            {
+                                Console.SetCursorPosition(
+                                    Console.WindowLeft + layout.Left,
+                                    Console.WindowTop + layout.Top + y);
+                                ImageRenderer.FillAsciiRow(animation, frame, y, row);
+                                Console.Write(row);
+                            }
+                            Console.ResetColor();
+                            WriteViewerPrompt(layout);
+                            lastFrame = frame;
+                        }
+                        int wait = ImageRenderer.GetMillisecondsUntilNextFrame(
+                            animation,
+                            clock.ElapsedMilliseconds);
+                        Thread.Sleep(Math.Max(5, Math.Min(50, wait)));
                     }
-                    int wait = ImageRenderer.GetMillisecondsUntilNextFrame(
-                        animation,
-                        clock.ElapsedMilliseconds);
-                    Thread.Sleep(Math.Max(5, Math.Min(50, wait)));
+                    catch (Exception ex) when (
+                        ex is ArgumentOutOfRangeException ||
+                        ex is InvalidOperationException ||
+                        ex is IOException)
+                    {
+                        Console.ResetColor();
+                        animation = null;
+                        previousWindowWidth = -1;
+                        previousWindowHeight = -1;
+                        lastFrame = -1;
+                        Thread.Sleep(50);
+                    }
                 }
-                Console.ReadKey(true);
             }
             finally
             {
@@ -184,8 +203,7 @@ namespace TCPTunnel
 
         private static FrozenAnimation FreezeAnimationForViewer(
             AnimatedImagePacket packet,
-            int width,
-            int height)
+            ViewerLayout layout)
         {
             var frames = new byte[packet.FrameCount][];
             var maps = new byte[packet.FrameCount][];
@@ -193,16 +211,25 @@ namespace TCPTunnel
             int duration = 0;
             for (int index = 0; index < packet.FrameCount; index++)
             {
-                frames[index] = ImageRenderer.Resample(
-                    packet.PackedFrames[index], packet.Width, packet.Height, width, height);
-                maps[index] = ImageRenderer.BuildToneMap(frames[index], width, height);
+                frames[index] = ImageRenderer.ResampleCropped(
+                    packet.PackedFrames[index],
+                    packet.Width,
+                    packet.Height,
+                    layout.ScaledWidth,
+                    layout.Height,
+                    layout.CropLeft,
+                    layout.Width);
+                maps[index] = ImageRenderer.BuildToneMap(
+                    frames[index],
+                    layout.Width,
+                    layout.Height);
                 duration += packet.FrameDelays[index];
                 ends[index] = duration;
             }
             return new FrozenAnimation
             {
-                Width = width,
-                Height = height,
+                Width = layout.Width,
+                Height = layout.Height,
                 PackedFrames = frames,
                 ToneMaps = maps,
                 FrameDelays = packet.FrameDelays,
@@ -337,9 +364,17 @@ namespace TCPTunnel
                 path = Path.Combine(directory, "selftest-" + Guid.NewGuid().ToString("N") + ".tca");
                 WriteAnimationFile(path, packet);
                 AnimatedImagePacket restored = ReadAnimationFile(path);
+                ViewerLayout layout = CalculateViewerLayout(
+                    restored.Width,
+                    restored.Height,
+                    200,
+                    100);
+                FrozenAnimation fullScreen = FreezeAnimationForViewer(restored, layout);
                 return IsTrustedAnimationViewerPath(path) && restored.Width == 3 &&
                        restored.Height == 2 && restored.FrameCount == 2 &&
-                       restored.FrameDelays[1] == 110 && restored.IsOversized;
+                       restored.FrameDelays[1] == 110 && restored.IsOversized &&
+                       fullScreen.Width == 200 && fullScreen.Height == 99 &&
+                       fullScreen.ToneMaps[0].Length == 16;
             }
             catch
             {

@@ -12,6 +12,17 @@ namespace TCPTunnel
         private const int StartfUseShowWindow = 0x00000001;
         private const short SwShowMaximized = 3;
 
+        private struct ViewerLayout
+        {
+            public int Width;
+            public int Height;
+            public int Left;
+            public int Top;
+            public int ScaledWidth;
+            public int CropLeft;
+            public int PromptTop;
+        }
+
         public static bool TryRun(string[] args)
         {
             if (TryRunAnimation(args))
@@ -34,44 +45,47 @@ namespace TCPTunnel
                 ExpandViewerConsole(packet.Width, packet.Height);
                 Console.Clear();
 
-                int width;
-                int height;
-                CalculateDisplayDimensions(
+                ViewerLayout layout = CalculateViewerLayout(
                     packet.Width,
                     packet.Height,
                     Console.WindowWidth,
-                    Console.WindowHeight,
-                    out width,
-                    out height);
+                    Console.WindowHeight);
 
                 FrozenImage image = new FrozenImage
                 {
-                    Width = width,
-                    Height = height,
-                    PackedPixels = ImageRenderer.Resample(
+                    Width = layout.Width,
+                    Height = layout.Height,
+                    PackedPixels = ImageRenderer.ResampleCropped(
                         packet.PackedPixels,
                         packet.Width,
                         packet.Height,
-                        width,
-                        height)
+                        layout.ScaledWidth,
+                        layout.Height,
+                        layout.CropLeft,
+                        layout.Width)
                 };
                 image.ToneMap = ImageRenderer.BuildToneMap(
                     image.PackedPixels,
                     image.Width,
                     image.Height);
-                char[] row = new char[width];
+                char[] row = new char[layout.Width];
                 Console.ForegroundColor = ConsoleColor.Gray;
-                for (int y = 0; y < height; y++)
+                for (int y = 0; y < layout.Height; y++)
                 {
+                    Console.SetCursorPosition(
+                        Console.WindowLeft + layout.Left,
+                        Console.WindowTop + layout.Top + y);
                     ImageRenderer.FillAsciiRow(image, y, row);
-                    Console.WriteLine(row);
+                    Console.Write(row);
                 }
                 Console.ResetColor();
-                Console.WriteLine();
-                Console.WriteLine(Lang.Get(TextId.ImageViewerClose));
+                WriteViewerPrompt(layout);
                 Console.ReadKey(true);
             }
-            catch (Exception ex) when (ex is ArgumentOutOfRangeException || ex is System.IO.IOException)
+            catch (Exception ex) when (
+                ex is ArgumentException ||
+                ex is InvalidOperationException ||
+                ex is System.IO.IOException)
             {
                 Console.ResetColor();
                 Console.WriteLine(Lang.Get(TextId.ImageViewerTooSmall));
@@ -124,38 +138,57 @@ namespace TCPTunnel
 
         internal static bool RunSelfTest()
         {
-            int width;
-            int height;
-            CalculateDisplayDimensions(160, 72, 200, 100, out width, out height);
-            if (width != 160 || height != 36)
+            ViewerLayout wide = CalculateViewerLayout(160, 72, 200, 100);
+            if (wide.Width != 200 || wide.Height != 99 || wide.Left != 0 ||
+                wide.ScaledWidth != 440 || wide.CropLeft != 120 || wide.PromptTop != 99)
                 return false;
 
-            CalculateDisplayDimensions(160, 72, 80, 25, out width, out height);
-            if (width != 79 || height != 18)
+            ViewerLayout narrowSource = CalculateViewerLayout(40, 72, 200, 100);
+            if (narrowSource.Width != 110 || narrowSource.Height != 99 ||
+                narrowSource.Left != 45 || narrowSource.CropLeft != 0)
                 return false;
 
-            CalculateDisplayDimensions(160, 72, 80, 10, out width, out height);
-            return width == 31 && height == 7;
+            ViewerLayout cropped = CalculateViewerLayout(160, 72, 80, 25);
+            return cropped.Width == 80 && cropped.Height == 24 &&
+                   cropped.ScaledWidth == 107 && cropped.CropLeft == 13;
         }
 
-        private static void CalculateDisplayDimensions(
+        private static ViewerLayout CalculateViewerLayout(
             int sourceWidth,
             int sourceHeight,
             int windowWidth,
-            int windowHeight,
-            out int width,
-            out int height)
+            int windowHeight)
         {
-            width = Math.Max(1, Math.Min(sourceWidth, windowWidth - 1));
-            height = Math.Max(1,
-                (int)Math.Round((double)sourceHeight * width / (sourceWidth * 2)));
-            int maxHeight = Math.Max(1, windowHeight - 3);
-            if (height <= maxHeight)
-                return;
+            int viewportWidth = Math.Max(1, windowWidth);
+            int viewportHeight = Math.Max(2, windowHeight);
+            int height = Math.Max(1, viewportHeight - 1);
+            long calculatedWidth = ((long)sourceWidth * height * 2 + sourceHeight / 2) /
+                                   Math.Max(1, sourceHeight);
+            int scaledWidth = (int)Math.Max(1L, Math.Min(Int32.MaxValue, calculatedWidth));
+            int width = Math.Min(viewportWidth, scaledWidth);
+            return new ViewerLayout
+            {
+                Width = width,
+                Height = height,
+                Left = Math.Max(0, (viewportWidth - width) / 2),
+                Top = 0,
+                ScaledWidth = scaledWidth,
+                CropLeft = Math.Max(0, (scaledWidth - width) / 2),
+                PromptTop = viewportHeight - 1
+            };
+        }
 
-            height = maxHeight;
-            width = Math.Max(1, Math.Min(width,
-                (int)Math.Round((double)sourceWidth * height * 2 / sourceHeight)));
+        private static void WriteViewerPrompt(ViewerLayout layout)
+        {
+            string prompt = Lang.Get(TextId.ImageViewerClose);
+            int availableWidth = Math.Max(1, Console.WindowWidth);
+            if (prompt.Length > availableWidth)
+                prompt = prompt.Substring(0, availableWidth);
+            int left = Math.Max(0, (availableWidth - prompt.Length) / 2);
+            Console.SetCursorPosition(
+                Console.WindowLeft + left,
+                Console.WindowTop + Math.Min(Console.WindowHeight - 1, layout.PromptTop));
+            Console.Write(prompt);
         }
 
         private static void ExpandViewerConsole(int imageWidth, int imageHeight)

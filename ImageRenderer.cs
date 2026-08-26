@@ -97,6 +97,44 @@ namespace TCPTunnel
             return target;
         }
 
+        public static byte[] ResampleCropped(
+            byte[] source,
+            int sourceWidth,
+            int sourceHeight,
+            int scaledWidth,
+            int scaledHeight,
+            int cropLeft,
+            int visibleWidth)
+        {
+            if (source == null || ImageProtocol.GetPackedLength(sourceWidth, sourceHeight) != source.Length ||
+                scaledWidth < 1 || scaledHeight < 1 || visibleWidth < 1 ||
+                cropLeft < 0 || cropLeft > scaledWidth - visibleWidth ||
+                (long)visibleWidth * scaledHeight > 1_000_000)
+                throw new ArgumentException("Invalid cropped image resample dimensions.");
+
+            int targetLength = GetDisplayPackedLength(visibleWidth, scaledHeight);
+            if (targetLength < 0)
+                throw new ArgumentException("Cropped image exceeds the display safety limit.");
+            byte[] target = new byte[targetLength];
+            for (int y = 0; y < scaledHeight; y++)
+            {
+                int sourceY = Math.Min(sourceHeight - 1,
+                    (int)((long)y * sourceHeight / scaledHeight));
+                int sourceRow = sourceY * sourceWidth;
+                int targetRow = y * visibleWidth;
+                for (int x = 0; x < visibleWidth; x++)
+                {
+                    int sourceX = Math.Min(sourceWidth - 1,
+                        (int)((long)(cropLeft + x) * sourceWidth / scaledWidth));
+                    ImageProtocol.SetPixel(
+                        target,
+                        targetRow + x,
+                        ImageProtocol.GetPixel(source, sourceRow + sourceX));
+                }
+            }
+            return target;
+        }
+
         public static void FillAsciiRow(FrozenImage image, int row, Span<char> destination)
         {
             if (image == null || row < 0 || row >= image.Height)
@@ -115,7 +153,7 @@ namespace TCPTunnel
         internal static byte[] BuildToneMap(byte[] packedPixels, int width, int height)
         {
             if (packedPixels == null ||
-                ImageProtocol.GetPackedLength(width, height) != packedPixels.Length)
+                GetDisplayPackedLength(width, height) != packedPixels.Length)
                 throw new ArgumentException("Invalid image tone-map dimensions.");
 
             Span<int> histogram = stackalloc int[16];
@@ -201,7 +239,28 @@ namespace TCPTunnel
             if (toneMap[14] >= 14 || toneMap[15] != 15)
                 return false;
 
+            byte[] twoPixels = new byte[1];
+            ImageProtocol.SetPixel(twoPixels, 1, 15);
+            byte[] cropped = ResampleCropped(twoPixels, 2, 1, 4, 1, 1, 2);
+            if (ImageProtocol.GetPixel(cropped, 0) != 0 ||
+                ImageProtocol.GetPixel(cropped, 1) != 15)
+                return false;
+
+            byte[] fullScreenPixels = new byte[GetDisplayPackedLength(200, 99)];
+            if (BuildToneMap(fullScreenPixels, 200, 99).Length != 16)
+                return false;
+
             return true;
+        }
+
+        private static int GetDisplayPackedLength(int width, int height)
+        {
+            if (width < 1 || height < 1)
+                return -1;
+            long pixels = (long)width * height;
+            if (pixels > 1_000_000)
+                return -1;
+            return (int)((pixels + 1) / 2);
         }
     }
 }
