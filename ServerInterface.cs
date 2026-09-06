@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -9,9 +10,11 @@ namespace TCPTunnel
     public class ServerInterface : NetWorker
     {
         private static readonly object serverLock = new object();
+        private const int MaxConnectedClients = 64;
         private static TcpListener server;
         private static CancellationTokenSource serverCancellation;
         private static Task acceptTask = Task.CompletedTask;
+        private static readonly List<Task> clientTasks = new List<Task>();
         private static Task portMappingLifecycle = Task.CompletedTask;
         private static volatile bool isRunning;
         private static volatile string displayAddress = "127.0.0.1";
@@ -185,6 +188,8 @@ namespace TCPTunnel
         {
             CancellationTokenSource cancellation;
             TcpListener listener;
+            Task accepting;
+            Task[] clientsToDrain;
 
             lock (serverLock)
             {
@@ -196,6 +201,9 @@ namespace TCPTunnel
                 displayAddressIsPublic = false;
                 cancellation = serverCancellation;
                 listener = server;
+                accepting = acceptTask;
+                clientsToDrain = clientTasks.ToArray();
+                clientTasks.Clear();
                 serverCancellation = null;
                 server = null;
             }
@@ -203,6 +211,12 @@ namespace TCPTunnel
             try { cancellation.Cancel(); } catch { }
             try { listener.Stop(); } catch { }
             broadcaster.DisconnectAll();
+            try
+            {
+                var all = new List<Task>(clientsToDrain) { accepting };
+                Task.WhenAll(all).Wait(TimeSpan.FromSeconds(3));
+            }
+            catch { }
             Task mappingCleanup = StopPortMapping();
             try { mappingCleanup.Wait(TimeSpan.FromSeconds(3)); } catch { }
         }
@@ -214,15 +228,30 @@ namespace TCPTunnel
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     TcpClient incoming = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
-                    if (cancellationToken.IsCancellationRequested)
+                    bool stale;
+                    lock (serverLock)
+                        stale = cancellationToken.IsCancellationRequested || !isRunning || !Object.ReferenceEquals(server, listener);
+                    if (stale)
                     {
                         incoming.Close();
                         break;
                     }
 
                     Client client = new Client(incoming);
+                    if (broadcaster.ConnectionCount >= MaxConnectedClients)
+                    {
+                        client.Close();
+                        continue;
+                    }
                     broadcaster.AddConnection(client);
-                    Task ignored = ServerClientLoopAsync(client, cancellationToken);
+                    Task clientTask = ServerClientLoopAsync(client, cancellationToken);
+                    lock (serverLock)
+                    {
+                        if (isRunning && Object.ReferenceEquals(server, listener))
+                            clientTasks.Add(clientTask);
+                        else
+                            broadcaster.RemoveClient(client);
+                    }
                 }
             }
             catch (ObjectDisposedException)

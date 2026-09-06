@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -35,6 +36,8 @@ namespace TCPTunnel
         private const string DefaultResourceName = "TCPTunnel.default.cfg";
         private const string PreferencesFileName = "preferences.cfg";
         private static readonly object sync = new object();
+        private static readonly ConcurrentDictionary<string, object> fileWriteLocks =
+            new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         private static readonly Encoding Utf8 = new UTF8Encoding(false);
         private static string lastProfileNickname = String.Empty;
         private static bool alwaysImport;
@@ -427,23 +430,34 @@ namespace TCPTunnel
 
         private static void WriteFileAtomic(string path, IEnumerable<string> lines)
         {
-            string temporary = path + ".tmp";
-            try
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+            string fullPath = Path.GetFullPath(path);
+            object pathLock = fileWriteLocks.GetOrAdd(fullPath, _ => new object());
+            lock (pathLock)
             {
-                File.WriteAllLines(temporary, lines, Utf8);
-                if (File.Exists(path))
+                string directory = Path.GetDirectoryName(fullPath);
+                if (!String.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+                string temporary = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
                 {
-                    try { File.Replace(temporary, path, null); }
-                    catch (PlatformNotSupportedException) { File.Copy(temporary, path, true); }
+                    File.WriteAllLines(temporary, lines, Utf8);
+                    if (!File.Exists(fullPath))
+                    {
+                        File.Move(temporary, fullPath);
+                        return;
+                    }
+                    byte[] current = File.ReadAllBytes(fullPath);
+                    byte[] next = File.ReadAllBytes(temporary);
+                    if (current.AsSpan().SequenceEqual(next))
+                        return;
+                    File.Replace(temporary, fullPath, null);
                 }
-                else
+                finally
                 {
-                    File.Move(temporary, path);
+                    try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
                 }
-            }
-            finally
-            {
-                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
             }
         }
 

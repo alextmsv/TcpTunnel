@@ -11,8 +11,22 @@ namespace TCPTunnel
     {
         public const int MaxFrameBytes = 16 * 1024;
         public const int MaxMessageCharacters = 2000;
+        private static readonly TimeSpan PayloadReadTimeout = TimeSpan.FromSeconds(30);
 
         private static readonly System.Text.Encoding Utf8 = new System.Text.UTF8Encoding(false, true);
+
+        internal static byte[] EncodeFrame(string value)
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            int byteCount = Utf8.GetByteCount(value);
+            if (byteCount > MaxFrameBytes)
+                throw new InvalidDataException(Lang.Get(TextId.FrameTooLarge, byteCount, MaxFrameBytes));
+            int prefixLength = Get7BitEncodedIntLength(byteCount);
+            byte[] frame = new byte[prefixLength + byteCount];
+            Write7BitEncodedInt(frame, byteCount);
+            Utf8.GetBytes(value.AsSpan(), frame.AsSpan(prefixLength, byteCount));
+            return frame;
+        }
 
         public static async Task<string> ReadStringAsync(NetworkStream stream, CancellationToken cancellationToken)
         {
@@ -23,6 +37,8 @@ namespace TCPTunnel
                 return String.Empty;
 
             byte[] payload = ArrayPool<byte>.Shared.Rent(byteCount);
+            using var payloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            payloadCancellation.CancelAfter(PayloadReadTimeout);
             try
             {
                 int offset = 0;
@@ -30,13 +46,17 @@ namespace TCPTunnel
                 {
                     int read = await stream.ReadAsync(
                         payload.AsMemory(offset, byteCount - offset),
-                        cancellationToken).ConfigureAwait(false);
+                        payloadCancellation.Token).ConfigureAwait(false);
                     if (read == 0)
                         throw new EndOfStreamException();
                     offset += read;
                 }
 
                 return Utf8.GetString(payload, 0, byteCount);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(Lang.Get(TextId.FrameReadTimedOut));
             }
             finally
             {

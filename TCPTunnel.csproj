@@ -21,6 +21,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
     <PackageReference Include="SharpOpenNat" Version="4.0.19" />
   </ItemGroup>
 

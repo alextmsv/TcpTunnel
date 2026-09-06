@@ -12,7 +12,6 @@ namespace TCPTunnel
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             if (ImageViewer.TryRun(args))
                 return;
-            ApplicationSettings.Initialize();
             Lang.ApplyArguments(args);
 
             if (Array.Exists(args, argument => String.Equals(argument, "-stress-test", StringComparison.OrdinalIgnoreCase)))
@@ -46,6 +45,7 @@ namespace TCPTunnel
                 return;
             }
 
+            ApplicationSettings.Initialize();
             Run(args);
         }
 

@@ -87,6 +87,7 @@ namespace TCPTunnel
             Console.OutputEncoding = Encoding.UTF8;
             Console.Title = "TCPTunnel GIF";
             string path = args.Length == 3 ? args[1] : null;
+            bool ownsPath = false;
             try
             {
                 if (args.Length != 3 || (args[2] != "ru" && args[2] != "en") ||
@@ -95,6 +96,7 @@ namespace TCPTunnel
                     Console.WriteLine("Invalid TCPTunnel animation data.");
                     return true;
                 }
+                ownsPath = true;
                 Lang.Set(args[2] == "ru" ? AppLanguage.Russian : AppLanguage.English);
                 AnimatedImagePacket packet = ReadAnimationFile(path);
                 ExpandViewerConsole(packet.Width, packet.Height);
@@ -110,7 +112,7 @@ namespace TCPTunnel
             }
             finally
             {
-                if (path != null)
+                if (ownsPath && path != null)
                 {
                     try { File.Delete(path); } catch { }
                 }
@@ -320,10 +322,24 @@ namespace TCPTunnel
 
         private static string GetAnimationViewerDirectory()
         {
-            return Path.Combine(
+            string localDirectory = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "TCPTunnel",
                 "viewer");
+            try
+            {
+                Directory.CreateDirectory(localDirectory);
+                string probe = Path.Combine(localDirectory, ".write-test-" + Guid.NewGuid().ToString("N"));
+                File.WriteAllText(probe, String.Empty);
+                File.Delete(probe);
+                return localDirectory;
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException)
+            {
+                string fallback = Path.Combine(Path.GetTempPath(), "TCPTunnel", "viewer");
+                Directory.CreateDirectory(fallback);
+                return fallback;
+            }
         }
 
         private static void CleanupOldAnimationFiles(string directory)

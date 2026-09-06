@@ -17,8 +17,13 @@ namespace TCPTunnel
             get
             {
                 lock (clientsLock)
-                    return clients.Count(client => client.IsAuthenticated);
+                    return clients.Count(client => client.IsReady);
             }
+        }
+
+        internal int ConnectionCount
+        {
+            get { lock (clientsLock) return clients.Count; }
         }
 
         public void AddConnection(Client client)
@@ -31,10 +36,18 @@ namespace TCPTunnel
 
         public bool TryAuthenticate(Client client, string nickname)
         {
+            if (!TryReserveNickname(client, nickname))
+                return false;
+            return CompleteAuthentication(client);
+        }
+
+        internal bool TryReserveNickname(Client client, string nickname)
+        {
             lock (clientsLock)
             {
                 bool nicknameTaken = clients.Any(existing =>
                     existing.IsAuthenticated &&
+                    existing.IsReady &&
                     !Object.ReferenceEquals(existing, client) &&
                     String.Equals(existing.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
 
@@ -43,6 +56,18 @@ namespace TCPTunnel
 
                 client.Nickname = nickname;
                 client.IsAuthenticated = true;
+                client.IsReady = false;
+                return true;
+            }
+        }
+
+        internal bool CompleteAuthentication(Client client)
+        {
+            lock (clientsLock)
+            {
+                if (!clients.Contains(client) || !client.IsAuthenticated || client.IsReady)
+                    return false;
+                client.IsReady = true;
                 return true;
             }
         }
@@ -64,7 +89,7 @@ namespace TCPTunnel
             lock (clientsLock)
             {
                 return clients
-                    .Where(client => client.IsAuthenticated && !Object.ReferenceEquals(client, excludedClient))
+                    .Where(client => client.IsReady && !Object.ReferenceEquals(client, excludedClient))
                     .ToArray();
             }
         }
@@ -165,7 +190,7 @@ namespace TCPTunnel
                 {
                     recipients = clients
                         .Where(client =>
-                            client.IsAuthenticated &&
+                            client.IsReady &&
                             !Object.ReferenceEquals(client, sender) &&
                             (!snakeProfilesOnly || HasSnakeProfile(client)))
                         .ToArray();

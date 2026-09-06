@@ -58,7 +58,14 @@ foreach ($payloadFile in $payloadFiles.Values) {
     }
 }
 
-$payloadId = (Get-FileHash -LiteralPath $payloadFiles['101'] -Algorithm SHA256).Hash.Substring(0, 16)
+$payloadSignature = ($payloadFiles.GetEnumerator() | ForEach-Object {
+    $file = Get-Item -LiteralPath $_.Value
+    $hash = (Get-FileHash -LiteralPath $_.Value -Algorithm SHA256).Hash
+    "$($_.Key):$($file.Length):$hash"
+}) -join '|'
+$payloadId = ([Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData(
+        [Text.Encoding]::UTF8.GetBytes($payloadSignature)))).Substring(0, 16)
 $payloadIdFile = Join-Path $bootstrapperDirectory "payload.id"
 [System.IO.File]::WriteAllText($payloadIdFile, $payloadId, [System.Text.Encoding]::ASCII)
 
@@ -110,6 +117,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Native bootstrapper build failed with exit code $LASTEXITCODE."
 }
 
+$stagedResult = Get-Item -LiteralPath $stagedExecutable
+if ($stagedResult.Length -gt $maximumLiteBytes) {
+    throw ("Lite executable exceeds the hard 20 MiB limit: {0:N0} > {1:N0} bytes." -f $stagedResult.Length, $maximumLiteBytes)
+}
 Copy-Item -LiteralPath $stagedExecutable -Destination $outputExecutable -Force
 
 $result = Get-Item -LiteralPath $outputExecutable
@@ -117,6 +128,3 @@ $delta = $result.Length - $recordedBaselineBytes
 Write-Host "Lite TCPTunnel build created: $($result.FullName)"
 Write-Host ("Size: {0:N0} bytes ({1:N2} MiB)" -f $result.Length, ($result.Length / 1MB))
 Write-Host ("Delta from recorded 442,368-byte baseline: {0:+#,#;-#,#;0} bytes" -f $delta)
-if ($result.Length -gt $maximumLiteBytes) {
-    throw ("Lite executable exceeds the hard 20 MiB limit: {0:N0} > {1:N0} bytes." -f $result.Length, $maximumLiteBytes)
-}

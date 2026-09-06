@@ -325,7 +325,7 @@ namespace TCPTunnel
                         return;
                     }
 
-                    if (!broadcaster.TryAuthenticate(client, requestedNickname))
+                    if (!broadcaster.TryReserveNickname(client, requestedNickname))
                     {
                         await client.SendAsync(AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN", serverCancellationToken).ConfigureAwait(false);
                         return;
@@ -345,6 +345,9 @@ namespace TCPTunnel
                         SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, participant.Nickname),
                         serverCancellationToken).ConfigureAwait(false);
                 }
+
+                if (!broadcaster.CompleteAuthentication(client))
+                    return;
 
                 await broadcaster.BroadcastAsync(
                     null,
