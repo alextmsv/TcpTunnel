@@ -63,9 +63,14 @@ $payloadSignature = ($payloadFiles.GetEnumerator() | ForEach-Object {
     $hash = (Get-FileHash -LiteralPath $_.Value -Algorithm SHA256).Hash
     "$($_.Key):$($file.Length):$hash"
 }) -join '|'
-$payloadId = ([Convert]::ToHexString(
-    [Security.Cryptography.SHA256]::HashData(
-        [Text.Encoding]::UTF8.GetBytes($payloadSignature)))).Substring(0, 16)
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try {
+    $payloadDigest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($payloadSignature))
+}
+finally {
+    $sha256.Dispose()
+}
+$payloadId = ([BitConverter]::ToString($payloadDigest).Replace('-', '')).Substring(0, 16)
 $payloadIdFile = Join-Path $bootstrapperDirectory "payload.id"
 [System.IO.File]::WriteAllText($payloadIdFile, $payloadId, [System.Text.Encoding]::ASCII)
 
