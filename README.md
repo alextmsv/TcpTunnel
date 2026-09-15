@@ -59,8 +59,7 @@ Attention! TCPTunnel **above** v1.3.0 requires [.NET 8.0 **desktop runtime**](ht
 5. Share your public IP address and port with the other participants.
 6. Have fun!
 
-The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`. TCPTunnel displays the public IPv4 address from [ipify](https://api.ipify.org) when it can be resolved; otherwise it reports the fallback and shows the active local IPv4 address. !**(ipify not available in Russia)**
-
+The Hub runs in the background of the same process, while the host connects locally through `127.0.0.1`. TCPTunnel displays the public IPv4 address from [ipify](https://api.ipify.org) when it can be resolved; otherwise it reports the fallback and shows the active local IPv4 address.
 ### Join a chat
 
 1. Run `TCPTunnel.exe`.
