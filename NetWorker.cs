@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -271,33 +273,31 @@ namespace TCPTunnel
             }
         }
 
-        public static bool ping(string ip, int port, int timeout = 2000)
+        public static (bool Reachable, string Milliseconds) ping(string ip, int port, int timeout = 2000)
+            => PingAsync(ip, port, timeout).GetAwaiter().GetResult();
+
+        public static async Task<(bool Reachable, string Milliseconds)> PingAsync(string ip, int port, int timeout = 2000)
         {
             if (String.IsNullOrWhiteSpace(ip) || port < 1 || port > 65535 || timeout < 1)
-                return false;
+                return (false, null);
 
             try
             {
                 using (var client = new TcpClient())
+                using (var cancellation = new CancellationTokenSource(timeout))
                 {
-                    IAsyncResult result = client.BeginConnect(ip, port, null, null);
-                    using (result.AsyncWaitHandle)
-                    {
-                        if (!result.AsyncWaitHandle.WaitOne(TimeSpan.FromMilliseconds(timeout)))
-                            return false;
-                    }
-
-                    client.EndConnect(result);
-                    return true;
+                    var stopwatch = Stopwatch.StartNew();
+                    await client.ConnectAsync(ip, port, cancellation.Token).ConfigureAwait(false);
+                    return (true, stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
                 }
             }
             catch (SocketException)
             {
-                return false;
+                return (false, null);
             }
             catch (Exception)
             {
-                return false;
+                return (false, null);
             }
         }
 
@@ -306,6 +306,8 @@ namespace TCPTunnel
             bool authenticated = false;
             string authenticatedNickname = null;
             var animationAssembler = new ImageAnimationAssembler();
+            using var diagnosticsCancellation = CancellationTokenSource.CreateLinkedTokenSource(serverCancellationToken);
+            Task diagnosticsHeartbeat = null;
 
             try
             {
@@ -333,21 +335,13 @@ namespace TCPTunnel
 
                     authenticated = true;
                     authenticatedNickname = requestedNickname;
-                    IPEndPoint remoteEndPoint = client.TcpClient.Client.RemoteEndPoint as IPEndPoint;
-                    client.IpAddress = remoteEndPoint == null ? "unknown" : remoteEndPoint.Address.ToString();
+                    client.IpAddress = client.ObservedIpAddress;
                     await client.SendAsync(AUTH_OK_MESSAGE, serverCancellationToken).ConfigureAwait(false);
                 }
 
-                Client[] currentParticipants = broadcaster.GetAuthenticatedClients(client);
-                foreach (Client participant in currentParticipants)
-                {
-                    await client.SendAsync(
-                        SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, participant.Nickname),
-                        serverCancellationToken).ConfigureAwait(false);
-                }
-
-                if (!broadcaster.CompleteAuthentication(client))
+                if (!broadcaster.CompleteAuthenticationWithRoster(client, serverCancellationToken, out Task rosterDelivery))
                     return;
+                await rosterDelivery.ConfigureAwait(false);
 
                 await broadcaster.BroadcastAsync(
                     null,
@@ -359,6 +353,29 @@ namespace TCPTunnel
                     string message = await MessageProtocol.ReadStringAsync(client.Stream, serverCancellationToken).ConfigureAwait(false);
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
+
+                    if (WhoisProtocol.IsControl(message))
+                    {
+                        await WhoisServer.HandleAsync(client, message, serverCancellationToken).ConfigureAwait(false);
+                        if (client.Diagnostics.Supported && diagnosticsHeartbeat == null)
+                            diagnosticsHeartbeat = WhoisServer.HeartbeatAsync(client, diagnosticsCancellation.Token);
+                        continue;
+                    }
+                    if (HubStatusProtocol.IsControl(message))
+                    {
+                        if (message.Length > 256 || !client.TryConsumeControlToken()) continue;
+                        if (message == HubStatusProtocol.Hello)
+                        {
+                            client.SupportsHubStatus = true;
+                            await client.SendAsync(HubStatusProtocol.Capabilities, serverCancellationToken).ConfigureAwait(false);
+                        }
+                        else if (client.SupportsHubStatus && HubStatusProtocol.TryParseRequest(message, out string requestId))
+                        {
+                            await client.SendAsync(HubStatusProtocol.CreateReply(requestId,
+                                ServerInterface.AdministratorNickname, broadcaster.AuthenticatedClientCount), serverCancellationToken).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
 
                     if (ImageAnimationProtocol.IsAnimationControlMessage(message))
                     {
@@ -400,6 +417,7 @@ namespace TCPTunnel
 
                         if (assemblyResult == ImageAnimationAssemblyResult.Completed)
                         {
+                            client.Diagnostics.CountMessage();
                             string[] transfer = ImageAnimationProtocol.CreateServerTransfer(
                                 animationPacket,
                                 authenticatedNickname);
@@ -435,6 +453,7 @@ namespace TCPTunnel
                         }
 
                         string imageFrame = ImageProtocol.CreateServerFrame(imagePacket, authenticatedNickname);
+                        client.Diagnostics.CountMessage();
                         await broadcaster.BroadcastAsync(client, imageFrame, serverCancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -471,6 +490,7 @@ namespace TCPTunnel
                     if (LegacyEventProtocol.IsControlMessage(message))
                         continue;
 
+                    client.Diagnostics.CountMessage();
                     await broadcaster.BroadcastAsync(client, $"[{authenticatedNickname}]: {message}", serverCancellationToken).ConfigureAwait(false);
                 }
             }
@@ -504,7 +524,9 @@ namespace TCPTunnel
             }
             finally
             {
+                diagnosticsCancellation.Cancel();
                 broadcaster.RemoveClient(client);
+                if (diagnosticsHeartbeat != null) await diagnosticsHeartbeat.ConfigureAwait(false);
                 if (authenticated && !serverCancellationToken.IsCancellationRequested)
                 {
                     try

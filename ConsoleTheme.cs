@@ -2,12 +2,23 @@ using System;
 
 namespace TCPTunnel
 {
+    internal enum MenuSelectionStyle { Fill, Arrow, Brackets }
+
     internal static class ConsoleTheme
     {
+        public static MenuSelectionStyle SelectionStyle { get; set; } = MenuSelectionStyle.Fill;
         public static ConsoleColor Border { get; set; } = ConsoleColor.Magenta;
         public static ConsoleColor Corners { get; set; } = ConsoleColor.Blue;
         public static ConsoleColor SelectionBackground { get; set; } = ConsoleColor.Cyan;
-        public static ConsoleColor SelectionForeground { get; set; } = ConsoleColor.Black;
+        public static ConsoleColor SelectionForeground => IsDarkColor(SelectionBackground) ? ConsoleColor.White : ConsoleColor.Black;
+
+        private static bool IsDarkColor(ConsoleColor color) => color switch
+        {
+            ConsoleColor.Black or ConsoleColor.DarkBlue or ConsoleColor.DarkGreen or ConsoleColor.DarkCyan or
+            ConsoleColor.DarkRed or ConsoleColor.DarkMagenta or ConsoleColor.DarkYellow or ConsoleColor.DarkGray or
+            ConsoleColor.Blue or ConsoleColor.Red or ConsoleColor.Magenta => true,
+            _ => false
+        };
         public static ConsoleColor MenuText { get; set; } = ConsoleColor.White;
         public static ConsoleColor IncomingMarker { get; set; } = ConsoleColor.Green;
         public static ConsoleColor IncomingNickname { get; set; } = ConsoleColor.Yellow;
@@ -24,10 +35,10 @@ namespace TCPTunnel
 
         public static void Reset()
         {
+            SelectionStyle = MenuSelectionStyle.Fill;
             Border = ConsoleColor.Magenta;
             Corners = ConsoleColor.Blue;
             SelectionBackground = ConsoleColor.Cyan;
-            SelectionForeground = ConsoleColor.Black;
             MenuText = ConsoleColor.White;
             IncomingMarker = ConsoleColor.Green;
             IncomingNickname = ConsoleColor.Yellow;

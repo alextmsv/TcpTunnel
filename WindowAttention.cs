@@ -25,6 +25,17 @@ namespace TCPTunnel
 
         [DllImport("user32.dll")]
         private static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        internal static bool IsForeground
+        {
+            get
+            {
+                try { IntPtr window = GetWindowHandle(); return window != IntPtr.Zero && window == GetForegroundWindow(); }
+                catch { return false; }
+            }
+        }
 
         [DllImport("user32.dll")]
         private static extern bool FlashWindowEx(ref FlashInfo info);

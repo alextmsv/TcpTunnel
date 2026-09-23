@@ -10,7 +10,7 @@ namespace TCPTunnel
     public class ServerInterface : NetWorker
     {
         private static readonly object serverLock = new object();
-        private const int MaxConnectedClients = 64;
+        internal const int MaxConnectedClients = 64;
         private static TcpListener server;
         private static CancellationTokenSource serverCancellation;
         private static Task acceptTask = Task.CompletedTask;
@@ -25,7 +25,14 @@ namespace TCPTunnel
         public static string PortMappingStatus => GetPortMappingStatus();
         public static string DisplayAddress => displayAddress;
         public static bool DisplayAddressIsPublic => displayAddressIsPublic;
+        public static string AdministratorNickname { get; private set; } = String.Empty;
         public static int ConnectedClientCount => broadcaster.AuthenticatedClientCount;
+
+        internal static LocalHubSnapshot CaptureStatus()
+        {
+            lock (serverLock)
+                return new LocalHubSnapshot(isRunning, ListeningPort, PortMappingStatus, ConnectedClientCount);
+        }
 
         internal static async Task<KickCommandResult> KickClientAsync(
             string targetNickname,
@@ -79,11 +86,12 @@ namespace TCPTunnel
 
         public static bool doCreateServer(int port)
         {
+            if (!UserInterface.EnsureNickname()) return false;
             if (ConsoleGraphic.Enabled)
                 ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.StartingListener), ConsoleTheme.SystemText, 0, true, 3);
 
             string error;
-            if (!TryStartServer(port, out error))
+            if (!TryStartServer(port, out error, nickname))
             {
                 if (ConsoleGraphic.Enabled)
                     ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.CreateHubFailed, error), ConsoleTheme.SystemText);
@@ -141,7 +149,7 @@ namespace TCPTunnel
             }
         }
 
-        public static bool TryStartServer(int port, out string error)
+        public static bool TryStartServer(int port, out string error, string administratorNickname = null)
         {
             if (port < 1 || port > 65535)
             {
@@ -167,6 +175,7 @@ namespace TCPTunnel
                     displayAddress = "127.0.0.1";
                     displayAddressIsPublic = false;
                     ListeningPort = port;
+                    AdministratorNickname = IsNicknameValid(administratorNickname) ? administratorNickname : String.Empty;
                     isRunning = true;
                     acceptTask = AcceptLoopAsync(listener, serverCancellation.Token);
                     error = null;

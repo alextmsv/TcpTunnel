@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +15,7 @@ namespace TCPTunnel
         private static readonly TimeSpan PayloadReadTimeout = TimeSpan.FromSeconds(30);
 
         private static readonly System.Text.Encoding Utf8 = new System.Text.UTF8Encoding(false, true);
+        private static readonly ConditionalWeakTable<Stream, SemaphoreSlim> writeLocks = new();
 
         internal static byte[] EncodeFrame(string value)
         {
@@ -28,7 +30,10 @@ namespace TCPTunnel
             return frame;
         }
 
-        public static async Task<string> ReadStringAsync(NetworkStream stream, CancellationToken cancellationToken)
+        public static Task<string> ReadStringAsync(NetworkStream stream, CancellationToken cancellationToken) =>
+            ReadStringAsync((Stream)stream, cancellationToken);
+
+        internal static async Task<string> ReadStringAsync(Stream stream, CancellationToken cancellationToken)
         {
             int byteCount = await Read7BitEncodedIntAsync(stream, cancellationToken).ConfigureAwait(false);
             if (byteCount < 0 || byteCount > MaxFrameBytes)
@@ -64,7 +69,10 @@ namespace TCPTunnel
             }
         }
 
-        public static async Task WriteStringAsync(NetworkStream stream, string value, CancellationToken cancellationToken)
+        public static Task WriteStringAsync(NetworkStream stream, string value, CancellationToken cancellationToken) =>
+            WriteStringAsync((Stream)stream, value, cancellationToken);
+
+        internal static async Task WriteStringAsync(Stream stream, string value, CancellationToken cancellationToken)
         {
             if (value == null)
                 throw new ArgumentNullException(nameof(value));
@@ -75,6 +83,8 @@ namespace TCPTunnel
 
             int prefixLength = Get7BitEncodedIntLength(byteCount);
             int frameLength = prefixLength + byteCount;
+            SemaphoreSlim writeLock = writeLocks.GetValue(stream, _ => new SemaphoreSlim(1, 1));
+            await writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             byte[] frame = ArrayPool<byte>.Shared.Rent(frameLength);
             try
             {
@@ -84,14 +94,21 @@ namespace TCPTunnel
                 await stream.WriteAsync(
                     frame.AsMemory(0, frameLength),
                     cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                stream.Close();
+                throw;
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(frame);
+                writeLock.Release();
             }
         }
 
-        private static async Task<int> Read7BitEncodedIntAsync(NetworkStream stream, CancellationToken cancellationToken)
+        private static async Task<int> Read7BitEncodedIntAsync(Stream stream, CancellationToken cancellationToken)
         {
             byte[] singleByte = ArrayPool<byte>.Shared.Rent(1);
             try

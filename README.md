@@ -85,12 +85,13 @@ GIF frames are composed according to their disposal metadata and animate directl
 | Command | Action |
 |---|---|
 | `/help` | Show the available commands and their syntax. |
-| `/status` | Show the local Hub and UPnP status. |
+| `/status` | Show the connected Hub's administrator, connection timing and participant count, plus your own running Hub and its port mapping. |
+| `/whois nickname` | Show a participant's connection IP, session RTT, reported window size, snake and accepted message count. `@` is optional; the participant receives a highlighted notice. |
 | `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
 | `/clear` | Clear only your local chat history while keeping the session and interface active. |
 | `/look` | Open the most recent large image or GIF in a separate plain console window. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
-| `/kick @nickname ["reason"]` | Local Hub owner: notify and disconnect one participant. |
+| `/kick nickname [reason]` | Local Hub owner: notify and disconnect one participant. The `@` prefix and quotes around a multiword reason are optional. |
 | `/exit` | Leave the current chat and return to the menu. |
 
 ## How it works
@@ -107,7 +108,17 @@ flowchart LR
 ```
 
 The Hub authenticates each nickname, receives length-prefixed UTF-8 messages, and broadcasts them to all other authenticated clients in a consistent order.
-Even if you hosting an other hub, you can connect to anyone and checking by doing ```/status``` there to see a status of YOUR hub
+When you host one Hub and join another, `/status` shows both side by side when space permits. Port-mapping details belong only to your own Hub. Older servers keep chat working but cannot supply the new status or `/whois` metadata.
+
+`/whois` uses the participant's existing connection for RTT measurements. Its message count includes each accepted text, image or complete GIF once. For the local administrator, a confirmed public Hub IPv4 replaces loopback; unavailable public discovery is reported explicitly. Window and snake data describe the participant's client. Unread `/whois` notices blink until visible in a focused classic console or acknowledged by input while visible; hidden notices are collected into a bounded reminder.
+
+### Window and settings controls
+
+In ConsoleGraphics settings, Up/Down select a row and Left/Right move backward/forward through its values. Enter retains the existing action. Older profiles acquire missing settings while preserving unknown fields and comments.
+
+Classic console profiles store outer window width/height in pixels and maximized state. Windows Terminal owns its viewport: TCPTunnel preserves that geometry instead of forcing the old startup size. Restoring the outer Terminal window in pixels and reporting its pixel size in `/whois` are not yet supported.
+
+Bluetooth and Mesh are still under development. The standalone `tests/BluetoothProbe` checks local Windows API capabilities and provides host/scan/connect modes for a future two-device unpaired transfer test. Only local capability and software checks have run so far. The application uses a shared stream layer, tested with TCP and named pipes; Bluetooth is not yet selectable in its menus.
 
 ### Protocol limits
 

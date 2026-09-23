@@ -21,6 +21,7 @@ namespace TCPTunnel
         public ConsoleColor BorderColor = ConsoleColor.Magenta;
         public ConsoleColor CornerColor = ConsoleColor.Blue;
         public ConsoleColor SelectionColor = ConsoleColor.Cyan;
+        public MenuSelectionStyle SelectionStyle = MenuSelectionStyle.Fill;
         public ConsoleColor MenuTextColor = ConsoleColor.White;
         public ConsoleColor IncomingColor = ConsoleColor.Green;
         public ConsoleColor IncomingTextColor = ConsoleColor.White;
@@ -29,6 +30,9 @@ namespace TCPTunnel
         public ConsoleColor InputColor = ConsoleColor.Cyan;
         public ConsoleColor InputTextColor = ConsoleColor.White;
         public ConsoleColor SystemColor = ConsoleColor.DarkGray;
+        public int WindowWidth;
+        public int WindowHeight;
+        public bool WindowMaximized;
     }
 
     internal static class ApplicationSettings
@@ -124,6 +128,7 @@ namespace TCPTunnel
                 Current.BorderColor = defaults.BorderColor;
                 Current.CornerColor = defaults.CornerColor;
                 Current.SelectionColor = defaults.SelectionColor;
+                Current.SelectionStyle = defaults.SelectionStyle;
                 Current.MenuTextColor = defaults.MenuTextColor;
                 Current.IncomingColor = defaults.IncomingColor;
                 Current.IncomingTextColor = defaults.IncomingTextColor;
@@ -249,7 +254,9 @@ namespace TCPTunnel
             try
             {
                 Directory.CreateDirectory(GetStorageDirectory());
-                WriteFileAtomic(GetProfilePath(nickname), Serialize(Current));
+                string path = GetProfilePath(nickname);
+                string[] existing = File.Exists(path) ? File.ReadAllLines(path, Utf8) : Array.Empty<string>();
+                WriteFileAtomic(path, MergeProfileLines(existing, Serialize(Current), false));
                 lastProfileNickname = nickname;
                 SavePreferences();
             }
@@ -270,6 +277,7 @@ namespace TCPTunnel
             Current.BorderColor = ConsoleTheme.Border;
             Current.CornerColor = ConsoleTheme.Corners;
             Current.SelectionColor = ConsoleTheme.SelectionBackground;
+            Current.SelectionStyle = ConsoleTheme.SelectionStyle;
             Current.MenuTextColor = ConsoleTheme.MenuText;
             Current.IncomingColor = ConsoleTheme.IncomingMarker;
             Current.IncomingTextColor = ConsoleTheme.IncomingText;
@@ -290,6 +298,7 @@ namespace TCPTunnel
             ConsoleTheme.Border = Current.BorderColor;
             ConsoleTheme.Corners = Current.CornerColor;
             ConsoleTheme.SelectionBackground = Current.SelectionColor;
+            ConsoleTheme.SelectionStyle = Current.SelectionStyle;
             ConsoleTheme.MenuText = Current.MenuTextColor;
             ConsoleTheme.IncomingMarker = Current.IncomingColor;
             ConsoleTheme.IncomingText = Current.IncomingTextColor;
@@ -322,10 +331,36 @@ namespace TCPTunnel
 
         private static AppProfile LoadProfile(string nickname, AppProfile fallback)
         {
-            return ParseProfile(ReadFile(GetProfilePath(nickname)), fallback);
+            string path = GetProfilePath(nickname);
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Utf8);
+                AppProfile profile = ParseProfile(ParseLines(lines), fallback);
+                string[] migrated = MergeProfileLines(lines, Serialize(profile), true);
+                if (migrated.Length != lines.Length)
+                {
+                    try { WriteFileAtomic(path, migrated); } catch { }
+                }
+                return profile;
+            }
+            catch { return Clone(fallback); }
         }
 
-        private static AppProfile ParseProfile(Dictionary<string, string> values, AppProfile fallback)
+        internal static void RememberWindow(WindowSize size)
+        {
+            lock (sync)
+            {
+                if (PendingProfileNickname != null || !NetWorker.IsNicknameValid(NetWorker.nickname) ||
+                    size.Width <= 0 || size.Height <= 0 ||
+                    (Current.WindowWidth == size.Width && Current.WindowHeight == size.Height && Current.WindowMaximized == size.Maximized)) return;
+                Current.WindowWidth = size.Width;
+                Current.WindowHeight = size.Height;
+                Current.WindowMaximized = size.Maximized;
+                SaveCurrentProfileLocked(NetWorker.nickname);
+            }
+        }
+
+        internal static AppProfile ParseProfile(Dictionary<string, string> values, AppProfile fallback)
         {
             var profile = Clone(fallback);
             string value;
@@ -335,6 +370,9 @@ namespace TCPTunnel
             if (values.TryGetValue("lastHost", out value)) profile.LastHost = DecodeText(value) ?? profile.LastHost;
             if (values.TryGetValue("lastPort", out value) && Int32.TryParse(value, out number) && number >= 1 && number <= 65535) profile.LastPort = number;
             if (values.TryGetValue("graphics", out value) && Boolean.TryParse(value, out flag)) profile.GraphicsEnabled = flag;
+            if (values.TryGetValue("windowWidth", out value) && Int32.TryParse(value, out number) && number >= 0 && number <= 32768) profile.WindowWidth = number;
+            if (values.TryGetValue("windowHeight", out value) && Int32.TryParse(value, out number) && number >= 0 && number <= 32768) profile.WindowHeight = number;
+            if (values.TryGetValue("windowMaximized", out value) && Boolean.TryParse(value, out flag)) profile.WindowMaximized = flag;
             if (values.TryGetValue("language", out value))
             {
                 if (value == "en") profile.Language = AppLanguage.English;
@@ -350,6 +388,9 @@ namespace TCPTunnel
             profile.BorderColor = ReadColor(values, "borderColor", profile.BorderColor, true);
             profile.CornerColor = ReadColor(values, "cornerColor", profile.CornerColor);
             profile.SelectionColor = ReadColor(values, "selectionColor", profile.SelectionColor);
+            if (values.TryGetValue("selectionStyle", out value) &&
+                Enum.TryParse(value, true, out MenuSelectionStyle style) && Enum.IsDefined(typeof(MenuSelectionStyle), style))
+                profile.SelectionStyle = style;
             profile.MenuTextColor = ReadColor(values, "menuTextColor", profile.MenuTextColor);
             profile.IncomingColor = ReadColor(values, "incomingColor", profile.IncomingColor);
             profile.IncomingTextColor = ReadColor(values, "incomingTextColor", profile.IncomingTextColor);
@@ -374,7 +415,7 @@ namespace TCPTunnel
                 : fallback;
         }
 
-        private static string[] Serialize(AppProfile profile)
+        internal static string[] Serialize(AppProfile profile)
         {
             return new[]
             {
@@ -384,11 +425,14 @@ namespace TCPTunnel
                 "snakeDelay=" + profile.SnakeDelay, "snakeColor=" + (int)profile.SnakeColor,
                 "snakeGlyph=" + EncodeText(profile.SnakeGlyph.ToString()), "borderColor=" + (int)profile.BorderColor,
                 "cornerColor=" + (int)profile.CornerColor, "selectionColor=" + (int)profile.SelectionColor,
+                "selectionStyle=" + profile.SelectionStyle,
                 "menuTextColor=" + (int)profile.MenuTextColor,
                 "incomingColor=" + (int)profile.IncomingColor, "incomingTextColor=" + (int)profile.IncomingTextColor,
                 "outgoingColor=" + (int)profile.OutgoingColor, "outgoingTextColor=" + (int)profile.OutgoingTextColor,
                 "inputColor=" + (int)profile.InputColor, "inputTextColor=" + (int)profile.InputTextColor,
-                "systemColor=" + (int)profile.SystemColor
+                "systemColor=" + (int)profile.SystemColor,
+                "windowWidth=" + profile.WindowWidth, "windowHeight=" + profile.WindowHeight,
+                "windowMaximized=" + profile.WindowMaximized
             };
         }
 
@@ -401,11 +445,14 @@ namespace TCPTunnel
                 SnakeDelay = value.SnakeDelay, SnakeColor = value.SnakeColor, SnakeGlyph = value.SnakeGlyph,
                 BorderColor = value.BorderColor, CornerColor = value.CornerColor,
                 SelectionColor = value.SelectionColor, MenuTextColor = value.MenuTextColor,
+                SelectionStyle = value.SelectionStyle,
                 IncomingColor = value.IncomingColor,
                 IncomingTextColor = value.IncomingTextColor,
                 OutgoingColor = value.OutgoingColor, OutgoingTextColor = value.OutgoingTextColor,
                 InputColor = value.InputColor, InputTextColor = value.InputTextColor,
-                SystemColor = value.SystemColor
+                SystemColor = value.SystemColor,
+                WindowWidth = value.WindowWidth, WindowHeight = value.WindowHeight,
+                WindowMaximized = value.WindowMaximized
             };
         }
 
@@ -415,7 +462,7 @@ namespace TCPTunnel
             catch { return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); }
         }
 
-        private static Dictionary<string, string> ParseLines(IEnumerable<string> lines)
+        internal static Dictionary<string, string> ParseLines(IEnumerable<string> lines)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (string raw in lines)
@@ -426,6 +473,24 @@ namespace TCPTunnel
                 if (separator > 0) result[line.Substring(0, separator).Trim()] = line.Substring(separator + 1).Trim();
             }
             return result;
+        }
+
+        internal static string[] MergeProfileLines(string[] existing, string[] updates, bool onlyMissing)
+        {
+            var values = ParseLines(updates);
+            var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var result = new List<string>(existing.Length + updates.Length);
+            foreach (string raw in existing)
+            {
+                string line = (raw ?? String.Empty).Trim();
+                int equals = line.IndexOf('=');
+                string key = equals > 0 && line[0] != '#' && line[0] != ';' ? line.Substring(0, equals).Trim() : null;
+                if (key != null) present.Add(key);
+                result.Add(!onlyMissing && key != null && values.TryGetValue(key, out string value) ? key + "=" + value : raw);
+            }
+            foreach (var value in values)
+                if (!present.Contains(value.Key)) result.Add(value.Key + "=" + value.Value);
+            return result.ToArray();
         }
 
         private static void WriteFileAtomic(string path, IEnumerable<string> lines)

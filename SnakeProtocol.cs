@@ -46,7 +46,7 @@ namespace TCPTunnel
         {
             profile = default(SnakeProfile);
             string[] fields;
-            if (message == null || !message.StartsWith(Prefix, StringComparison.Ordinal))
+            if (message == null || message.Length > 256 || !message.StartsWith(Prefix, StringComparison.Ordinal))
                 return false;
 
             fields = message.Substring(Prefix.Length).Split('|');
@@ -68,7 +68,7 @@ namespace TCPTunnel
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
-            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
+            if (glyph < Char.MinValue || glyph > Char.MaxValue || !ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
                 !ConsoleGraphic.IsValidSnakeGlyph(((char)glyph).ToString()))
                 return false;
 
@@ -106,7 +106,7 @@ namespace TCPTunnel
             nickname = null;
             profile = default(SnakeProfile);
 
-            if (message == null || !message.StartsWith(Prefix, StringComparison.Ordinal))
+            if (message == null || message.Length > 256 || !message.StartsWith(Prefix, StringComparison.Ordinal))
                 return false;
 
             string[] fields = message.Substring(Prefix.Length).Split('|');
@@ -136,7 +136,7 @@ namespace TCPTunnel
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
-            if (!ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
+            if (glyph < Char.MinValue || glyph > Char.MaxValue || !ConsoleGraphic.IsVisibleSnakeColor(consoleColor) ||
                 !ConsoleGraphic.IsValidSnakeGlyph(((char)glyph).ToString()))
                 return false;
 

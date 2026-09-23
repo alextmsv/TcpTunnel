@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Diagnostics;
@@ -40,8 +40,13 @@ namespace TCPTunnel
         static readonly char[] snakeGlyphs = { '-', '~', '_', '=', '.', ':', '*', '+', '#' };
         static int[] activePreviewStarts;
         static ConsoleColor?[] activePreviewColors;
+        static int menuRowSpacing = 1;
+        bool mainMenuFrame;
+        ConsoleGraphic.ConsoleGeometry renderedMenuGeometry;
+        bool hasRenderedMenuGeometry;
         bool skipped = false;
         bool graphicsOptionsAvailable = true;
+        string nicknameFeedback;
         public void mainMatrix(
             string text,
             int x = centerX,
@@ -98,9 +103,18 @@ namespace TCPTunnel
 
         public void main(List<string> args)
         {
+            try { RunMainMenu(args); }
+            finally { ConsoleGraphic.SetMenuScreen(false); }
+        }
+
+        private void RunMainMenu(List<string> args)
+        {
             ConsoleGraphic.ConfigureConsole(71, 16);
             ApplyGraphicsArguments(args);
             OfferSavedProfile(args);
+            ConsoleGraphic.SetMenuScreen(false);
+            ConsoleWindowState.Restore(ApplicationSettings.Current);
+            ConsoleWindowState.StartTracking();
             args.Add("-skip");
             Console.ForegroundColor = ConsoleColor.White;
             if (args.Count > 0)
@@ -139,8 +153,9 @@ namespace TCPTunnel
                     {
                         string ip = endpoint[0].ToString();
                         int port = Convert.ToInt32(endpoint[1]);
-                        Program.matrix(NetWorker.ping(ip, port)
-                            ? Lang.Get(TextId.ServerAlive, ip, port)
+                        var pingResult = NetWorker.ping(ip, port);
+                        Program.matrix(pingResult.Reachable
+                            ? Lang.Get(TextId.ServerPing, ip, port, pingResult.Milliseconds)
                             : Lang.Get(TextId.ServerDead, ip, port));
                         Console.ReadKey();
                         graphic.Clear();
@@ -168,6 +183,7 @@ namespace TCPTunnel
             }
             mainMatrix(Lang.Get(TextId.Welcome), centerX, centerY);
         main:
+            ConsoleGraphic.SetMenuScreen(true);
             ConsoleGraphic.SetReservedBottomRows(0);
             Program.bufferClear();
             ConsoleTitleAnimator.SetCaption(Lang.Get(TextId.MenuTitle), ConsoleGraphic.Enabled);
@@ -189,14 +205,22 @@ namespace TCPTunnel
             int exitIndex = choiceList.Count;
             choiceList.Add(Lang.Get(TextId.Exit));
             string[] choice = choiceList.ToArray();
-            left = 10;
-            top = 1;
-
             int arrow = 0;
             bool isMenu = true;
+            mainMenuFrame = true;
+            DrawMenuFrame(choice, arrow);
 
-            for (int i = 0; i < choice.Length; i++)
-                DrawChoice(choice[i], i, i == arrow, false);
+            if (!String.IsNullOrEmpty(nicknameFeedback))
+            {
+                if (ConsoleGraphic.Enabled)
+                    ConsoleGraphic.WriteBottomStatus(nicknameFeedback, ConsoleTheme.SystemText);
+                else
+                {
+                    Console.WriteLine();
+                    ConsoleGraphic.WriteContentLine(nicknameFeedback);
+                }
+                nicknameFeedback = null;
+            }
 
             while (isMenu)
             {
@@ -208,12 +232,12 @@ namespace TCPTunnel
                     case ConsoleKey.RightArrow:
                     case ConsoleKey.DownArrow:
                         arrow = (arrow + 1) % choice.Length;
-                        AnimateSelection(choice, previousArrow, arrow);
+                        hasRenderedMenuGeometry &= AnimateSelection(choice, previousArrow, arrow);
                         continue;
                     case ConsoleKey.LeftArrow:
                     case ConsoleKey.UpArrow:
                         arrow = (arrow - 1 + choice.Length) % choice.Length;
-                        AnimateSelection(choice, previousArrow, arrow);
+                        hasRenderedMenuGeometry &= AnimateSelection(choice, previousArrow, arrow);
                         continue;
 
                     case ConsoleKey.Escape:
@@ -269,37 +293,31 @@ namespace TCPTunnel
 
         private void ChangeNicknamePlain()
         {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            int inputTop = Console.CursorTop;
-            mainMatrix(
-                Lang.Get(TextId.ChangeNicknameWelcome),
-                centerX,
-                centerY,
-                0,
-                3,
-                3);
-            string testname = ReadCenteredNickname(inputTop++);
-            Console.SetCursorPosition(2, inputTop++);
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.Write(testname);
-            Program.matrix("...\n", 500, ConsoleColor.DarkGray);
-            if (!NetWorker.IsNicknameValid(testname))
+            bool retry = false;
+            while (true)
             {
-                Program.matrix(Lang.Get(TextId.NicknameRules) + "\n");
-                Program.matrix(Lang.Get(TextId.TryAgain));
-                Console.ReadKey();
+                graphic.Clear(0, 0);
+                Console.ForegroundColor = ConsoleTheme.MenuText;
+                if (retry) Console.WriteLine(Lang.Get(TextId.AuthInvalidNickname));
+                Console.WriteLine(Lang.Get(TextId.NicknamePrompt));
+                Console.WriteLine();
+                Console.Write("> ");
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                string testname = Console.ReadLine();
+                stopwatch.Stop();
+                if (testname == null) return;
+                if (!NetWorker.IsNicknameValid(testname))
+                {
+                    retry = true;
+                    continue;
+                }
+                NetWorker.nickname = testname;
+                ApplicationSettings.SaveCurrentProfile(testname);
+                nicknameFeedback = Lang.Get(TextId.GoodName);
+                if (stopwatch.Elapsed.TotalSeconds > 25)
+                    nicknameFeedback += " — " + Lang.Get(TextId.TookYourTime);
                 return;
             }
-
-            stopwatch.Stop();
-            NetWorker.nickname = testname;
-            ApplicationSettings.SaveCurrentProfile(NetWorker.nickname);
-            Console.SetCursorPosition(2, inputTop += 2);
-            Program.matrix(Lang.Get(TextId.GoodName) + "\n", 8, ConsoleColor.Green);
-            if (stopwatch.Elapsed.TotalSeconds > 25)
-                Program.matrix(Lang.Get(TextId.TookYourTime), 10);
-
-            Thread.Sleep(1500);
         }
 
         private void ChangeNicknameGraphical()
@@ -428,8 +446,8 @@ namespace TCPTunnel
 
         private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)
         {
-            ConsoleGraphic.ConsoleGeometry knownGeometry;
-            bool hasKnownGeometry = ConsoleGraphic.TryCaptureConsoleGeometry(out knownGeometry);
+            ConsoleGraphic.ConsoleGeometry knownGeometry = renderedMenuGeometry;
+            bool hasKnownGeometry = hasRenderedMenuGeometry;
             ConsoleGraphic.ConsoleGeometry pendingGeometry = new ConsoleGraphic.ConsoleGeometry();
             bool resizePending = false;
             long stableSince = 0;
@@ -462,11 +480,11 @@ namespace TCPTunnel
                     currentGeometry.IsSameAs(knownGeometry) &&
                     !resizePending)
                 {
-                    if (ConsoleGraphic.Enabled && now >= nextMarkerBlink)
+                    if (ConsoleGraphic.Enabled && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow && now >= nextMarkerBlink)
                     {
                         markerVisible = !markerVisible;
                         ConsoleGraphic.DrawMenuSelectionMarker(
-                            selectedIndex,
+                            selectedIndex * menuRowSpacing,
                             left,
                             top,
                             markerVisible);
@@ -488,10 +506,7 @@ namespace TCPTunnel
                     continue;
 
                 bool frameCompleted = graphic.TryClear(0, 0);
-                left = 10;
-                top = 1;
-                for (int index = 0; index < choices.Length; index++)
-                    frameCompleted &= DrawChoice(choices[index], index, index == selectedIndex, false);
+                frameCompleted &= DrawMenuFrame(choices, selectedIndex);
 
                 ConsoleGraphic.ConsoleGeometry renderedGeometry;
                 if (frameCompleted &&
@@ -511,16 +526,42 @@ namespace TCPTunnel
             }
         }
 
-        private static void AnimateSelection(string[] choices, int previousIndex, int currentIndex)
+        private bool DrawMenuFrame(string[] choices, int selectedIndex)
         {
-            if (ConsoleGraphic.Enabled)
+            hasRenderedMenuGeometry = false;
+            if (!ConsoleGraphic.TryCaptureConsoleGeometry(out var frameGeometry)) return false;
+            left = 5;
+            top = 1;
+            menuRowSpacing = 1;
+            bool completed = true;
+            if (mainMenuFrame && ConsoleGraphic.Enabled)
             {
-                ConsoleGraphic.DrawMenuSelectionMarker(previousIndex, left, top, false);
-                ConsoleGraphic.DrawMenuSelectionMarker(currentIndex, left, top, true);
+                if (!ConsoleGraphic.TryCaptureConsoleGeometry(out var geometry)) return false;
+                var layout = MenuPresentation.Layout(geometry.DrawableWidth, geometry.DrawableHeight, choices.Length);
+                top = layout.Top;
+                menuRowSpacing = layout.Spacing;
+                lock (ConsoleGraphic.borderAnimationLock)
+                    completed = MenuPresentation.DrawHeader(geometry, layout.Header);
             }
+            for (int index = 0; index < choices.Length; index++)
+                completed &= DrawChoice(choices[index], index, index == selectedIndex, false);
+            if (completed && ConsoleGraphic.IsConsoleGeometryCurrent(frameGeometry))
+            {
+                renderedMenuGeometry = frameGeometry;
+                hasRenderedMenuGeometry = true;
+            }
+            return hasRenderedMenuGeometry;
+        }
 
-            DrawChoice(choices[previousIndex], previousIndex, false, true);
-            DrawChoice(choices[currentIndex], currentIndex, true, true);
+        private static bool AnimateSelection(string[] choices, int previousIndex, int currentIndex)
+        {
+            if (ConsoleGraphic.Enabled && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow)
+            {
+                ConsoleGraphic.DrawMenuSelectionMarker(previousIndex * menuRowSpacing, left, top, false);
+                ConsoleGraphic.DrawMenuSelectionMarker(currentIndex * menuRowSpacing, left, top, true);
+            }
+            bool completed = DrawChoice(choices[previousIndex], previousIndex, false, true);
+            return DrawChoice(choices[currentIndex], currentIndex, true, true) && completed;
         }
 
         private static bool DrawChoice(string text, int index, bool selected, bool animate)
@@ -533,7 +574,7 @@ namespace TCPTunnel
                 : (ConsoleColor?)null;
             return ConsoleGraphic.DrawMenuOption(
                 text,
-                index,
+                index * menuRowSpacing,
                 left,
                 top,
                 selected,
@@ -551,18 +592,35 @@ namespace TCPTunnel
                 string[] choices = {
                     Lang.Get(ConsoleGraphic.Enabled ? TextId.GraphicsEnabled : TextId.GraphicsDisabled),
                     Lang.Get(TextId.Customization),
+                    Lang.Get(TextId.SelectionStyle) + ": " + Lang.Get(
+                        ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow ? TextId.SelectionArrow :
+                        ConsoleTheme.SelectionStyle == MenuSelectionStyle.Brackets ? TextId.SelectionBrackets : TextId.SelectionFill),
+                    Lang.Get(TextId.SelectionColor) + ": " + GetSnakeColorName(ConsoleTheme.SelectionBackground),
                     Lang.Get(TextId.Back)
                 };
-                int selection = ReadOptionsSelection(Lang.Get(TextId.GraphicsOptions), choices, selectedOption);
-                if (selection < 0 || selection == 2)
+                var choice = ReadOptionsChoice(Lang.Get(TextId.GraphicsOptions), choices, selectedOption, isValueOption: index => index == 0 || index == 2 || index == 3);
+                int selection = choice.Index;
+                if (selection < 0 || selection == 4)
                     return;
 
                 selectedOption = selection;
 
                 if (selection == 0)
                     ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled;
-                else
+                else if (selection == 1)
                     ShowCustomizationOptions();
+                else if (selection == 2)
+                {
+                    ConsoleTheme.SelectionStyle = OptionNavigation.Next(
+                        new[] { MenuSelectionStyle.Fill, MenuSelectionStyle.Arrow, MenuSelectionStyle.Brackets },
+                        ConsoleTheme.SelectionStyle, choice.Direction);
+                    ApplicationSettings.CaptureAndSave();
+                }
+                else
+                {
+                    ConsoleTheme.SelectionBackground = OptionNavigation.Next(interfaceColors, ConsoleTheme.SelectionBackground, choice.Direction);
+                    ApplicationSettings.CaptureAndSave();
+                }
             }
         }
 
@@ -606,18 +664,19 @@ namespace TCPTunnel
                     Lang.Get(TextId.GlyphValue, ConsoleGraphic.BorderSnakeGlyph),
                     Lang.Get(TextId.Back)
                 };
-                int selection = ReadOptionsSelection(Lang.Get(TextId.SnakeCustomization), choices, selectedOption);
+                var choice = ReadOptionsChoice(Lang.Get(TextId.SnakeCustomization), choices, selectedOption, isValueOption: index => index < 3);
+                int selection = choice.Index;
                 if (selection < 0 || selection == 3)
                     return;
 
                 selectedOption = selection;
 
                 if (selection == 0)
-                    ConsoleGraphic.BorderAnimationDelayMilliseconds = GetNextSnakeSpeed();
+                    ConsoleGraphic.BorderAnimationDelayMilliseconds = OptionNavigation.Next(snakeSpeeds, ConsoleGraphic.BorderAnimationDelayMilliseconds, choice.Direction);
                 else if (selection == 1)
-                    ConsoleGraphic.BorderSnakeColor = GetNextSnakeColor();
+                    ConsoleGraphic.BorderSnakeColor = OptionNavigation.Next(snakeColors, ConsoleGraphic.BorderSnakeColor, choice.Direction);
                 else
-                    ConsoleGraphic.BorderSnakeGlyph = GetNextSnakeGlyph();
+                    ConsoleGraphic.BorderSnakeGlyph = OptionNavigation.Next(snakeGlyphs, ConsoleGraphic.BorderSnakeGlyph, choice.Direction);
                 ApplicationSettings.CaptureAndSave();
             }
         }
@@ -672,36 +731,38 @@ namespace TCPTunnel
                     previewColors[index] = colors[index];
                 }
 
-                int selection = ReadOptionsSelection(
+                var choice = ReadOptionsChoice(
                     Lang.Get(TextId.InterfaceColors),
                     choices,
                     selectedOption,
                     previewStarts,
-                    previewColors);
+                    previewColors,
+                    index => index < 6);
+                int selection = choice.Index;
                 if (selection < 0 || selection == 6)
                     return;
                 selectedOption = selection;
                 if (selection == 0)
-                    ConsoleTheme.Border = GetNextBorderColor(ConsoleTheme.Border);
+                    ConsoleTheme.Border = OptionNavigation.Next(borderColors, ConsoleTheme.Border, choice.Direction);
                 else if (selection == 1)
                 {
-                    ConsoleTheme.IncomingMarker = GetNextInterfaceColor(ConsoleTheme.IncomingMarker);
+                    ConsoleTheme.IncomingMarker = OptionNavigation.Next(interfaceColors, ConsoleTheme.IncomingMarker, choice.Direction);
                     ConsoleTheme.IncomingText = ConsoleTheme.IncomingMarker;
                 }
                 else if (selection == 2)
                 {
-                    ConsoleTheme.OutgoingMarker = GetNextInterfaceColor(ConsoleTheme.OutgoingMarker);
+                    ConsoleTheme.OutgoingMarker = OptionNavigation.Next(interfaceColors, ConsoleTheme.OutgoingMarker, choice.Direction);
                     ConsoleTheme.OutgoingText = ConsoleTheme.OutgoingMarker;
                 }
                 else if (selection == 3)
                 {
-                    ConsoleTheme.InputPrompt = GetNextInterfaceColor(ConsoleTheme.InputPrompt);
+                    ConsoleTheme.InputPrompt = OptionNavigation.Next(interfaceColors, ConsoleTheme.InputPrompt, choice.Direction);
                     ConsoleTheme.InputText = ConsoleTheme.InputPrompt;
                 }
                 else if (selection == 4)
-                    ConsoleTheme.SystemText = GetNextInterfaceColor(ConsoleTheme.SystemText);
+                    ConsoleTheme.SystemText = OptionNavigation.Next(interfaceColors, ConsoleTheme.SystemText, choice.Direction);
                 else
-                    ConsoleTheme.MenuText = GetNextInterfaceColor(ConsoleTheme.MenuText);
+                    ConsoleTheme.MenuText = OptionNavigation.Next(interfaceColors, ConsoleTheme.MenuText, choice.Direction);
                 ConsoleGraphic.InvalidateVisualTheme();
                 ApplicationSettings.CaptureAndSave();
             }
@@ -740,85 +801,53 @@ namespace TCPTunnel
             int selectedOption,
             int[] previewStarts = null,
             ConsoleColor?[] previewColors = null)
+            => ReadOptionsChoice(title, choices, selectedOption, previewStarts, previewColors).Index;
+
+        private (int Index, int Direction) ReadOptionsChoice(
+            string title,
+            string[] choices,
+            int selectedOption,
+            int[] previewStarts = null,
+            ConsoleColor?[] previewColors = null,
+            Func<int, bool> isValueOption = null)
         {
             activePreviewStarts = previewStarts;
             activePreviewColors = previewColors;
+            ConsoleGraphic.SetMenuScreen(true);
             ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
-            left = 10;
-            top = 1;
+            mainMenuFrame = false;
             int arrow = Math.Max(0, Math.Min(selectedOption, choices.Length - 1));
-
-            for (int index = 0; index < choices.Length; index++)
-                DrawChoice(choices[index], index, index == arrow, false);
+            DrawMenuFrame(choices, arrow);
 
             while (true)
             {
                 ConsoleKey key = ReadMenuKey(choices, arrow);
                 int previousArrow = arrow;
-                if (key == ConsoleKey.DownArrow || key == ConsoleKey.RightArrow)
+                if (key == ConsoleKey.DownArrow)
                 {
                     arrow = (arrow + 1) % choices.Length;
-                    AnimateSelection(choices, previousArrow, arrow);
+                    hasRenderedMenuGeometry &= AnimateSelection(choices, previousArrow, arrow);
                 }
-                else if (key == ConsoleKey.UpArrow || key == ConsoleKey.LeftArrow)
+                else if (key == ConsoleKey.UpArrow)
                 {
                     arrow = (arrow - 1 + choices.Length) % choices.Length;
-                    AnimateSelection(choices, previousArrow, arrow);
+                    hasRenderedMenuGeometry &= AnimateSelection(choices, previousArrow, arrow);
                 }
-                else if (key == ConsoleKey.Enter || key == ConsoleKey.Spacebar)
+                else if (key == ConsoleKey.Enter || key == ConsoleKey.Spacebar ||
+                    (OptionNavigation.ValueDirection(key) != 0 && isValueOption?.Invoke(arrow) == true))
                 {
                     activePreviewStarts = null;
                     activePreviewColors = null;
-                    return arrow;
+                    return (arrow, OptionNavigation.ValueDirection(key));
                 }
                 else if (key == ConsoleKey.Escape)
                 {
                     activePreviewStarts = null;
                     activePreviewColors = null;
-                    return -1;
+                    return (-1, 0);
                 }
             }
-        }
-
-        private static int GetNextSnakeSpeed()
-        {
-            int current = ConsoleGraphic.BorderAnimationDelayMilliseconds;
-            for (int index = 0; index < snakeSpeeds.Length; index++)
-            {
-                if (snakeSpeeds[index] == current)
-                    return snakeSpeeds[(index + 1) % snakeSpeeds.Length];
-            }
-            return snakeSpeeds[0];
-        }
-
-        private static ConsoleColor GetNextSnakeColor()
-        {
-            ConsoleColor current = ConsoleGraphic.BorderSnakeColor;
-            for (int index = 0; index < snakeColors.Length; index++)
-            {
-                if (snakeColors[index] == current)
-                    return snakeColors[(index + 1) % snakeColors.Length];
-            }
-            return snakeColors[0];
-        }
-
-        private static ConsoleColor GetNextInterfaceColor(ConsoleColor current)
-        {
-            int index = Array.IndexOf(interfaceColors, current);
-            return interfaceColors[(index + 1 + interfaceColors.Length) % interfaceColors.Length];
-        }
-
-        private static ConsoleColor GetNextBorderColor(ConsoleColor current)
-        {
-            int index = Array.IndexOf(borderColors, current);
-            return borderColors[(index + 1 + borderColors.Length) % borderColors.Length];
-        }
-
-        private static char GetNextSnakeGlyph()
-        {
-            int index = Array.IndexOf(snakeGlyphs, ConsoleGraphic.BorderSnakeGlyph);
-            return snakeGlyphs[(index + 1 + snakeGlyphs.Length) % snakeGlyphs.Length];
         }
 
         private static string GetSnakeSpeedName(int delayMilliseconds)
@@ -858,6 +887,7 @@ namespace TCPTunnel
 
         private void PrepareActionScreen(string title)
         {
+            ConsoleGraphic.SetMenuScreen(false);
             ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
         }

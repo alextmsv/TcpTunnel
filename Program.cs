@@ -42,6 +42,8 @@ namespace TCPTunnel
                                UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));
                 Environment.ExitCode = success ? 0 : 1;
+                Console.Out.Flush();
+                Thread.Sleep(TimeSpan.FromSeconds(10));
                 return;
             }
 
@@ -55,6 +57,7 @@ namespace TCPTunnel
             AppDomain.CurrentDomain.ProcessExit += delegate
             {
                 ConsoleTitleAnimator.Stop();
+                ConsoleWindowState.StopTracking();
                 ApplicationSettings.CaptureAndSave();
                 ServerInterface.StopServer();
             };

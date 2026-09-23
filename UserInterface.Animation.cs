@@ -26,7 +26,7 @@ namespace TCPTunnel
         }
 
         private static void PrepareAndSendAnimation(
-            NetworkStream stream,
+            Stream stream,
             CancellationToken cancellationToken,
             string path)
         {

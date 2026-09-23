@@ -31,6 +31,8 @@ namespace TCPTunnel
         public Action StopLocalHub { get; set; }
         public Action<string, ConsoleColor?> WriteLine { get; set; }
         public Func<string> GetStatus { get; set; }
+        public Action ShowStatus { get; set; }
+        public Action<string> Whois { get; set; }
         public Func<string, string, KickCommandResult> Kick { get; set; }
         public Func<SnakeCommandResult> ToggleSnake { get; set; }
         public bool IsLocalHubAdministrator { get; set; }
@@ -50,6 +52,12 @@ namespace TCPTunnel
                 return CommandDisposition.NotCommand;
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
+
+            int commandEnd = 0;
+            while (commandEnd < input.Length && !Char.IsWhiteSpace(input[commandEnd]))
+                commandEnd++;
+            if (String.Equals(input.Substring(0, commandEnd), "/kick", StringComparison.OrdinalIgnoreCase))
+                return ExecuteKick(ParseKickArguments(input.Substring(commandEnd)), context);
 
             List<ParsedToken> tokens;
             if (!TryTokenize(input, out tokens) || tokens.Count == 0)
@@ -85,7 +93,18 @@ namespace TCPTunnel
                 case "/status":
                     if (!HasExactArgumentCount(tokens, 0))
                         return WriteUsage(context, TextId.CommandHelp);
-                    context.WriteLine(context.GetStatus(), null);
+                    if (context.ShowStatus != null) context.ShowStatus();
+                    else context.WriteLine(context.GetStatus(), null);
+                    return CommandDisposition.Handled;
+
+                case "/whois":
+                    if (!HasExactArgumentCount(tokens, 1) || tokens[1].WasQuoted)
+                        return WriteUsage(context, TextId.WhoisUsage);
+                    string target = tokens[1].Value;
+                    if (target.StartsWith("@", StringComparison.Ordinal)) target = target.Substring(1);
+                    if (!NetWorker.IsNicknameValid(target)) return WriteUsage(context, TextId.WhoisUsage);
+                    if (context.Whois == null) context.WriteLine(Lang.Get(TextId.WhoisUnavailable), null);
+                    else context.Whois(target);
                     return CommandDisposition.Handled;
 
                 case "/stop":
@@ -107,9 +126,6 @@ namespace TCPTunnel
                         context.WriteLine(Lang.Get(TextId.SnakeResumed), ConsoleColor.Green);
                     return CommandDisposition.Handled;
 
-                case "/kick":
-                    return ExecuteKick(tokens, context);
-
                 case "/exit":
                     if (!HasExactArgumentCount(tokens, 0))
                         return WriteUsage(context, TextId.CommandHelp);
@@ -124,12 +140,9 @@ namespace TCPTunnel
         public static bool RunSelfTest()
         {
             List<ParsedToken> tokens;
-            if (!TryTokenize("/kick @alex \"Get out now\"", out tokens) ||
-                tokens.Count != 3 || tokens[2].Value != "Get out now" || !tokens[2].WasQuoted)
-                return false;
             if (!TryTokenize("/ping localhost:9091", out tokens) || tokens.Count != 2)
                 return false;
-            if (TryTokenize("/kick @alex \"unterminated", out tokens))
+            if (TryTokenize("/whois @alex \"unterminated", out tokens))
                 return false;
 
             string kickedNickname = null;
@@ -151,8 +164,22 @@ namespace TCPTunnel
                     return KickCommandResult.Success;
                 }
             };
+
             if (InitCommand("/kick @alex \"Get out now\"", context) != CommandDisposition.Handled ||
                 kickedNickname != "alex" || kickReason != "Get out now" || writes != 1)
+                return false;
+
+            writes = 0;
+            kickedNickname = null;
+            kickReason = null;
+            if (InitCommand("/kick @alex causing trouble", context) != CommandDisposition.Handled ||
+                kickedNickname != "alex" || kickReason != "causing trouble" || writes != 1)
+                return false;
+
+            writes = 0;
+            kickedNickname = null;
+            if (InitCommand("/kick \"alex\" reason", context) != CommandDisposition.Handled ||
+                kickedNickname != null || writes != 1)
                 return false;
 
             string address;
@@ -169,10 +196,10 @@ namespace TCPTunnel
             if (tokens.Count != 2 || !TryParseEndpoint(tokens[1].Value, out address, out port))
                 return WriteUsage(context, TextId.PingCommandUsage);
 
-            bool reachable = NetWorker.ping(address, port);
+            var result = NetWorker.ping(address, port);
             context.WriteLine(
-                Lang.Get(reachable ? TextId.ServerAlive : TextId.ServerDead, address, port),
-                reachable ? ConsoleColor.Green : ConsoleColor.Red);
+                Lang.Get(result.Reachable ? TextId.ServerPing : TextId.ServerDead, address, port, result.Milliseconds),
+                result.Reachable ? ConsoleColor.Green : ConsoleColor.Red);
             return CommandDisposition.Handled;
         }
 
@@ -184,9 +211,7 @@ namespace TCPTunnel
                 return CommandDisposition.Handled;
             }
 
-            if (tokens.Count < 2 || tokens.Count > 3 ||
-                tokens[1].WasQuoted ||
-                (tokens.Count == 3 && !tokens[2].WasQuoted))
+            if (tokens.Count < 2 || tokens.Count > 3 || tokens[1].WasQuoted)
                 return WriteUsage(context, TextId.KickUsage);
 
             string nickname = tokens[1].Value;
@@ -207,6 +232,27 @@ namespace TCPTunnel
             else
                 context.WriteLine(Lang.Get(TextId.KickSucceeded, nickname), ConsoleColor.Green);
             return CommandDisposition.Handled;
+        }
+
+        private static List<ParsedToken> ParseKickArguments(string arguments)
+        {
+            var tokens = new List<ParsedToken> { new ParsedToken { Value = "/kick" } };
+            string remaining = arguments.Trim();
+            if (remaining.Length == 0)
+                return tokens;
+            int end = 0;
+            while (end < remaining.Length && !Char.IsWhiteSpace(remaining[end]))
+                end++;
+            tokens.Add(new ParsedToken { Value = remaining.Substring(0, end), WasQuoted = remaining[0] == '"' });
+            string reason = remaining.Substring(end).Trim();
+            if (reason.Length > 0)
+            {
+                if (reason.Length >= 2 && reason[0] == '"' && reason[reason.Length - 1] == '"' &&
+                    TryTokenize(reason, out var quoted) && quoted.Count == 1)
+                    reason = quoted[0].Value;
+                tokens.Add(new ParsedToken { Value = reason, WasQuoted = true });
+            }
+            return tokens;
         }
 
         private static CommandDisposition WriteUsage(CommandContext context, TextId usage)

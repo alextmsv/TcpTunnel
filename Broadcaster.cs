@@ -45,9 +45,10 @@ namespace TCPTunnel
         {
             lock (clientsLock)
             {
+                if (!clients.Contains(client) || !NetWorker.IsNicknameValid(nickname) || client.IsAuthenticated)
+                    return false;
                 bool nicknameTaken = clients.Any(existing =>
                     existing.IsAuthenticated &&
-                    existing.IsReady &&
                     !Object.ReferenceEquals(existing, client) &&
                     String.Equals(existing.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
 
@@ -72,12 +73,28 @@ namespace TCPTunnel
             }
         }
 
+        internal bool CompleteAuthenticationWithRoster(Client client, CancellationToken token, out Task delivery)
+        {
+            lock (clientsLock)
+            {
+                delivery = Task.CompletedTask;
+                if (!clients.Contains(client) || !client.IsAuthenticated || client.IsReady) return false;
+                string[] roster = clients.Where(other => other.IsReady && !Object.ReferenceEquals(other, client))
+                    .Select(other => SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, other.Nickname)).ToArray();
+                delivery = client.SendBatchAsync(roster, token);
+                client.IsReady = true;
+                return true;
+            }
+        }
+
         public bool RemoveClient(Client client)
         {
             bool removed;
             lock (clientsLock)
             {
                 removed = clients.Remove(client);
+                client.IsAuthenticated = false;
+                client.IsReady = false;
             }
 
             client.Close();

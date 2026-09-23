@@ -24,6 +24,7 @@ project.nuget.cache
 *.pdb
 *.cache
 TestResults/
+/tests/
 coverage/
 *.coverage
 *.coveragexml

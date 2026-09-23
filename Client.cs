@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,8 +18,11 @@ namespace TCPTunnel
         private readonly object rateLock = new object();
         private readonly object snakeProfileLock = new object();
         private readonly SerialSendQueue sendQueue;
+        private readonly IChatConnection connection;
         private double availableTokens = BurstCapacity;
         private double availableImageTokens = ImageBurstCapacity;
+        private double availableControlTokens = 4;
+        private long lastControlRefillTimestamp = Stopwatch.GetTimestamp();
         private long lastRefillTimestamp = Stopwatch.GetTimestamp();
         private long lastImageRefillTimestamp = Stopwatch.GetTimestamp();
         private SnakeProfile snakeProfile;
@@ -26,21 +30,30 @@ namespace TCPTunnel
         private bool hasSnakeProfile;
         private int closed;
 
-        public Client(TcpClient tcpClient)
+        public Client(TcpClient tcpClient) : this(new TcpChatConnection(tcpClient)) { }
+
+        internal Client(IChatConnection connection)
         {
-            TcpClient = tcpClient ?? throw new ArgumentNullException(nameof(tcpClient));
-            TcpClient.NoDelay = true;
-            Stream = TcpClient.GetStream();
+            this.connection = connection ?? throw new ArgumentNullException(nameof(connection));
+            Stream = connection.Stream;
             sendQueue = new SerialSendQueue(
-                (frame, token) => Stream.WriteAsync(frame, token).AsTask(), Close);
+                async (frame, token) =>
+                {
+                    await Stream.WriteAsync(frame, token).ConfigureAwait(false);
+                    await Stream.FlushAsync(token).ConfigureAwait(false);
+                }, Close);
         }
 
-        public TcpClient TcpClient { get; }
-        public NetworkStream Stream { get; }
+        // Kept for existing TCP callers; transport-neutral code uses Stream/ObservedIpAddress.
+        public TcpClient TcpClient => (connection as TcpChatConnection)?.Client;
+        public Stream Stream { get; }
+        internal string ObservedIpAddress => connection.RemoteIpAddress?.ToString() ?? String.Empty;
         public string IpAddress { get; set; }
         public string Nickname { get; set; }
         public bool IsAuthenticated { get; set; }
         public bool IsReady { get; internal set; }
+        internal bool SupportsHubStatus { get; set; }
+        internal WhoisPeer Diagnostics { get; } = new WhoisPeer();
 
         internal void UpdateSnakeProfile(SnakeProfile profile)
         {
@@ -107,6 +120,20 @@ namespace TCPTunnel
             }
         }
 
+        internal bool TryConsumeControlToken()
+        {
+            lock (rateLock)
+            {
+                long now = Stopwatch.GetTimestamp();
+                availableControlTokens = Math.Min(4, availableControlTokens +
+                    (double)(now - lastControlRefillTimestamp) / Stopwatch.Frequency * 2);
+                lastControlRefillTimestamp = now;
+                if (availableControlTokens < 1) return false;
+                availableControlTokens--;
+                return true;
+            }
+        }
+
         public Task SendAsync(string message, CancellationToken cancellationToken)
         {
             if (message == null)
@@ -134,7 +161,7 @@ namespace TCPTunnel
                 return;
 
             sendQueue.Close();
-            try { TcpClient.Close(); } catch { }
+            try { connection.Dispose(); } catch { }
         }
 
         public void Dispose()

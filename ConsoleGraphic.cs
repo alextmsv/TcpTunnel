@@ -11,6 +11,11 @@ namespace TCPTunnel
 {
     public class ConsoleGraphic
     {
+        static ConsoleGraphic()
+        {
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => SetMenuScreen(false);
+        }
+
         internal struct ConsoleGeometry
         {
             public int WindowWidth;
@@ -88,7 +93,7 @@ namespace TCPTunnel
         private const int BorderSnakeLength = 7;
         private const int AnimationClockIntervalMilliseconds = 20;
         private static readonly IntPtr invalidHandleValue = new IntPtr(-1);
-        private static readonly object borderAnimationLock = new object();
+        internal static readonly object borderAnimationLock = new object();
         private static readonly Dictionary<string, SnakeState> remoteSnakes =
             new Dictionary<string, SnakeState>(StringComparer.OrdinalIgnoreCase);
         private static readonly ushort[] singleAttributeBuffer = new ushort[1];
@@ -116,6 +121,54 @@ namespace TCPTunnel
         private static int signatureTop;
         private static int signatureLength;
         private static int visualThemeRevision;
+        private static bool menuScreenActive;
+        private static uint menuPreviousOutputMode;
+        private static bool menuPreviousCursorVisible;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleMode(IntPtr handle, uint mode);
+
+        // Keep full-screen menu redraws out of Terminal's scrollback; chat uses the main buffer.
+        internal const bool MenuScreenSupported = false;
+
+        internal static void SetMenuScreen(bool active)
+        {
+            if (active && (!MenuScreenSupported || !Enabled || Console.IsOutputRedirected || ConsoleWindowState.ClassicWindow != IntPtr.Zero))
+                active = false;
+            lock (borderAnimationLock)
+            {
+                if (menuScreenActive == active) return;
+                if (consoleOutputHandle == IntPtr.Zero || consoleOutputHandle == invalidHandleValue) return;
+                StopBorderAnimation();
+                try
+                {
+                    if (active)
+                    {
+                        if (!GetConsoleMode(consoleOutputHandle, out menuPreviousOutputMode) ||
+                            !SetConsoleMode(consoleOutputHandle, menuPreviousOutputMode | 4)) return;
+                        menuPreviousCursorVisible = Console.CursorVisible;
+                        Console.Write("\u001b[?1049h\u001b[?25l");
+                        menuScreenActive = true;
+                    }
+                    else
+                    {
+                        Console.Write("\u001b[?1049l");
+                        Console.CursorVisible = menuPreviousCursorVisible;
+                        SetConsoleMode(consoleOutputHandle, menuPreviousOutputMode);
+                        menuScreenActive = false;
+                    }
+                    InvalidateBorderLocked();
+                }
+                catch (IOException)
+                {
+                    SetConsoleMode(consoleOutputHandle, menuPreviousOutputMode);
+                    menuScreenActive = false;
+                }
+            }
+        }
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr GetStdHandle(int standardHandle);
@@ -168,8 +221,8 @@ namespace TCPTunnel
         {
             row = baseTop + index;
             rightExclusive = Math.Min(geometry.BufferWidth, geometry.WindowWidth - 1);
-            int maximumRow = geometry.DrawableHeight - 1;
-            if (row < 0 || row > maximumRow || rightExclusive <= ContentLeft)
+            int maximumRow = geometry.DrawableHeight - 2;
+            if (row < 1 || row > maximumRow || rightExclusive <= ContentLeft)
             {
                 left = ContentLeft;
                 return false;
@@ -177,7 +230,7 @@ namespace TCPTunnel
 
             int maximumLeft = Math.Max(ContentLeft, rightExclusive - 1);
             int minimumLeft = Math.Min(maximumLeft, ContentLeft + 3);
-            left = Math.Max(minimumLeft, Math.Min(baseLeft - 2 * index, maximumLeft));
+            left = Math.Max(minimumLeft, Math.Min(baseLeft, maximumLeft));
             return true;
         }
 
@@ -194,10 +247,11 @@ namespace TCPTunnel
 
             Console.ResetColor();
             Console.SetCursorPosition(markerLeft, row);
+            selected &= ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow;
             if (selected)
                 Console.ForegroundColor = ConsoleTheme.SelectionBackground;
 
-            string marker = selected ? ">> " : "   ";
+            string marker = selected ? " > " : "   ";
             Console.Write(marker.Substring(0, markerWidth));
             Console.ResetColor();
             return IsConsoleGeometryCurrent(geometry);
@@ -218,56 +272,63 @@ namespace TCPTunnel
             {
                 try
                 {
-                    ConsoleGeometry geometry;
-                    if (!TryCaptureConsoleGeometry(out geometry))
-                        return false;
-
-                    int left;
-                    int row;
-                    int rightExclusive;
-                    if (!TryGetGraphicalMenuPosition(
-                        geometry,
-                        index,
-                        baseLeft,
-                        baseTop,
-                        out left,
-                        out row,
-                        out rightExclusive))
-                        return true;
-
-                    if (!DrawGraphicalSelectionMarker(geometry, left, row, selected))
-                        return false;
-
-                    int characterCount = Math.Max(0, Math.Min(text.Length, rightExclusive - left));
-                    if (characterCount == 0)
-                        return true;
-
-                    Console.SetCursorPosition(left, row);
-                    if (selected)
+                    lock (borderAnimationLock)
                     {
-                        Console.BackgroundColor = ConsoleTheme.SelectionBackground;
-                        Console.ForegroundColor = ConsoleTheme.SelectionForeground;
-                    }
-                    else
-                    {
-                        Console.ResetColor();
-                        Console.ForegroundColor = ConsoleTheme.MenuText;
-                    }
+                        ConsoleGeometry geometry;
+                        if (!TryCaptureConsoleGeometry(out geometry))
+                            return false;
 
-                    for (int characterIndex = 0; characterIndex < characterCount; characterIndex++)
-                    {
-                        if (previewColor.HasValue && characterIndex == previewStart)
+                        int left;
+                        int row;
+                        int rightExclusive;
+                        if (!TryGetGraphicalMenuPosition(
+                            geometry,
+                            index,
+                            baseLeft,
+                            baseTop,
+                            out left,
+                            out row,
+                            out rightExclusive))
+                            return true;
+
+                        if (!DrawGraphicalSelectionMarker(geometry, left, row, selected))
+                            return false;
+
+                        int availableWidth = Math.Max(0, rightExclusive - left);
+                        bool brackets = selected && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Brackets;
+                        int labelWidth = Math.Max(0, availableWidth - 4);
+                        string label = text.Substring(0, Math.Min(text.Length, labelWidth));
+                        string option = brackets ? "[ " + label + " ]" : "  " + label + "  ";
+                        int characterCount = Math.Min(option.Length, availableWidth);
+                        if (characterCount == 0)
+                            return true;
+
+                        Console.SetCursorPosition(left, row);
+                        ApplyGraphicalOptionColors(selected);
+
+                        for (int characterIndex = 0; characterIndex < characterCount; characterIndex++)
                         {
-                            Console.ResetColor();
-                            ApplyPreviewColor(previewColor.Value);
+                            if (animate && !IsConsoleGeometryCurrent(geometry))
+                            {
+                                Console.ResetColor();
+                                return false;
+                            }
+                            if (characterIndex == label.Length + 2)
+                                ApplyGraphicalOptionColors(selected);
+                            if (previewColor.HasValue && previewStart >= 0 && characterIndex < label.Length + 2 && characterIndex == previewStart + 2 &&
+                                !(selected && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Fill))
+                            {
+                                Console.ResetColor();
+                                ApplyPreviewColor(previewColor.Value);
+                            }
+                            Console.Write(option[characterIndex]);
+                            if (animate && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow && !IsInputWaiting())
+                                Thread.Sleep(animationDelay);
                         }
-                        Console.Write(text[characterIndex]);
-                        if (animate && !IsInputWaiting())
-                            Thread.Sleep(animationDelay);
-                    }
 
-                    Console.ResetColor();
-                    return IsConsoleGeometryCurrent(geometry);
+                        Console.ResetColor();
+                        return IsConsoleGeometryCurrent(geometry);
+                    }
                 }
                 catch (ArgumentOutOfRangeException)
                 {
@@ -278,6 +339,19 @@ namespace TCPTunnel
                     return false;
                 }
             }
+        }
+
+        private static void ApplyGraphicalOptionColors(bool selected)
+        {
+            Console.ResetColor();
+            bool fill = selected && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Fill;
+            if (fill)
+            {
+                Console.BackgroundColor = ConsoleTheme.SelectionBackground;
+                Console.ForegroundColor = ConsoleTheme.SelectionForeground;
+            }
+            else
+                Console.ForegroundColor = selected ? ConsoleTheme.SelectionBackground : ConsoleTheme.MenuText;
         }
 
         private static bool IsInputWaiting()
@@ -320,8 +394,8 @@ namespace TCPTunnel
                     Console.SetCursorPosition(plainLeft, row);
                     if (selected)
                     {
-                        Console.BackgroundColor = ConsoleColor.White;
-                        Console.ForegroundColor = ConsoleColor.Black;
+                        Console.BackgroundColor = ConsoleTheme.SelectionBackground;
+                        Console.ForegroundColor = ConsoleTheme.SelectionForeground;
                     }
                     else
                     {
@@ -531,24 +605,27 @@ namespace TCPTunnel
 
             try
             {
-                ConsoleGeometry geometry;
-                if (!TryCaptureConsoleGeometry(out geometry))
-                    return false;
+                lock (borderAnimationLock)
+                {
+                    ConsoleGeometry geometry;
+                    if (!TryCaptureConsoleGeometry(out geometry))
+                        return false;
 
-                int left;
-                int row;
-                int rightExclusive;
-                if (!TryGetGraphicalMenuPosition(
-                    geometry,
-                    index,
-                    baseLeft,
-                    baseTop,
-                    out left,
-                    out row,
-                    out rightExclusive))
-                    return true;
+                    int left;
+                    int row;
+                    int rightExclusive;
+                    if (!TryGetGraphicalMenuPosition(
+                        geometry,
+                        index,
+                        baseLeft,
+                        baseTop,
+                        out left,
+                        out row,
+                        out rightExclusive))
+                        return true;
 
-                return DrawGraphicalSelectionMarker(geometry, left, row, selected);
+                    return DrawGraphicalSelectionMarker(geometry, left, row, selected);
+                }
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -619,6 +696,7 @@ namespace TCPTunnel
 
         public static void ConfigureConsole(int requestedWidth = 71, int requestedHeight = 16)
         {
+            if (ConsoleWindowState.ClassicWindow == IntPtr.Zero) return;
             try
             {
                 int width = Math.Max(1, Math.Min(requestedWidth, Console.LargestWindowWidth));
@@ -653,6 +731,7 @@ namespace TCPTunnel
 
         public static void AlignViewport()
         {
+            if (ConsoleWindowState.ClassicWindow == IntPtr.Zero) return;
             try
             {
                 if (Console.WindowLeft != 0)
@@ -1140,13 +1219,16 @@ namespace TCPTunnel
             bool paused = false,
             char glyph = '-')
         {
-            if (String.IsNullOrWhiteSpace(participant) || !IsVisibleSnakeColor(color) ||
+            if (!NetWorker.IsNicknameValid(participant) || !IsVisibleSnakeColor(color) ||
                 !IsValidSnakeGlyph(glyph.ToString()))
                 return;
 
             lock (borderAnimationLock)
             {
                 if (!Enabled && !IsTemporarilySuspended)
+                    return;
+
+                if (remoteSnakes.Count >= ServerInterface.MaxConnectedClients && !remoteSnakes.ContainsKey(participant))
                     return;
 
                 remoteSnakes[participant] = new SnakeState

@@ -20,7 +20,7 @@ namespace TCPTunnel
                 List<MentionSpan> mentions,
                 bool useSystemTheme = false)
             {
-                Text = text;
+                textValue = text;
                 ForcedColor = forcedColor;
                 Mentions = mentions ?? new List<MentionSpan>();
                 UseSystemTheme = useSystemTheme;
@@ -29,7 +29,7 @@ namespace TCPTunnel
             public ChatHistoryEntry(FrozenImage image)
             {
                 Image = image ?? throw new ArgumentNullException(nameof(image));
-                Text = (image.IsOutgoing ? "<<<" : ">>>") +
+                textValue = (image.IsOutgoing ? "<<<" : ">>>") +
                        " [" + image.Sender + "]: [" + Lang.Get(TextId.ImageLabel) + "]";
                 Mentions = new List<MentionSpan>();
             }
@@ -37,16 +37,23 @@ namespace TCPTunnel
             public ChatHistoryEntry(FrozenAnimation animation)
             {
                 Animation = animation ?? throw new ArgumentNullException(nameof(animation));
-                Text = (animation.IsOutgoing ? "<<<" : ">>>") +
+                textValue = (animation.IsOutgoing ? "<<<" : ">>>") +
                        " [" + animation.Sender + "]: [" + Lang.Get(TextId.AnimationLabel) + "]";
                 Mentions = new List<MentionSpan>();
                 AnimationStartedTimestamp = Stopwatch.GetTimestamp();
             }
 
-            public string Text { get; }
+            private readonly string textValue;
+            public StatusCard Card { get; }
+            public ChatHistoryEntry(StatusCard card) : this("", null, null, true) { Card = card; }
+            public string Text => Card?.Render(GetContentWidth()) ?? textValue;
             public ConsoleColor? ForcedColor { get; }
             public List<MentionSpan> Mentions { get; }
             public bool UseSystemTheme { get; }
+            public WhoisUnreadState WhoisAttention { get; set; }
+            public bool WhoisUnread => WhoisAttention?.Unread == true;
+            public string[] WhoisRequesters { get; set; }
+            public bool WhoisBlink { get; set; }
             public FrozenImage Image { get; }
             public bool IsImage { get { return Image != null; } }
             public FrozenAnimation Animation { get; }
@@ -108,6 +115,8 @@ namespace TCPTunnel
         private static readonly List<ChatHistoryEntry> chatHistory = new List<ChatHistoryEntry>();
         private static readonly HashSet<string> activeParticipants =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, SnakeProfile> pendingParticipantSnakes =
+            new Dictionary<string, SnakeProfile>(StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<ChatHistoryEntry> pendingMentionAnimations =
             new HashSet<ChatHistoryEntry>();
         private static int isBusy;
@@ -136,14 +145,20 @@ namespace TCPTunnel
         private static AnimatedImagePacket lastLargeAnimationPacket;
         private static int animationMonitorActive;
 
-        private static async Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
+        private static Task ReceiveMessagesAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken, SessionEndState end, HubStatusSession status) =>
+            ReceiveConnectionMessagesAsync(new TcpChatConnection(client), stream, cancellationToken, end, status);
+
+        internal static async Task ReceiveConnectionMessagesAsync(IChatConnection connection, Stream stream, CancellationToken cancellationToken, SessionEndState end, HubStatusSession status)
         {
             var animationAssembler = new ImageAnimationAssembler();
+            Func<string, CancellationToken, Task> sendControl = (frame, token) => MessageProtocol.WriteStringAsync(stream, frame, token);
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
+                    if (await status.Whois.ReceiveAsync(message, sendControl, ReceiveWhoisNotice, cancellationToken).ConfigureAwait(false)) continue;
+                    if (status.Receive(message)) continue;
                     if (ImageAnimationProtocol.IsAnimationControlMessage(message))
                     {
                         ImageAnimationControlFrame animationControl;
@@ -188,12 +203,13 @@ namespace TCPTunnel
                         if (systemKind == SystemMessageKind.ParticipantPresent)
                             continue;
 
-                        WriteSystemChatLine(">>> " + localizedSystemMessage);
-                        if (systemKind == SystemMessageKind.Kicked)
+                        end.RecordServerReason(systemKind, localizedSystemMessage);
+                        if (end.Kind == SessionEndKind.ServerReason)
                         {
                             connected = false;
                             return;
                         }
+                        WriteSystemChatLine(">>> " + localizedSystemMessage);
                     }
                     else
                     {
@@ -207,7 +223,19 @@ namespace TCPTunnel
             }
             catch (EndOfStreamException)
             {
-                // Сервер штатно закрыл соединение.
+                end.RecordFailure(SessionEndKind.ConnectionLost);
+            }
+            catch (TimeoutException)
+            {
+                end.RecordFailure(SessionEndKind.ReadTimedOut);
+            }
+            catch (InvalidDataException)
+            {
+                end.RecordFailure(SessionEndKind.InvalidFrame);
+            }
+            catch (System.Text.DecoderFallbackException)
+            {
+                end.RecordFailure(SessionEndKind.InvalidFrame);
             }
             catch (IOException)
             {
@@ -219,10 +247,9 @@ namespace TCPTunnel
             }
             finally
             {
-                if (connected)
-                    WriteSystemChatLine(Lang.Get(TextId.HubConnectionLost));
+                end.RecordFailure(SessionEndKind.ConnectionLost);
                 connected = false;
-                client.Close();
+                connection.Dispose();
                 WindowAttention.StopFlashing();
             }
         }
@@ -300,7 +327,7 @@ namespace TCPTunnel
                         ApplicationSettings.RememberEndpoint(address, port);
                         try
                         {
-                            RunClient(client);
+                            RunClient(client, address);
                             return true;
                         }
                         catch (Exception ex)
@@ -342,7 +369,7 @@ namespace TCPTunnel
             }
         }
 
-        private static bool EnsureNickname()
+        internal static bool EnsureNickname()
         {
             if (IsNicknameValid(nickname))
                 return true;
@@ -378,18 +405,24 @@ namespace TCPTunnel
             }
         }
 
-        private static void RunClient(TcpClient client)
+        private static void RunClient(TcpClient client, string host)
         {
-            NetworkStream stream = client.GetStream();
+            using var connection = new TcpChatConnection(client);
+            RunClientSession(connection, client.Client.RemoteEndPoint as IPEndPoint, host);
+        }
+
+        private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host)
+        {
+            Stream stream = connection.Stream;
             using (var authCancellation = new CancellationTokenSource())
             {
                 CancellationToken authToken = authCancellation.Token;
-                string authRequest = ReadWithTimeoutAsync(client, stream, authToken).GetAwaiter().GetResult();
+                string authRequest = ReadWithTimeoutAsync(connection, stream, authToken).GetAwaiter().GetResult();
                 if (!DO_AUTH_MESSAGE.Equals(authRequest, StringComparison.Ordinal))
                     throw new IOException(Lang.Get(TextId.UnknownAuthProtocol));
 
                 MessageProtocol.WriteStringAsync(stream, "REPLY:" + nickname, authToken).GetAwaiter().GetResult();
-                string authResult = ReadWithTimeoutAsync(client, stream, authToken).GetAwaiter().GetResult();
+                string authResult = ReadWithTimeoutAsync(connection, stream, authToken).GetAwaiter().GetResult();
                 if (!AUTH_OK_MESSAGE.Equals(authResult, StringComparison.Ordinal))
                     throw new IOException(LocalizeAuthenticationError(authResult));
                 SnakeProfile localSnakeProfile = new SnakeProfile
@@ -409,7 +442,6 @@ namespace TCPTunnel
 
             connected = true;
             ConsoleGraphic.ClearRemoteSnakes();
-            IPEndPoint remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
             isLocalHubSession = ServerInterface.IsRunning &&
                                 remoteEndPoint != null &&
                                 remoteEndPoint.Port == ServerInterface.ListeningPort &&
@@ -428,7 +460,7 @@ namespace TCPTunnel
                 ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
             string displayedEndpoint = isLocalHubSession
                 ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
-                : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
+                : remoteEndPoint == null ? host : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
             WriteSystemChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint));
             if (isLocalHubSession && !ServerInterface.DisplayAddressIsPublic)
             {
@@ -437,11 +469,22 @@ namespace TCPTunnel
             }
 
             var sessionCancellation = new CancellationTokenSource();
-            Task receiverTask = ReceiveMessagesAsync(client, stream, sessionCancellation.Token);
-            CommandContext commandContext = CreateCommandContext(stream, sessionCancellation.Token);
+            var end = new SessionEndState();
+            var status = new HubStatusSession();
+            Task receiverTask = ReceiveConnectionMessagesAsync(connection, stream, sessionCancellation.Token, end, status);
+            CommandContext commandContext = CreateCommandContext(stream, sessionCancellation.Token, end, status, remoteEndPoint, host);
+            localStatusMonitor = new LocalHubStatusMonitor();
+            nextLocalStatusCheck = 0;
+            whoisSession = status.Whois;
+            diagnosticsStream = stream;
+            diagnosticsToken = sessionCancellation.Token;
+            sentSize = null;
+            nextMetadataCheck = nextWhoisBlink = 0;
 
             try
             {
+                MessageProtocol.WriteStringAsync(stream, HubStatusProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
+                MessageProtocol.WriteStringAsync(stream, WhoisProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
                 while (connected)
                 {
                     string message = ReadChatMessage();
@@ -449,7 +492,10 @@ namespace TCPTunnel
                         break;
                     CommandDisposition commandResult = Commands.InitCommand(message, commandContext);
                     if (commandResult == CommandDisposition.EndSession)
+                    {
+                        end.Leave();
                         break;
+                    }
                     if (commandResult == CommandDisposition.Handled)
                         continue;
 
@@ -477,13 +523,25 @@ namespace TCPTunnel
             }
             catch (IOException)
             {
-                WriteSystemChatLine(Lang.Get(TextId.SendFailedClosed));
+                end.RecordFailure(SessionEndKind.ConnectionLost);
+            }
+            catch (SocketException)
+            {
+                end.RecordFailure(SessionEndKind.ConnectionLost);
+            }
+            catch (ObjectDisposedException)
+            {
+                end.RecordFailure(SessionEndKind.ConnectionLost);
             }
             finally
             {
+                end.DrainReceiverAsync(receiverTask).GetAwaiter().GetResult();
+                localStatusMonitor = null;
+                whoisSession = null;
+                diagnosticsStream = null;
                 connected = false;
                 sessionCancellation.Cancel();
-                client.Close();
+                connection.Dispose();
                 try { receiverTask.GetAwaiter().GetResult(); } catch { }
                 sessionCancellation.Dispose();
                 ConsoleGraphic.ClearRemoteSnakes();
@@ -497,11 +555,16 @@ namespace TCPTunnel
                 serverCardPort = 0;
                 EndMentionSession();
             }
+            if (end.RequiresAcknowledgement)
+                AcknowledgeDisconnect(end.GetDisplayMessage());
         }
 
         private static CommandContext CreateCommandContext(
-            NetworkStream stream,
-            CancellationToken cancellationToken)
+            Stream stream,
+            CancellationToken cancellationToken,
+            SessionEndState end,
+            HubStatusSession status,
+            IPEndPoint endpoint, string host)
         {
             return new CommandContext
             {
@@ -509,6 +572,8 @@ namespace TCPTunnel
                 ClearChat = ClearChatLocally,
                 LookImage = LookAtLastLargeImage,
                 WriteLine = (text, color) => WriteSystemChatLine(text),
+                ShowStatus = () => ShowHubStatus(stream, status, endpoint, host, cancellationToken),
+                Whois = target => ShowWhois(target, stream, status.Whois, cancellationToken),
                 GetStatus = () => ServerInterface.IsRunning
                     ? Lang.Get(
                         TextId.HubStatusWithClients,
@@ -517,6 +582,7 @@ namespace TCPTunnel
                     : Lang.Get(TextId.LocalHubNotRunning),
                 StopLocalHub = () =>
                 {
+                    end.Leave();
                     connected = false;
                     ServerInterface.StopServer();
                 },
@@ -545,7 +611,7 @@ namespace TCPTunnel
         }
 
         private static void PrepareAndSendImage(
-            NetworkStream stream,
+            Stream stream,
             CancellationToken cancellationToken,
             string path,
             bool isWebP)
@@ -649,7 +715,7 @@ namespace TCPTunnel
         }
 
         private static SnakeCommandResult ToggleAndSynchronizeSnake(
-            NetworkStream stream,
+            Stream stream,
             CancellationToken cancellationToken)
         {
             if (!ConsoleGraphic.Enabled)
@@ -701,6 +767,15 @@ namespace TCPTunnel
             if (kind == SnakeUpdateKind.Set &&
                 (ConsoleGraphic.Enabled || ConsoleGraphic.IsTemporarilySuspended))
             {
+                lock (participantsLock)
+                {
+                    if (!activeParticipants.Contains(participant))
+                    {
+                        if (pendingParticipantSnakes.Count < ServerInterface.MaxConnectedClients || pendingParticipantSnakes.ContainsKey(participant))
+                            pendingParticipantSnakes[participant] = profile;
+                        return true;
+                    }
+                }
                 ConsoleGraphic.SetRemoteSnake(
                     participant,
                     profile.DelayMilliseconds,
@@ -711,6 +786,7 @@ namespace TCPTunnel
             }
             else
             {
+                lock (participantsLock) pendingParticipantSnakes.Remove(participant);
                 ConsoleGraphic.RemoveRemoteSnake(participant);
             }
 
@@ -719,16 +795,29 @@ namespace TCPTunnel
 
         private static void UpdateParticipantState(SystemMessageKind kind, string participant)
         {
-            if (String.IsNullOrWhiteSpace(participant))
+            if (!IsNicknameValid(participant))
                 return;
 
+            SnakeProfile? pending = null;
             lock (participantsLock)
             {
                 if (kind == SystemMessageKind.UserLeft)
+                {
                     activeParticipants.Remove(participant);
+                    pendingParticipantSnakes.Remove(participant);
+                }
                 else if (kind == SystemMessageKind.UserJoined || kind == SystemMessageKind.ParticipantPresent)
-                    activeParticipants.Add(participant);
+                {
+                    if (activeParticipants.Count < ServerInterface.MaxConnectedClients || activeParticipants.Contains(participant))
+                    {
+                        activeParticipants.Add(participant);
+                        if (pendingParticipantSnakes.Remove(participant, out SnakeProfile profile)) pending = profile;
+                    }
+                }
             }
+            if (kind == SystemMessageKind.UserLeft) ConsoleGraphic.RemoveRemoteSnake(participant);
+            if (pending is SnakeProfile saved)
+                ConsoleGraphic.SetRemoteSnake(participant, saved.DelayMilliseconds, saved.Color, saved.Step, saved.Paused, saved.Glyph);
         }
 
         private static List<MentionSpan> FindMentionSpans(string message)
@@ -835,9 +924,15 @@ namespace TCPTunnel
             Interlocked.Increment(ref chatSessionVersion);
             WindowAttention.StopFlashing();
             lock (consoleLock)
+            {
                 pendingMentionAnimations.Clear();
+                trimmedWhoisNotices.Drain();
+            }
             lock (participantsLock)
+            {
                 activeParticipants.Clear();
+                pendingParticipantSnakes.Clear();
+            }
         }
 
         internal static bool RunCommandSelfTest()
@@ -976,12 +1071,14 @@ namespace TCPTunnel
                 lastLargeAnimationPacket = null;
                 imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
+                trimmedWhoisNotices.Drain();
+                WindowAttention.StopFlashing();
                 if (!RedrawChatLayoutLocked())
                     MarkConsoleResizePendingLocked();
             }
         }
 
-        private static async Task<string> ReadWithTimeoutAsync(TcpClient client, NetworkStream stream, CancellationToken cancellationToken)
+        private static async Task<string> ReadWithTimeoutAsync(IChatConnection connection, Stream stream, CancellationToken cancellationToken)
         {
             Task<string> readTask = MessageProtocol.ReadStringAsync(stream, cancellationToken);
             try
@@ -992,7 +1089,7 @@ namespace TCPTunnel
             }
             catch (TimeoutException)
             {
-                client.Close();
+                connection.Dispose();
                 try { await readTask.ConfigureAwait(false); } catch { }
                 throw new TimeoutException(Lang.Get(TextId.ServerDidNotRespond));
             }
@@ -1023,6 +1120,8 @@ namespace TCPTunnel
             while (connected)
             {
                 CheckForConsoleResize();
+                CheckLocalHubStatus();
+                UpdateWhoisUi();
                 if (!Console.KeyAvailable)
                 {
                     Thread.Sleep(20);
@@ -1030,6 +1129,7 @@ namespace TCPTunnel
                 }
 
                 ConsoleKeyInfo key = Console.ReadKey(true);
+                Interlocked.Increment(ref chatInputGeneration);
                 lock (consoleLock)
                 {
                     if (key.Key == ConsoleKey.Enter)
@@ -1249,7 +1349,8 @@ namespace TCPTunnel
             string message,
             ConsoleColor? forcedColor = null,
             bool detectMentions = false,
-            bool useSystemTheme = false)
+            bool useSystemTheme = false,
+            string[] whoisRequesters = null)
         {
             lock (consoleLock)
             {
@@ -1258,11 +1359,17 @@ namespace TCPTunnel
                 List<MentionSpan> mentions = detectMentions
                     ? FindMentionSpans(safeMessage)
                     : new List<MentionSpan>();
+                if (whoisRequesters != null) mentions.Add(new MentionSpan { Start = 0, Length = safeMessage.Length });
                 ChatHistoryEntry entry = AppendChatHistoryLocked(
                     safeMessage,
                     forcedColor,
                     mentions,
                     useSystemTheme);
+                if (whoisRequesters != null)
+                {
+                    entry.WhoisAttention = new WhoisUnreadState(Volatile.Read(ref chatInputGeneration));
+                    entry.WhoisRequesters = whoisRequesters;
+                }
                 bool localMention = entry.MentionsLocalUser;
                 bool deferAnimation = localMention && WindowAttention.IsMinimized;
                 if (deferAnimation)
@@ -1388,6 +1495,14 @@ namespace TCPTunnel
 
         private static void WritePlainHistoryEntry(ChatHistoryEntry entry)
         {
+            if (entry.Card != null)
+            {
+                MoveCursorToContentColumn();
+                Console.ForegroundColor = ConsoleTheme.SystemText;
+                entry.Card.WritePlain(Console.Out, GetContentWidth());
+                Console.ResetColor();
+                return;
+            }
             if (!entry.IsVisual)
             {
                 WriteWrappedChatLine(entry);
@@ -1533,8 +1648,8 @@ namespace TCPTunnel
                 {
                     return new ChatTextStyle
                     {
-                        Foreground = ConsoleColor.Black,
-                        Background = ConsoleColor.White
+                        Foreground = entry.WhoisUnread && entry.WhoisBlink ? ConsoleColor.White : ConsoleColor.Black,
+                        Background = entry.WhoisUnread && entry.WhoisBlink ? ConsoleColor.Black : ConsoleColor.White
                     };
                 }
             }
@@ -1717,6 +1832,7 @@ namespace TCPTunnel
                 lastLargeAnimationPacket = null;
                 imageHistoryVersion++;
                 pendingMentionAnimations.Clear();
+                trimmedWhoisNotices.Drain();
                 inputActive = false;
                 inputBuffer.Clear();
                 inputCursorIndex = 0;
@@ -1771,6 +1887,7 @@ namespace TCPTunnel
                     imageHistoryBytes > ImageRenderer.MaxHistoryImageBytes))
             {
                 ChatHistoryEntry removed = chatHistory[removeCount++];
+                if (removed.WhoisUnread) trimmedWhoisNotices.Add(removed.WhoisRequesters, Volatile.Read(ref chatInputGeneration));
                 pendingMentionAnimations.Remove(removed);
                 if (removed.IsImage)
                     imageHistoryBytes -= removed.Image.PackedPixels.Length;
@@ -1879,7 +1996,7 @@ namespace TCPTunnel
                 for (int index = firstVisibleEntry; index < chatHistory.Count; index++)
                 {
                     ChatHistoryEntry historyLine = chatHistory[index];
-                    if (historyLine.IsVisual)
+                    if (historyLine.IsVisual || historyLine.Card != null)
                         WritePlainHistoryEntry(historyLine);
                     else
                         WriteWrappedChatLine(

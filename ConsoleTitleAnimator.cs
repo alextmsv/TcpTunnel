@@ -133,7 +133,10 @@ namespace TCPTunnel
         {
             try
             {
-                Console.Title = value;
+                lock (ConsoleGraphic.borderAnimationLock)
+                {
+                    Console.Title = value;
+                }
             }
             catch (Exception) { }
         }
