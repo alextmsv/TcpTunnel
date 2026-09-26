@@ -16,7 +16,9 @@ namespace TCPTunnel
             if (current.Running)
             {
                 if (previous?.Running != true || previous.Port != current.Port)
-                    messages.Add(Lang.Get(TextId.OwnHubStarted, current.Port));
+                    messages.Add(current.Port > 0
+                        ? Lang.Get(TextId.OwnHubStarted, current.Port)
+                        : Lang.Get(TextId.OwnHubStartedBluetooth));
                 if (previous?.Running != true || previous.Nat != current.Nat)
                     messages.Add(Lang.Get(TextId.OwnHubNat, current.Nat));
                 if (!inOwnHub && (previous?.Running != true || previous.Participants != current.Participants))

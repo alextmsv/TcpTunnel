@@ -27,6 +27,12 @@ namespace TCPTunnel
         private static extern bool IsIconic(IntPtr window);
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindow(IntPtr window, uint command);
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+        private const uint OwnerWindow = 4;
+        private const int MaxOwnerDepth = 8;
 
         internal static bool IsForeground
         {
@@ -88,10 +94,10 @@ namespace TCPTunnel
 
         private static IntPtr GetWindowHandle()
         {
-            IntPtr window = IntPtr.Zero;
-            try { window = GetConsoleWindow(); } catch { }
-            if (window != IntPtr.Zero)
-                return window;
+            IntPtr console = IntPtr.Zero;
+            try { console = GetConsoleWindow(); } catch { }
+            if (console != IntPtr.Zero)
+                return FindVisibleOwner(console);
 
             try
             {
@@ -102,6 +108,24 @@ namespace TCPTunnel
             {
                 return IntPtr.Zero;
             }
+        }
+
+        internal static IntPtr FindVisibleOwner(IntPtr console)
+        {
+            try
+            {
+                IntPtr window = console;
+                for (int depth = 0; window != IntPtr.Zero && depth < MaxOwnerDepth; depth++)
+                {
+                    if (IsWindowVisible(window))
+                        return window;
+                    window = GetWindow(window, OwnerWindow);
+                }
+            }
+            catch
+            {
+            }
+            return console;
         }
     }
 }

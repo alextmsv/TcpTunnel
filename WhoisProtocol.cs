@@ -7,7 +7,8 @@ namespace TCPTunnel
 {
     internal sealed record WhoisInfo(string Nickname, string Address, bool PublicAddressUnavailable,
         int? PingMilliseconds, int WindowWidth, int WindowHeight, bool? SnakeEnabled, bool Paused,
-        int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages);
+        int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages,
+        string Transport = null, int? SignalDbm = null);
 
     internal static class WhoisProtocol
     {
@@ -22,6 +23,20 @@ namespace TCPTunnel
         internal static string Size(int width, int height) => Prefix + "SIZE|" + width + "|" + height;
         internal static string Ping(string id) => Prefix + "PING|" + id;
         internal static string Pong(string id) => Prefix + "PONG|" + id;
+        internal static string Signal(int dbm) => Prefix + "SIGNAL|" + dbm.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        internal const string TransportTcp = "tcp";
+        internal const string TransportBluetooth = "bluetooth";
+        internal const string TransportLocal = "local";
+
+        internal static bool TrySignal(string message, out int dbm)
+        {
+            dbm = 0;
+            return Fields(message, "SIGNAL", out var parts) && parts.Length == 2 &&
+                int.TryParse(parts[1], System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out dbm) &&
+                ValidSignal(dbm);
+        }
+
+        private static bool ValidSignal(int dbm) => dbm is >= -127 and <= 20;
 
         internal static bool TryRequest(string message, out string id, out string nick)
         {
@@ -59,6 +74,8 @@ namespace TCPTunnel
                 int.TryParse(parts[1], out width) && int.TryParse(parts[2], out height) && ValidSize(width, height);
         }
         private static bool ValidInfo(WhoisInfo info) => NetWorker.IsNicknameValid(info.Nickname) &&
+            (info.Transport is null or TransportTcp or TransportBluetooth or TransportLocal) &&
+            (info.SignalDbm == null || ValidSignal(info.SignalDbm.Value)) &&
             (info.Address == "" || IPAddress.TryParse(info.Address, out _)) && info.Messages >= 0 &&
             (info.PingMilliseconds == null || info.PingMilliseconds is >= 0 and <= 60000) && ValidSize(info.WindowWidth, info.WindowHeight) &&
             (info.SnakeEnabled == null || (info.SnakeDelay is >= 20 and <= 1000 &&

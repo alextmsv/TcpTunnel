@@ -46,7 +46,9 @@ namespace TCPTunnel
             private readonly string textValue;
             public StatusCard Card { get; }
             public ChatHistoryEntry(StatusCard card) : this("", null, null, true) { Card = card; }
-            public string Text => Card?.Render(GetContentWidth()) ?? textValue;
+            public ChatHistoryEntry(Func<string> dynamicText) : this("", null, null, true) { DynamicText = dynamicText; }
+            public Func<string> DynamicText { get; }
+            public string Text => Card?.Render(GetContentWidth()) ?? DynamicText?.Invoke() ?? textValue;
             public ConsoleColor? ForcedColor { get; }
             public List<MentionSpan> Mentions { get; }
             public bool UseSystemTheme { get; }
@@ -107,9 +109,10 @@ namespace TCPTunnel
         private const int ResizeSettleMilliseconds = 180;
         private const int MentionBlinkDelayMilliseconds = 130;
         private const int MentionBlinkCycles = 3;
+        private const int MaxMentionSuggestionRows = 4;
 
         private static readonly ConsoleGraphic graphic = new ConsoleGraphic();
-        private static readonly object consoleLock = new object();
+        private static readonly object consoleLock = ConsoleGraphic.borderAnimationLock;
         private static readonly object participantsLock = new object();
         private static readonly StringBuilder inputBuffer = new StringBuilder();
         private static readonly List<ChatHistoryEntry> chatHistory = new List<ChatHistoryEntry>();
@@ -127,6 +130,13 @@ namespace TCPTunnel
         private static int renderedInputLeft;
         private static int renderedInputWidth;
         private static string inputPrompt = "";
+        private static bool mentionActive;
+        private static string[] mentionSuggestions = Array.Empty<string>();
+        private static int mentionSuggestionIndex;
+        private static int mentionTokenStart = -1;
+        private static List<MentionFragment> activeMentionBlinkFragments;
+        private static long mentionBlinkStartTimestamp;
+        private static int mentionBlinkLastPaintedPhase = -1;
         private static ConsoleGraphic.ConsoleGeometry knownConsoleGeometry;
         private static ConsoleGraphic.ConsoleGeometry pendingConsoleGeometry;
         private static bool hasKnownConsoleGeometry;
@@ -151,6 +161,8 @@ namespace TCPTunnel
         internal static async Task ReceiveConnectionMessagesAsync(IChatConnection connection, Stream stream, CancellationToken cancellationToken, SessionEndState end, HubStatusSession status)
         {
             var animationAssembler = new ImageAnimationAssembler();
+            TransferProgress download = null;
+            int downloadFrames = 0;
             Func<string, CancellationToken, Task> sendControl = (frame, token) => MessageProtocol.WriteStringAsync(stream, frame, token);
             try
             {
@@ -167,11 +179,30 @@ namespace TCPTunnel
                             animationAssembler.Accept(animationControl, out animationPacket) == ImageAnimationAssemblyResult.Invalid)
                         {
                             animationAssembler.Reset();
+                            download?.Remove();
+                            download = null;
                             WriteSystemChatLine(Lang.Get(TextId.InvalidImagePacket));
                             continue;
                         }
+                        if (animationControl.Kind == ImageAnimationControlKind.Begin)
+                        {
+                            download?.Remove();
+                            string sender = animationControl.Sender;
+                            downloadFrames = animationControl.FrameCount;
+                            download = new TransferProgress(
+                                percent => Lang.Get(TextId.AnimationDownloading, sender, percent),
+                                Lang.Get(TextId.AnimationDownloadingPlain, sender));
+                        }
+                        else if (animationControl.Kind == ImageAnimationControlKind.Frame)
+                        {
+                            download?.Report(animationControl.FrameIndex + 1, downloadFrames);
+                        }
                         if (animationPacket != null)
+                        {
                             await ReceiveAnimationAsync(animationPacket).ConfigureAwait(false);
+                            download?.Remove();
+                            download = null;
+                        }
                         continue;
                     }
                     ImagePacket imagePacket;
@@ -247,6 +278,7 @@ namespace TCPTunnel
             }
             finally
             {
+                download?.Remove();
                 end.RecordFailure(SessionEndKind.ConnectionLost);
                 connected = false;
                 connection.Dispose();
@@ -257,6 +289,12 @@ namespace TCPTunnel
         public static bool TryConnect()
         {
             if (!EnsureNickname())
+                return false;
+
+            BluetoothConnectOutcome bluetooth = TryConnectBluetooth();
+            if (bluetooth == BluetoothConnectOutcome.Handled)
+                return true;
+            if (bluetooth == BluetoothConnectOutcome.Cancelled)
                 return false;
 
             string defaultHost = ApplicationSettings.LastHost;
@@ -411,7 +449,7 @@ namespace TCPTunnel
             RunClientSession(connection, client.Client.RemoteEndPoint as IPEndPoint, host);
         }
 
-        private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host)
+        private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host, bool localHub = false)
         {
             Stream stream = connection.Stream;
             using (var authCancellation = new CancellationTokenSource())
@@ -429,9 +467,9 @@ namespace TCPTunnel
                 {
                     Enabled = ConsoleGraphic.Enabled,
                     Paused = ConsoleGraphic.BorderSnakePaused,
-                    DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
+                    DelayMilliseconds = ConsoleGraphic.CurrentBorderSnakeReferenceDelayMilliseconds,
                     Color = ConsoleGraphic.BorderSnakeColor,
-                    Step = ConsoleGraphic.CurrentBorderSnakeStep,
+                    Step = ConsoleGraphic.CurrentBorderSnakeReferenceStep,
                     Glyph = ConsoleGraphic.BorderSnakeGlyph
                 };
                 MessageProtocol.WriteStringAsync(
@@ -441,28 +479,35 @@ namespace TCPTunnel
             }
 
             connected = true;
+            currentTransport = connection.Transport;
             ConsoleGraphic.ClearRemoteSnakes();
             isLocalHubSession = ServerInterface.IsRunning &&
-                                remoteEndPoint != null &&
-                                remoteEndPoint.Port == ServerInterface.ListeningPort &&
-                                NetworkAddressResolver.IsLoopback(remoteEndPoint.Address);
-            showServerCard = ConsoleGraphic.Enabled && remoteEndPoint != null;
-            serverCardAddress = isLocalHubSession
-                ? ServerInterface.DisplayAddress
-                : (remoteEndPoint == null
-                    ? "?"
-                    : NetworkAddressResolver.NormalizeAddressText(remoteEndPoint.Address));
-            serverCardPort = remoteEndPoint == null ? 0 : remoteEndPoint.Port;
+                                (localHub ||
+                                 (remoteEndPoint != null &&
+                                  remoteEndPoint.Port == ServerInterface.ListeningPort &&
+                                  NetworkAddressResolver.IsLoopback(remoteEndPoint.Address)));
+            bool bluetoothOnlyHub = isLocalHubSession && !ServerInterface.Options.UsesTcp;
+            showServerCard = ConsoleGraphic.Enabled && (remoteEndPoint != null || bluetoothOnlyHub);
+            serverCardAddress = bluetoothOnlyHub
+                ? Lang.Get(TextId.BluetoothEndpoint)
+                : isLocalHubSession
+                    ? ServerInterface.DisplayAddress
+                    : (remoteEndPoint == null
+                        ? "?"
+                        : NetworkAddressResolver.NormalizeAddressText(remoteEndPoint.Address));
+            serverCardPort = bluetoothOnlyHub || remoteEndPoint == null ? 0 : remoteEndPoint.Port;
             ConsoleGraphic.SetReservedBottomRows(showServerCard ? 3 : 0);
             graphic.Clear();
             ResetChatSessionLayout();
             if (showServerCard)
                 ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
-            string displayedEndpoint = isLocalHubSession
-                ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
-                : remoteEndPoint == null ? host : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
+            string displayedEndpoint = bluetoothOnlyHub
+                ? Lang.Get(TextId.BluetoothEndpoint)
+                : isLocalHubSession
+                    ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
+                    : remoteEndPoint == null ? host : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
             WriteSystemChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint));
-            if (isLocalHubSession && !ServerInterface.DisplayAddressIsPublic)
+            if (isLocalHubSession && ServerInterface.Options.UsesPortMapping && !ServerInterface.DisplayAddressIsPublic)
             {
                 WriteSystemChatLine(
                     Lang.Get(TextId.PublicIPv4Unavailable, ServerInterface.DisplayAddress));
@@ -553,6 +598,8 @@ namespace TCPTunnel
                 isLocalHubSession = false;
                 showServerCard = false;
                 serverCardPort = 0;
+                currentTransport = ChatTransport.Tcp;
+                sentSignal = null;
                 EndMentionSession();
             }
             if (end.RequiresAcknowledgement)
@@ -726,9 +773,9 @@ namespace TCPTunnel
             {
                 Enabled = true,
                 Paused = paused,
-                DelayMilliseconds = ConsoleGraphic.BorderAnimationDelayMilliseconds,
+                DelayMilliseconds = ConsoleGraphic.CurrentBorderSnakeReferenceDelayMilliseconds,
                 Color = ConsoleGraphic.BorderSnakeColor,
-                Step = ConsoleGraphic.CurrentBorderSnakeStep,
+                Step = ConsoleGraphic.CurrentBorderSnakeReferenceStep,
                 Glyph = ConsoleGraphic.BorderSnakeGlyph
             };
             MessageProtocol.WriteStringAsync(
@@ -927,6 +974,7 @@ namespace TCPTunnel
             {
                 pendingMentionAnimations.Clear();
                 trimmedWhoisNotices.Drain();
+                FinishMentionBlinkLocked();
             }
             lock (participantsLock)
             {
@@ -1106,6 +1154,7 @@ namespace TCPTunnel
                 inputStartRow = Console.CursorTop;
                 renderedInputRows = 0;
                 inputPrompt = $"<<< [{nickname}]: ";
+                ClearMentionState();
                 if (ConsoleGraphic.Enabled)
                 {
                     if (!RedrawChatLayoutLocked())
@@ -1119,9 +1168,19 @@ namespace TCPTunnel
 
             while (connected)
             {
+                if (WindowsTerminalTheme.RefreshAfterActivation())
+                {
+                    lock (consoleLock)
+                    {
+                        ConsoleGraphic.InvalidateVisualTheme();
+                        hasKnownConsoleGeometry = false;
+                        if (!RedrawChatLayoutLocked()) MarkConsoleResizePendingLocked();
+                    }
+                }
                 CheckForConsoleResize();
                 CheckLocalHubStatus();
                 UpdateWhoisUi();
+                ConsoleGraphic.EnsureBorderAnimationRunning();
                 if (!Console.KeyAvailable)
                 {
                     Thread.Sleep(20);
@@ -1132,6 +1191,34 @@ namespace TCPTunnel
                 Interlocked.Increment(ref chatInputGeneration);
                 lock (consoleLock)
                 {
+                    if (mentionActive && key.Key == ConsoleKey.Escape)
+                    {
+                        ClearMentionState();
+                        RedrawInputAreaLocked();
+                        continue;
+                    }
+
+                    if (mentionActive && (key.Key == ConsoleKey.Tab || key.Key == ConsoleKey.DownArrow))
+                    {
+                        mentionSuggestionIndex = (mentionSuggestionIndex + 1) % mentionSuggestions.Length;
+                        RedrawInputAreaLocked();
+                        continue;
+                    }
+
+                    if (mentionActive && key.Key == ConsoleKey.UpArrow)
+                    {
+                        mentionSuggestionIndex = (mentionSuggestionIndex - 1 + mentionSuggestions.Length) % mentionSuggestions.Length;
+                        RedrawInputAreaLocked();
+                        continue;
+                    }
+
+                    if (mentionActive && key.Key == ConsoleKey.Enter)
+                    {
+                        AcceptMentionSuggestionLocked();
+                        RedrawInputAreaLocked();
+                        continue;
+                    }
+
                     if (key.Key == ConsoleKey.Enter)
                     {
                         string message = inputBuffer.ToString();
@@ -1139,29 +1226,14 @@ namespace TCPTunnel
                         inputActive = false;
                         inputBuffer.Clear();
                         inputCursorIndex = 0;
+                        ClearMentionState();
                         return message;
                     }
 
-                    if (HandleInputKey(key) && EnsureConsoleGeometryLocked())
+                    if (HandleInputKey(key))
                     {
-                        if (ConsoleGraphic.Enabled)
-                        {
-                            int requiredRows = GetRequiredInputRows(
-                                GetContentWidth(),
-                                Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1));
-                            if (requiredRows == renderedInputRows)
-                            {
-                                RenderInputLine();
-                            }
-                            else if (!RedrawChatLayoutLocked())
-                            {
-                                MarkConsoleResizePendingLocked();
-                            }
-                        }
-                        else
-                        {
-                            RenderInputLine();
-                        }
+                        UpdateMentionSuggestionsLocked();
+                        RedrawInputAreaLocked();
                     }
                 }
             }
@@ -1172,8 +1244,204 @@ namespace TCPTunnel
                 inputActive = false;
                 inputBuffer.Clear();
                 inputCursorIndex = 0;
+                ClearMentionState();
             }
             return null;
+        }
+
+        private static void RedrawInputAreaLocked()
+        {
+            if (!EnsureConsoleGeometryLocked())
+                return;
+
+            if (ConsoleGraphic.Enabled)
+            {
+                int availableRows = Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1);
+                int requiredRows = GetRequiredInputRows(GetContentWidth(), availableRows);
+                int requiredPopupRows = GetRequiredMentionPopupRows(Math.Max(0, availableRows - requiredRows));
+                if (requiredRows + requiredPopupRows == renderedInputRows)
+                {
+                    RenderInputLine();
+                }
+                else if (!RedrawChatLayoutLocked())
+                {
+                    MarkConsoleResizePendingLocked();
+                }
+            }
+            else
+            {
+                RenderInputLine();
+            }
+        }
+
+        private static void UpdateMentionSuggestionsLocked()
+        {
+            if (InlineSuggestions.TryGetToken(inputBuffer.ToString(), inputCursorIndex, '@', out int tokenStart, out string prefix))
+            {
+                List<string> candidates;
+                lock (participantsLock)
+                {
+                    candidates = new List<string>(activeParticipants.Count);
+                    foreach (string participant in activeParticipants)
+                        if (!String.Equals(participant, nickname, StringComparison.OrdinalIgnoreCase))
+                            candidates.Add(participant);
+                }
+
+                string[] matches = InlineSuggestions.MatchPrefix(candidates, prefix, MaxMentionSuggestionRows);
+                if (matches.Length > 0)
+                {
+                    string previouslySelected = mentionActive && mentionSuggestionIndex < mentionSuggestions.Length
+                        ? mentionSuggestions[mentionSuggestionIndex]
+                        : null;
+                    mentionSuggestions = matches;
+                    int preserved = previouslySelected == null
+                        ? -1
+                        : Array.FindIndex(matches, match => String.Equals(match, previouslySelected, StringComparison.OrdinalIgnoreCase));
+                    mentionSuggestionIndex = preserved >= 0 ? preserved : 0;
+                    mentionTokenStart = tokenStart;
+                    mentionActive = true;
+                    return;
+                }
+            }
+
+            ClearMentionState();
+        }
+
+        private static void AcceptMentionSuggestionLocked()
+        {
+            if (!mentionActive || mentionSuggestions.Length == 0 || mentionTokenStart < 0)
+                return;
+
+            string replacement = "@" + mentionSuggestions[mentionSuggestionIndex] + " ";
+            int removeLength = Math.Max(0, Math.Min(inputBuffer.Length, inputCursorIndex) - mentionTokenStart);
+            inputBuffer.Remove(mentionTokenStart, removeLength);
+            inputBuffer.Insert(mentionTokenStart, replacement);
+            inputCursorIndex = mentionTokenStart + replacement.Length;
+            ClearMentionState();
+        }
+
+        private static void ClearMentionState()
+        {
+            mentionActive = false;
+            mentionSuggestions = Array.Empty<string>();
+            mentionSuggestionIndex = 0;
+            mentionTokenStart = -1;
+        }
+
+        private static int GetRequiredMentionPopupRows(int maxAvailable)
+        {
+            if (!mentionActive || mentionSuggestions.Length == 0 || maxAvailable <= 0)
+                return 0;
+            return Math.Max(0, Math.Min(mentionSuggestions.Length, Math.Min(MaxMentionSuggestionRows, maxAvailable)));
+        }
+
+        private static void RenderMentionSuggestionRows(int left, int width, int startRow, int popupRows)
+        {
+            for (int row = 0; row < popupRows; row++)
+            {
+                int targetRow = startRow + row;
+                if (ConsoleGraphic.Enabled)
+                    ConsoleGraphic.ClearContentRow(targetRow);
+                else
+                {
+                    Console.SetCursorPosition(left, targetRow);
+                    Console.Write(new string(' ', width));
+                }
+
+                Console.SetCursorPosition(left, targetRow);
+                bool selected = row == mentionSuggestionIndex;
+                string marker = selected ? "> " : "  ";
+                int labelWidth = Math.Max(0, width - marker.Length);
+                string label = "@" + mentionSuggestions[row];
+                if (label.Length > labelWidth)
+                    label = label.Substring(0, labelWidth);
+
+                Console.ForegroundColor = selected ? ConsoleTheme.SelectionBackground : ConsoleTheme.MenuText;
+                Console.Write(marker + label);
+                Console.ResetColor();
+            }
+        }
+
+        internal static bool RunMentionSuggestionSelfTest()
+        {
+            string savedNickname = nickname;
+            var savedParticipants = new List<string>(activeParticipants);
+            string savedBuffer = inputBuffer.ToString();
+            int savedCursor = inputCursorIndex;
+            bool savedActive = mentionActive;
+            string[] savedSuggestions = mentionSuggestions;
+            int savedIndex = mentionSuggestionIndex;
+            int savedTokenStart = mentionTokenStart;
+            try
+            {
+                nickname = "me";
+                lock (participantsLock)
+                {
+                    activeParticipants.Clear();
+                    activeParticipants.Add("alextmsv");
+                    activeParticipants.Add("tmsvalex");
+                    activeParticipants.Add("me");
+                }
+
+                inputBuffer.Clear();
+                inputBuffer.Append("hi @");
+                inputCursorIndex = inputBuffer.Length;
+                UpdateMentionSuggestionsLocked();
+                bool bareTriggerShowsBoth = mentionActive && mentionSuggestions.Length == 2;
+                bool selfExcludedFromRoster = Array.IndexOf(mentionSuggestions, "me") < 0;
+
+                bool capLimitsRows = GetRequiredMentionPopupRows(1) == 1 && GetRequiredMentionPopupRows(100) == 2;
+
+                inputBuffer.Append('a');
+                inputCursorIndex = inputBuffer.Length;
+                UpdateMentionSuggestionsLocked();
+                bool prefixNarrows = mentionActive && mentionSuggestions.Length == 1 && mentionSuggestions[0] == "alextmsv";
+
+                inputBuffer.Append('d');
+                inputCursorIndex = inputBuffer.Length;
+                UpdateMentionSuggestionsLocked();
+                bool noMatchClosesPopup = !mentionActive && mentionSuggestions.Length == 0 &&
+                                           GetRequiredMentionPopupRows(100) == 0;
+
+                inputBuffer.Clear();
+                inputBuffer.Append("hi @al world");
+                inputCursorIndex = 6;
+                UpdateMentionSuggestionsLocked();
+                bool cursorInsideEarlierTokenStillMatches = mentionActive && mentionSuggestions.Length == 1 &&
+                                                             mentionSuggestions[0] == "alextmsv";
+
+                AcceptMentionSuggestionLocked();
+                bool acceptSubstitutesInPlace = !mentionActive &&
+                                                 inputBuffer.ToString() == "hi @alextmsv  world" &&
+                                                 inputCursorIndex == "hi @alextmsv ".Length;
+
+                inputBuffer.Clear();
+                inputBuffer.Append("no trigger here");
+                inputCursorIndex = inputBuffer.Length;
+                UpdateMentionSuggestionsLocked();
+                bool plainTextStaysInactive = !mentionActive;
+
+                return bareTriggerShowsBoth && selfExcludedFromRoster && capLimitsRows && prefixNarrows &&
+                       noMatchClosesPopup && cursorInsideEarlierTokenStillMatches && acceptSubstitutesInPlace &&
+                       plainTextStaysInactive;
+            }
+            finally
+            {
+                nickname = savedNickname;
+                lock (participantsLock)
+                {
+                    activeParticipants.Clear();
+                    foreach (string participant in savedParticipants)
+                        activeParticipants.Add(participant);
+                }
+                inputBuffer.Clear();
+                inputBuffer.Append(savedBuffer);
+                inputCursorIndex = savedCursor;
+                mentionActive = savedActive;
+                mentionSuggestions = savedSuggestions;
+                mentionSuggestionIndex = savedIndex;
+                mentionTokenStart = savedTokenStart;
+            }
         }
 
         private static bool HandleInputKey(ConsoleKeyInfo key)
@@ -1268,23 +1536,25 @@ namespace TCPTunnel
             int visibleCursorOffset = Math.Max(0, cursorOffset - visibleStart);
             int occupiedCells = Math.Max(visibleText.Length, visibleCursorOffset + 1);
             int rows = Math.Max(1, Math.Min(maximumRows, (occupiedCells + width - 1) / width));
+            int popupRows = GetRequiredMentionPopupRows(Math.Max(0, availableRows - rows));
+            int totalRows = rows + popupRows;
 
             if (fixedStartRow.HasValue)
             {
                 int lastPossibleRow = ConsoleGraphic.Enabled
-                    ? Math.Max(ConsoleGraphic.ContentTop, ConsoleGraphic.ContentBottom - rows + 1)
-                    : Math.Max(0, Console.BufferHeight - rows);
+                    ? Math.Max(ConsoleGraphic.ContentTop, ConsoleGraphic.ContentBottom - totalRows + 1)
+                    : Math.Max(0, Console.BufferHeight - totalRows);
                 inputStartRow = Math.Max(
                     ConsoleGraphic.Enabled ? ConsoleGraphic.ContentTop : 0,
                     Math.Min(fixedStartRow.Value, lastPossibleRow));
             }
             else
             {
-                inputStartRow = ConsoleGraphic.EnsureContentSpace(inputStartRow, rows);
+                inputStartRow = ConsoleGraphic.EnsureContentSpace(inputStartRow, totalRows);
             }
             renderedInputLeft = left;
             renderedInputWidth = width;
-            renderedInputRows = rows;
+            renderedInputRows = totalRows;
 
             for (int row = 0; row < rows; row++)
             {
@@ -1308,6 +1578,8 @@ namespace TCPTunnel
                         Console.Write(visibleText.Substring(sourceIndex, count));
                 }
             }
+
+            RenderMentionSuggestionRows(left, width, inputStartRow + rows, popupRows);
 
             Console.SetCursorPosition(
                 left + visibleCursorOffset % width,
@@ -1606,14 +1878,14 @@ namespace TCPTunnel
             int promptCharacters = Math.Max(0, Math.Min(count, inputPrompt.Length - originalTextIndex));
             if (promptCharacters > 0)
             {
-                Console.ForegroundColor = ConsoleTheme.InputPrompt;
+                ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputPrompt);
                 Console.Write(visibleText.Substring(sourceIndex, promptCharacters));
             }
 
             int messageCharacters = count - promptCharacters;
             if (messageCharacters > 0)
             {
-                Console.ForegroundColor = ConsoleTheme.InputText;
+                ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
                 Console.Write(visibleText.Substring(sourceIndex + promptCharacters, messageCharacters));
             }
 
@@ -1631,8 +1903,14 @@ namespace TCPTunnel
                 while (runEnd < end && GetChatTextStyle(entry, runEnd).IsSameAs(style))
                     runEnd++;
 
-                Console.ForegroundColor = style.Foreground;
-                Console.BackgroundColor = style.Background;
+                bool mention = entry.Mentions.Exists(span => position >= span.Start && position < span.Start + span.Length);
+                if (ConsoleTheme.HasContentBackground && !mention)
+                    ConsoleGraphic.ApplyContentColors(style.Foreground);
+                else
+                {
+                    Console.ForegroundColor = style.Foreground;
+                    Console.BackgroundColor = style.Background;
+                }
                 Console.Write(message.Substring(position, runEnd - position));
                 position = runEnd;
             }
@@ -1749,20 +2027,63 @@ namespace TCPTunnel
             if (fragments == null || fragments.Count == 0)
                 return;
 
-            int previousLeft = Console.CursorLeft;
-            int previousTop = Console.CursorTop;
-            for (int cycle = 0; cycle < MentionBlinkCycles; cycle++)
+            activeMentionBlinkFragments = fragments;
+            mentionBlinkStartTimestamp = Stopwatch.GetTimestamp();
+            mentionBlinkLastPaintedPhase = -1;
+            ScheduleAnimationMonitor();
+        }
+
+        private static void FinishMentionBlinkLocked()
+        {
+            activeMentionBlinkFragments = null;
+            mentionBlinkLastPaintedPhase = -1;
+        }
+
+        private static bool TickMentionBlinkLocked(ref int nextDelayMilliseconds)
+        {
+            if (activeMentionBlinkFragments == null)
+                return false;
+
+            long elapsedTicks = Stopwatch.GetTimestamp() - mentionBlinkStartTimestamp;
+            long elapsedMilliseconds = elapsedTicks <= 0
+                ? 0
+                : elapsedTicks * 1000L / Stopwatch.Frequency;
+            int totalPhases = MentionBlinkCycles * 2;
+            int phase = (int)(elapsedMilliseconds / MentionBlinkDelayMilliseconds);
+
+            if (phase >= totalPhases)
             {
-                PaintMentionFragments(fragments, ConsoleColor.Magenta, ConsoleColor.Yellow);
-                Thread.Sleep(MentionBlinkDelayMilliseconds);
-                PaintMentionFragments(fragments, ConsoleColor.Black, ConsoleColor.White);
-                Thread.Sleep(MentionBlinkDelayMilliseconds);
+                Console.ResetColor();
+                FinishMentionBlinkLocked();
+                return false;
             }
 
-            Console.ResetColor();
-            int safeLeft = Math.Max(0, Math.Min(previousLeft, Console.BufferWidth - 1));
-            int safeTop = Math.Max(0, Math.Min(previousTop, Console.BufferHeight - 1));
-            Console.SetCursorPosition(safeLeft, safeTop);
+            if (phase != mentionBlinkLastPaintedPhase)
+            {
+                try
+                {
+                    int previousLeft = Console.CursorLeft;
+                    int previousTop = Console.CursorTop;
+                    if (phase % 2 == 0)
+                        PaintMentionFragments(activeMentionBlinkFragments, ConsoleColor.Magenta, ConsoleColor.Yellow);
+                    else
+                        PaintMentionFragments(activeMentionBlinkFragments, ConsoleColor.Black, ConsoleColor.White);
+                    Console.ResetColor();
+                    int safeLeft = Math.Max(0, Math.Min(previousLeft, Console.BufferWidth - 1));
+                    int safeTop = Math.Max(0, Math.Min(previousTop, Console.BufferHeight - 1));
+                    Console.SetCursorPosition(safeLeft, safeTop);
+                }
+                catch (Exception ex) when (ex is ArgumentOutOfRangeException || ex is IOException)
+                {
+                    FinishMentionBlinkLocked();
+                    return false;
+                }
+                mentionBlinkLastPaintedPhase = phase;
+            }
+
+            long msUntilNextPhase = (phase + 1) * (long)MentionBlinkDelayMilliseconds - elapsedMilliseconds;
+            nextDelayMilliseconds = Math.Max(1, (int)Math.Min(nextDelayMilliseconds, msUntilNextPhase));
+            return true;
         }
 
         private static void PaintMentionFragments(
@@ -2068,7 +2389,8 @@ namespace TCPTunnel
             int bottom = ConsoleGraphic.ContentBottom;
             int totalRows = Math.Max(1, bottom - top + 1);
             int inputRows = inputActive ? GetRequiredInputRows(width, totalRows) : 0;
-            int chatRows = Math.Max(0, totalRows - inputRows);
+            int popupRows = inputActive ? GetRequiredMentionPopupRows(Math.Max(0, totalRows - inputRows)) : 0;
+            int chatRows = Math.Max(0, totalRows - inputRows - popupRows);
 
             int firstEntry;
             int rowsToSkip;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Diagnostics;
 using System.Text;
@@ -40,6 +41,8 @@ namespace TCPTunnel
         static readonly char[] snakeGlyphs = { '-', '~', '_', '=', '.', ':', '*', '+', '#' };
         static int[] activePreviewStarts;
         static ConsoleColor?[] activePreviewColors;
+        static int[] activePreviewLengths;
+        static bool[] activeHighlightOnly;
         static int menuRowSpacing = 1;
         bool mainMenuFrame;
         ConsoleGraphic.ConsoleGeometry renderedMenuGeometry;
@@ -112,11 +115,13 @@ namespace TCPTunnel
             ConsoleGraphic.ConfigureConsole(71, 16);
             ApplyGraphicsArguments(args);
             OfferSavedProfile(args);
+            if (ConsoleTheme.BackgroundMode == BackgroundColorMode.WindowsTerminal)
+                ApplyBackgroundModeChange(BackgroundColorMode.WindowsTerminal);
             ConsoleGraphic.SetMenuScreen(false);
             ConsoleWindowState.Restore(ApplicationSettings.Current);
             ConsoleWindowState.StartTracking();
             args.Add("-skip");
-            Console.ForegroundColor = ConsoleColor.White;
+            ConsoleGraphic.ApplyContentColors(ConsoleColor.White);
             if (args.Count > 0)
             {
                 if (args.Contains("-hi"))
@@ -248,11 +253,24 @@ namespace TCPTunnel
                 }
                 if (arrow == 0)
                 {
-                    PrepareActionScreen(choice[arrow]);
                     if (ServerInterface.IsRunning)
-                        UserInterface.DoConnect("127.0.0.1", ServerInterface.ListeningPort, 1);
+                    {
+                        PrepareActionScreen(choice[arrow]);
+                        UserInterface.EnterOwnHub();
+                    }
                     else
-                        ServerInterface.tryCreateServer();
+                    {
+                        HubOptions hubOptions = ShowHubOptions();
+                        if (hubOptions != null)
+                        {
+                            PrepareActionScreen(choice[arrow]);
+                            ServerInterface.tryCreateServer(hubOptions);
+                        }
+                        else
+                        {
+                            skipped = true;
+                        }
+                    }
                     goto main;
                 }
                 else if (arrow == 1)
@@ -297,7 +315,7 @@ namespace TCPTunnel
             while (true)
             {
                 graphic.Clear(0, 0);
-                Console.ForegroundColor = ConsoleTheme.MenuText;
+                ConsoleGraphic.ApplyContentColors(ConsoleTheme.MenuText);
                 if (retry) Console.WriteLine(Lang.Get(TextId.AuthInvalidNickname));
                 Console.WriteLine(Lang.Get(TextId.NicknamePrompt));
                 Console.WriteLine();
@@ -371,7 +389,7 @@ namespace TCPTunnel
             if (stopwatch.Elapsed.TotalSeconds > 25)
                 ConsoleGraphic.WriteCenteredLine(Lang.Get(TextId.TookYourTime), inputRow + 3, ConsoleColor.DarkGray);
 
-            Thread.Sleep(2000);
+            Thread.Sleep(300);
         }
 
         private static string ReadCenteredNickname(int row)
@@ -398,9 +416,9 @@ namespace TCPTunnel
                     int visibleLength = Math.Min(text.Length, Math.Max(1, rightExclusive - minimumLeft));
                     int start = Math.Max(minimumLeft, (width - visibleLength) / 2);
                     Console.SetCursorPosition(start, safeRow);
-                    Console.ForegroundColor = ConsoleTheme.InputPrompt;
+                    ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputPrompt);
                     Console.Write("> ");
-                    Console.ForegroundColor = ConsoleTheme.InputText;
+                    ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
                     if (visibleLength > 2)
                         Console.Write(value.ToString(0, Math.Min(value.Length, visibleLength - 2)));
                     Console.ResetColor();
@@ -458,6 +476,14 @@ namespace TCPTunnel
 
             while (true)
             {
+                if (WindowsTerminalTheme.RefreshAfterActivation())
+                {
+                    ConsoleGraphic.InvalidateVisualTheme();
+                    hasKnownGeometry = graphic.TryClear(0, 0) && DrawMenuFrame(choices, selectedIndex);
+                    if (hasKnownGeometry) knownGeometry = renderedMenuGeometry;
+                    resizePending = false;
+                }
+                ConsoleGraphic.EnsureBorderAnimationRunning();
                 try
                 {
                     if (Console.KeyAvailable)
@@ -534,6 +560,17 @@ namespace TCPTunnel
             top = 1;
             menuRowSpacing = 1;
             bool completed = true;
+            if (!String.IsNullOrEmpty(optionsHeader))
+            {
+                top = 3;
+                if (ConsoleGraphic.Enabled)
+                    completed &= ConsoleGraphic.WriteCenteredLine(optionsHeader, 1, ConsoleTheme.MenuText);
+                else
+                {
+                    Console.SetCursorPosition(0, 0);
+                    Console.Write(optionsHeader);
+                }
+            }
             if (mainMenuFrame && ConsoleGraphic.Enabled)
             {
                 if (!ConsoleGraphic.TryCaptureConsoleGeometry(out var geometry)) return false;
@@ -545,12 +582,117 @@ namespace TCPTunnel
             }
             for (int index = 0; index < choices.Length; index++)
                 completed &= DrawChoice(choices[index], index, index == selectedIndex, false);
+            if (!String.IsNullOrEmpty(optionsFooter))
+                completed &= DrawOptionsFooter(top + choices.Length * menuRowSpacing + 1);
             if (completed && ConsoleGraphic.IsConsoleGeometryCurrent(frameGeometry))
             {
                 renderedMenuGeometry = frameGeometry;
                 hasRenderedMenuGeometry = true;
             }
             return hasRenderedMenuGeometry;
+        }
+
+        private bool DrawOptionsFooter(int firstRow)
+        {
+            lock (ConsoleGraphic.borderAnimationLock)
+            {
+                try
+                {
+                    if (!ConsoleGraphic.TryCaptureConsoleGeometry(out var geometry))
+                        return false;
+                    int footerLeft = ConsoleGraphic.Enabled ? left + 2 : 2;
+                    int lastRow = ConsoleGraphic.Enabled ? ConsoleGraphic.ContentBottom : geometry.DrawableHeight - 1;
+                    int width = Math.Max(8, (ConsoleGraphic.Enabled ? geometry.DrawableWidth - 2 : geometry.BufferWidth) - footerLeft - 1);
+                    int row = firstRow;
+                    foreach (string line in WrapFooter(optionsFooter, width))
+                    {
+                        if (row > lastRow)
+                            break;
+                        Console.SetCursorPosition(footerLeft, row++);
+                        ConsoleGraphic.ApplyContentColors(ConsoleTheme.SystemText);
+                        Console.Write(line);
+                    }
+                    Console.ResetColor();
+                    return ConsoleGraphic.IsConsoleGeometryCurrent(geometry);
+                }
+                catch (ArgumentOutOfRangeException) { return false; }
+                catch (System.IO.IOException) { return false; }
+            }
+        }
+
+        private static IEnumerable<string> WrapFooter(string text, int width)
+        {
+            foreach (string paragraph in text.Split('\n'))
+            {
+                string remaining = paragraph.Trim();
+                if (remaining.Length == 0)
+                {
+                    yield return String.Empty;
+                    continue;
+                }
+                while (remaining.Length > width)
+                {
+                    int split = remaining.LastIndexOf(' ', width);
+                    if (split <= 0)
+                        split = width;
+                    yield return remaining.Substring(0, split).TrimEnd();
+                    remaining = remaining.Substring(split).TrimStart();
+                }
+                yield return remaining;
+            }
+        }
+
+        private HubOptions ShowHubOptions()
+        {
+            var context = new HubOptionContext { Bluetooth = BluetoothSupport.Check(true) };
+            IReadOnlyList<HubOptionDescriptor> descriptors = HubOptionRegistry.All;
+            int selectedOption = 0;
+            try
+            {
+                while (true)
+                {
+                    int createIndex = descriptors.Count;
+                    int backIndex = createIndex + 1;
+                    var choices = new string[backIndex + 1];
+                    var starts = new int[choices.Length];
+                    var lengths = new int[choices.Length];
+                    var colors = new ConsoleColor?[choices.Length];
+                    var highlightOnly = new bool[choices.Length];
+                    for (int index = 0; index < descriptors.Count; index++)
+                    {
+                        HubOptionView view = descriptors[index].Render(context);
+                        choices[index] = view.Text;
+                        starts[index] = view.HighlightStart;
+                        lengths[index] = view.HighlightLength;
+                        colors[index] = view.HighlightStart >= 0 ? ConsoleColor.Green : null;
+                        highlightOnly[index] = view.SelectHighlightOnly && view.HighlightStart >= 0;
+                    }
+                    activeHighlightOnly = highlightOnly;
+                    choices[createIndex] = Lang.Get(TextId.HubCreate);
+                    choices[backIndex] = Lang.Get(TextId.Back);
+                    starts[createIndex] = starts[backIndex] = -1;
+
+                    optionsHeader = context.BluetoothAvailable
+                        ? Lang.Get(TextId.BluetoothModuleFound)
+                        : Lang.Get(TextId.BluetoothModuleMissing, Lang.Get(BluetoothSupport.Describe(context.Bluetooth)));
+                    optionsFooter = HubOptionRegistry.Explanation(context.Options);
+
+                    var choice = ReadOptionsChoice(Lang.Get(TextId.HubOptionsTitle), choices, selectedOption, starts, colors,
+                        index => index < descriptors.Count, lengths);
+                    if (choice.Index < 0 || choice.Index == backIndex)
+                        return null;
+                    selectedOption = choice.Index;
+                    if (choice.Index == createIndex)
+                        return context.Options.IsValid ? context.Options : null;
+                    context.Options = descriptors[choice.Index].Change(context, choice.Direction);
+                }
+            }
+            finally
+            {
+                optionsHeader = null;
+                optionsFooter = null;
+                activeHighlightOnly = null;
+            }
         }
 
         private static bool AnimateSelection(string[] choices, int previousIndex, int currentIndex)
@@ -572,6 +714,10 @@ namespace TCPTunnel
             ConsoleColor? previewColor = activePreviewColors != null && index < activePreviewColors.Length
                 ? activePreviewColors[index]
                 : (ConsoleColor?)null;
+            int previewLength = activePreviewLengths != null && index < activePreviewLengths.Length
+                ? activePreviewLengths[index]
+                : 0;
+            bool highlightOnly = activeHighlightOnly != null && index < activeHighlightOnly.Length && activeHighlightOnly[index];
             return ConsoleGraphic.DrawMenuOption(
                 text,
                 index * menuRowSpacing,
@@ -581,7 +727,9 @@ namespace TCPTunnel
                 animate && ConsoleGraphic.Enabled,
                 selectionAnimationDelay,
                 previewStart,
-                previewColor);
+                previewColor,
+                previewLength,
+                highlightOnly);
         }
 
         private void ShowConsoleGraphicsOptions()
@@ -592,36 +740,134 @@ namespace TCPTunnel
                 string[] choices = {
                     Lang.Get(ConsoleGraphic.Enabled ? TextId.GraphicsEnabled : TextId.GraphicsDisabled),
                     Lang.Get(TextId.Customization),
-                    Lang.Get(TextId.SelectionStyle) + ": " + Lang.Get(
-                        ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow ? TextId.SelectionArrow :
-                        ConsoleTheme.SelectionStyle == MenuSelectionStyle.Brackets ? TextId.SelectionBrackets : TextId.SelectionFill),
-                    Lang.Get(TextId.SelectionColor) + ": " + GetSnakeColorName(ConsoleTheme.SelectionBackground),
+                    Lang.Get(TextId.BackgroundColorRow) + ": " + GetBackgroundModeName(ConsoleTheme.BackgroundMode),
+                    Lang.Get(TextId.CustomBackgroundColor) + ": #" +
+                        ConsoleTheme.BackgroundCustomRgb.ToString("X6", CultureInfo.InvariantCulture),
                     Lang.Get(TextId.Back)
                 };
-                var choice = ReadOptionsChoice(Lang.Get(TextId.GraphicsOptions), choices, selectedOption, isValueOption: index => index == 0 || index == 2 || index == 3);
+                var choice = ReadOptionsChoice(Lang.Get(TextId.GraphicsOptions), choices, selectedOption,
+                    isValueOption: index => index == 0 || index == 2);
                 int selection = choice.Index;
-                if (selection < 0 || selection == 4)
-                    return;
-
+                if (selection < 0 || selection == 4) return;
                 selectedOption = selection;
-
                 if (selection == 0)
                     ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled;
                 else if (selection == 1)
                     ShowCustomizationOptions();
                 else if (selection == 2)
-                {
-                    ConsoleTheme.SelectionStyle = OptionNavigation.Next(
-                        new[] { MenuSelectionStyle.Fill, MenuSelectionStyle.Arrow, MenuSelectionStyle.Brackets },
-                        ConsoleTheme.SelectionStyle, choice.Direction);
-                    ApplicationSettings.CaptureAndSave();
-                }
+                    ApplyBackgroundModeChange(OptionNavigation.Next(
+                        new[] { BackgroundColorMode.Off, BackgroundColorMode.WindowsTerminal },
+                        ConsoleTheme.BackgroundMode, choice.Direction));
                 else
-                {
-                    ConsoleTheme.SelectionBackground = OptionNavigation.Next(interfaceColors, ConsoleTheme.SelectionBackground, choice.Direction);
-                    ApplicationSettings.CaptureAndSave();
-                }
+                    ShowCustomBackgroundColorPrompt();
             }
+        }
+        private static string GetBackgroundModeName(BackgroundColorMode mode) => mode switch
+        {
+            BackgroundColorMode.WindowsTerminal => Lang.Get(TextId.BackgroundModeWindowsTerminal),
+            _ => Lang.Get(TextId.CustomColorOff)
+        };
+
+        private void ApplyBackgroundModeChange(BackgroundColorMode newMode)
+        {
+            string error = null;
+            bool applied = true;
+            if (newMode == BackgroundColorMode.WindowsTerminal)
+                applied = WindowsTerminalTheme.TryApplyBackground(ConsoleTheme.BackgroundCustomRgb, out error);
+            else if (ConsoleTheme.BackgroundMode == BackgroundColorMode.WindowsTerminal)
+                applied = WindowsTerminalTheme.TryClearBackground(out error);
+
+            if (!applied)
+            {
+                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.BackgroundApplyFailed, error), ConsoleColor.Red);
+                Thread.Sleep(1500);
+                return;
+            }
+            ConsoleTheme.BackgroundMode = newMode;
+            ConsoleGraphic.InvalidateVisualTheme();
+            ApplicationSettings.CaptureAndSave();
+        }
+        private void ShowCustomBackgroundColorPrompt()
+        {
+            Console.ResetColor();
+            graphic.Clear(0, 0);
+            int left = ConsoleGraphic.ContentLeft;
+            int row = ConsoleGraphic.ContentTop;
+            ConsoleGraphic.ApplyContentColors(ConsoleTheme.MenuText);
+            Console.SetCursorPosition(left, row);
+            Console.Write(Lang.Get(TextId.CustomColorPrompt));
+            Console.SetCursorPosition(left, row + 2);
+            Console.ResetColor();
+            ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
+            Console.Write("> #");
+            string input = (Console.ReadLine() ?? String.Empty).Trim().TrimStart('#');
+
+            if (input.Length == 0)
+                return;
+
+            if (input.Length != 6 || !Int32.TryParse(input, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int rgb))
+            {
+                Console.SetCursorPosition(left, row + 4);
+                ConsoleGraphic.ApplyContentColors(ConsoleColor.Red);
+                Console.Write(Lang.Get(TextId.CustomColorInvalid));
+                Console.ResetColor();
+                Console.ReadKey(true);
+                return;
+            }
+
+            int previousBackground = ConsoleTheme.BackgroundCustomRgb;
+            ConsoleTheme.BackgroundCustomRgb = rgb & 0xFFFFFF;
+            if (ConsoleTheme.BackgroundMode == BackgroundColorMode.WindowsTerminal &&
+                !WindowsTerminalTheme.TryApplyBackground(ConsoleTheme.BackgroundCustomRgb, out string applyError))
+            {
+                Console.SetCursorPosition(left, row + 4);
+                ConsoleGraphic.ApplyContentColors(ConsoleColor.Red);
+                ConsoleTheme.BackgroundCustomRgb = previousBackground;
+                Console.Write(Lang.Get(TextId.BackgroundApplyFailed, applyError));
+                Console.ResetColor();
+                Console.ReadKey(true);
+            }
+
+            ConsoleGraphic.InvalidateVisualTheme();
+            ApplicationSettings.CaptureAndSave();
+        }
+
+        private void ShowCustomSelectionColorPrompt()
+        {
+            Console.ResetColor();
+            graphic.Clear(0, 0);
+            int left = ConsoleGraphic.ContentLeft;
+            int row = ConsoleGraphic.ContentTop;
+            ConsoleGraphic.ApplyContentColors(ConsoleTheme.MenuText);
+            Console.SetCursorPosition(left, row);
+            Console.Write(Lang.Get(TextId.CustomColorPrompt));
+            Console.SetCursorPosition(left, row + 2);
+            Console.ResetColor();
+            ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
+            Console.Write("> #");
+            string input = (Console.ReadLine() ?? String.Empty).Trim().TrimStart('#');
+
+            if (input.Length == 0)
+            {
+                ConsoleTheme.ClearCustomSelectionColor();
+                ConsoleGraphic.InvalidateVisualTheme();
+                ApplicationSettings.CaptureAndSave();
+                return;
+            }
+
+            if (input.Length != 6 || !Int32.TryParse(input, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int rgb))
+            {
+                Console.SetCursorPosition(left, row + 4);
+                ConsoleGraphic.ApplyContentColors(ConsoleColor.Red);
+                Console.Write(Lang.Get(TextId.CustomColorInvalid));
+                Console.ResetColor();
+                Console.ReadKey(true);
+                return;
+            }
+
+            ConsoleTheme.SetCustomSelectionColor(rgb);
+            ConsoleGraphic.InvalidateVisualTheme();
+            ApplicationSettings.CaptureAndSave();
         }
 
         private void ShowCustomizationOptions()
@@ -635,11 +881,15 @@ namespace TCPTunnel
                     Lang.Get(TextId.ResetSettings),
                     Lang.Get(TextId.Back)
                 };
-                int selection = ReadOptionsSelection(Lang.Get(TextId.Customization), choices, selectedOption);
-                if (selection < 0 || selection == 3)
+                int firstOption = ConsoleGraphic.Enabled ? 0 : 1;
+                int visibleSelection = ReadOptionsSelection(Lang.Get(TextId.Customization), choices[firstOption..], selectedOption);
+                if (visibleSelection < 0)
+                    return;
+                int selection = visibleSelection + firstOption;
+                if (selection == 3)
                     return;
 
-                selectedOption = selection;
+                selectedOption = visibleSelection;
                 if (selection == 0)
                     ShowSnakeOptions();
                 else if (selection == 1)
@@ -712,6 +962,9 @@ namespace TCPTunnel
                     TextId.InputField,
                     TextId.SystemMessages,
                     TextId.MenuTextColor,
+                    TextId.SelectionStyle,
+                    TextId.SelectionColor,
+                    TextId.CustomSelectionColor,
                     TextId.Back
                 };
                 string[] choices = new string[labels.Length];
@@ -719,7 +972,7 @@ namespace TCPTunnel
                 ConsoleColor?[] previewColors = new ConsoleColor?[labels.Length];
                 for (int index = 0; index < labels.Length; index++)
                 {
-                    if (index == labels.Length - 1)
+                    if (index >= 6)
                     {
                         choices[index] = Lang.Get(labels[index]);
                         previewStarts[index] = -1;
@@ -731,17 +984,28 @@ namespace TCPTunnel
                     previewColors[index] = colors[index];
                 }
 
+                choices[6] = Lang.Get(TextId.SelectionStyle) + ": " + Lang.Get(
+                    ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow ? TextId.SelectionArrow :
+                    ConsoleTheme.SelectionStyle == MenuSelectionStyle.Brackets ? TextId.SelectionBrackets : TextId.SelectionFill);
+                choices[7] = Lang.Get(TextId.SelectionColor) + ": " + (ConsoleTheme.SelectionUsesCustomColor
+                    ? Lang.Get(TextId.CustomColor) : GetSnakeColorName(ConsoleTheme.SelectionBackground));
+                choices[8] = Lang.Get(TextId.CustomSelectionColor) + ": " + (ConsoleTheme.SelectionUsesCustomColor
+                    ? "#" + ConsoleTheme.SelectionCustomRgb.ToString("X6", CultureInfo.InvariantCulture) : Lang.Get(TextId.CustomColorOff));
+                // Only the border is absent in plain mode; message and selection colors still apply.
+                int firstOption = ConsoleGraphic.Enabled ? 0 : 1;
                 var choice = ReadOptionsChoice(
                     Lang.Get(TextId.InterfaceColors),
-                    choices,
+                    choices[firstOption..],
                     selectedOption,
-                    previewStarts,
-                    previewColors,
-                    index => index < 6);
-                int selection = choice.Index;
-                if (selection < 0 || selection == 6)
+                    previewStarts[firstOption..],
+                    previewColors[firstOption..],
+                    index => index + firstOption < 8);
+                if (choice.Index < 0)
                     return;
-                selectedOption = selection;
+                int selection = choice.Index + firstOption;
+                if (selection == 9)
+                    return;
+                selectedOption = choice.Index;
                 if (selection == 0)
                     ConsoleTheme.Border = OptionNavigation.Next(borderColors, ConsoleTheme.Border, choice.Direction);
                 else if (selection == 1)
@@ -761,40 +1025,114 @@ namespace TCPTunnel
                 }
                 else if (selection == 4)
                     ConsoleTheme.SystemText = OptionNavigation.Next(interfaceColors, ConsoleTheme.SystemText, choice.Direction);
-                else
+                else if (selection == 5)
                     ConsoleTheme.MenuText = OptionNavigation.Next(interfaceColors, ConsoleTheme.MenuText, choice.Direction);
+                else if (selection == 6)
+                    ConsoleTheme.SelectionStyle = OptionNavigation.Next(
+                        new[] { MenuSelectionStyle.Fill, MenuSelectionStyle.Arrow, MenuSelectionStyle.Brackets },
+                        ConsoleTheme.SelectionStyle, choice.Direction);
+                else if (selection == 7)
+                {
+                    ConsoleTheme.SelectionBackground = OptionNavigation.Next(interfaceColors, ConsoleTheme.SelectionBackground, choice.Direction);
+                    ConsoleTheme.ClearCustomSelectionColor();
+                }
+                else
+                    ShowCustomSelectionColorPrompt();
                 ConsoleGraphic.InvalidateVisualTheme();
                 ApplicationSettings.CaptureAndSave();
             }
         }
 
+        private string optionsHeader;
+        private string optionsFooter;
+
         private void OfferSavedProfile(List<string> args)
         {
-            string pending = ApplicationSettings.PendingProfileNickname;
-            if (!NetWorker.IsNicknameValid(pending))
-                return;
-
-            string[] choices = {
-                Lang.Get(TextId.Yes),
-                Lang.Get(TextId.No),
-                Lang.Get(TextId.AlwaysImport, pending)
-            };
-            int selection = ReadOptionsSelection(
-                Lang.Get(TextId.ImportProfilePrompt, pending),
-                choices,
-                0);
-            if (selection == 0 || selection == 2)
+            if (ApplicationSettings.ProfileWasAutoLoaded) return;
+            var profiles = ApplicationSettings.GetSavedProfiles();
+            if (profiles.Count == 0) return;
+            bool remember = false, clear = false;
+            int selected = 0;
+            try
             {
-                ApplicationSettings.ImportPendingProfile(selection == 2);
-                Lang.ApplyArguments(args);
-                ApplyGraphicsArguments(args);
+                while (true)
+                {
+                    optionsHeader = Lang.Get(TextId.SavedProfilesCount, profiles.Count);
+                    string latestPrefix = Lang.Get(TextId.UseLatestProfile);
+                    string[] choices = {
+                        Lang.Get(TextId.CreateOwnProfile),
+                        Lang.Get(TextId.OpenProfileList),
+                        latestPrefix + profiles[0].Nickname,
+                        (remember ? "[ V ] " : "[   ] ") + Lang.Get(TextId.AlwaysLoadChosenProfile),
+                        (clear ? "[ V ] " : "[   ] ") + Lang.Get(TextId.ClearAllProfiles)
+                    };
+                    var choice = ReadOptionsChoice(optionsHeader, choices, selected,
+                        new[] { -1, -1, latestPrefix.Length, -1, -1 },
+                        new ConsoleColor?[] { null, null, profiles[0].SnakeColor, null, null },
+                        index => index >= 3);
+                    selected = choice.Index;
+                    if (selected == 3) { remember = !remember; continue; }
+                    if (selected == 4) { clear = !clear; continue; }
+                    if (selected < 0)
+                    {
+                        ApplicationSettings.DismissPendingProfile();
+                        return;
+                    }
+                    ApplicationSettings.SavedProfile profile = selected == 2 ? profiles[0] : null;
+                    if (selected == 1)
+                    {
+                        profile = ChooseSavedProfile(profiles);
+                        if (profile == null) { selected = 1; continue; }
+                    }
+                    if (!ApplicationSettings.SelectSavedProfile(profile, remember, clear, out string error))
+                    {
+                        ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ProfileLoadError, error), ConsoleColor.Red);
+                        Thread.Sleep(1800);
+                        continue;
+                    }
+                    optionsHeader = null;
+                    Lang.ApplyArguments(args);
+                    ApplyGraphicsArguments(args);
+                    if (profile == null)
+                    {
+                        graphic.Clear(0, 0);
+                        if (ConsoleGraphic.Enabled) ChangeNicknameGraphical();
+                        else ChangeNicknamePlain();
+                    }
+                    return;
+                }
             }
-            else
-            {
-                ApplicationSettings.DismissPendingProfile();
-            }
+            finally { optionsHeader = null; }
         }
 
+        private ApplicationSettings.SavedProfile ChooseSavedProfile(List<ApplicationSettings.SavedProfile> profiles)
+        {
+            int offset = 0;
+            while (true)
+            {
+                int pageSize = Math.Max(1, Console.WindowHeight - 8);
+                int count = Math.Min(pageSize, profiles.Count - offset);
+                var choices = new List<string>();
+                var starts = new List<int>();
+                var colors = new List<ConsoleColor?>();
+                for (int index = 0; index < count; index++)
+                {
+                    var profile = profiles[offset + index];
+                    choices.Add(profile.Nickname);
+                    starts.Add(0);
+                    colors.Add(profile.SnakeColor);
+                }
+                int previous = -1, next = -1;
+                if (offset > 0) { previous = choices.Count; choices.Add("←"); starts.Add(-1); colors.Add(null); }
+                if (offset + count < profiles.Count) { next = choices.Count; choices.Add("→"); starts.Add(-1); colors.Add(null); }
+                choices.Add(Lang.Get(TextId.Back)); starts.Add(-1); colors.Add(null);
+                int selection = ReadOptionsSelection(Lang.Get(TextId.OpenProfileList), choices.ToArray(), 0, starts.ToArray(), colors.ToArray());
+                if (selection < 0 || selection == choices.Count - 1) return null;
+                if (selection == previous) { offset = Math.Max(0, offset - pageSize); continue; }
+                if (selection == next) { offset += count; continue; }
+                return profiles[offset + selection];
+            }
+        }
         private int ReadOptionsSelection(
             string title,
             string[] choices,
@@ -809,10 +1147,12 @@ namespace TCPTunnel
             int selectedOption,
             int[] previewStarts = null,
             ConsoleColor?[] previewColors = null,
-            Func<int, bool> isValueOption = null)
+            Func<int, bool> isValueOption = null,
+            int[] previewLengths = null)
         {
             activePreviewStarts = previewStarts;
             activePreviewColors = previewColors;
+            activePreviewLengths = previewLengths;
             ConsoleGraphic.SetMenuScreen(true);
             ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
             graphic.Clear(0, 0);
@@ -839,12 +1179,14 @@ namespace TCPTunnel
                 {
                     activePreviewStarts = null;
                     activePreviewColors = null;
+                    activePreviewLengths = null;
                     return (arrow, OptionNavigation.ValueDirection(key));
                 }
                 else if (key == ConsoleKey.Escape)
                 {
                     activePreviewStarts = null;
                     activePreviewColors = null;
+                    activePreviewLengths = null;
                     return (-1, 0);
                 }
             }

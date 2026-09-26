@@ -27,28 +27,46 @@ namespace TCPTunnel
             RemoteHubStatus remote = query.GetAwaiter().GetResult();
             var ping = pingTask?.GetAwaiter().GetResult() ?? (false, (string)null);
             string unavailable = Lang.Get(TextId.StatusUnavailable);
+            string link = currentTransport switch
+            {
+                ChatTransport.Bluetooth => CurrentBluetoothSignal is int dbm
+                    ? Lang.Get(TextId.StatusSignal, dbm)
+                    : Lang.Get(TextId.StatusSignalUnavailable),
+                ChatTransport.Local => Lang.Get(TextId.StatusLocalLink),
+                _ => ping.Item1 ? Lang.Get(TextId.StatusPing, ping.Item2) : Lang.Get(TextId.StatusPingUnavailable)
+            };
             var current = new List<string>
             {
                 Lang.Get(TextId.StatusCurrent, endpoint == null ? host : host.Contains(':') ? "[" + host.Trim('[', ']') + "]:" + endpoint.Port : host + ":" + endpoint.Port),
                 Lang.Get(TextId.StatusAdministrator, String.IsNullOrEmpty(remote?.Owner) ? unavailable : "@" + remote.Owner),
                 Lang.Get(connected ? TextId.StatusConnected : TextId.StatusDisconnected),
-                ping.Item1 ? Lang.Get(TextId.StatusPing, ping.Item2) : Lang.Get(TextId.StatusPingUnavailable),
+                link,
                 Lang.Get(TextId.StatusParticipants, remote?.Participants.ToString() ?? unavailable)
             };
             List<string> own = null;
             LocalHubSnapshot ownStatus = ServerInterface.CaptureStatus();
             if (ownStatus.Running)
             {
+                HubOptions ownOptions = ServerInterface.Options;
+                string access = Lang.Get(TextId.StatusAccess, DescribeHubAccess(ownOptions));
                 if (isLocalHubSession)
-                    current.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
+                {
+                    current.Add(access);
+                    if (ownOptions.UsesPortMapping)
+                        current.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
+                }
                 else
+                {
                     own = new List<string>
                     {
-                        Lang.Get(TextId.StatusOwn, ownStatus.Port),
+                        ownOptions.UsesTcp ? Lang.Get(TextId.StatusOwn, ownStatus.Port) : Lang.Get(TextId.StatusOwnBluetooth),
                         Lang.Get(TextId.StatusRunning),
-                        Lang.Get(TextId.StatusNat, ownStatus.Nat),
-                        Lang.Get(TextId.StatusParticipants, ownStatus.Participants)
+                        access
                     };
+                    if (ownOptions.UsesPortMapping)
+                        own.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
+                    own.Add(Lang.Get(TextId.StatusParticipants, ownStatus.Participants));
+                }
             }
             if (token.IsCancellationRequested || !connected) return;
             lock (consoleLock)

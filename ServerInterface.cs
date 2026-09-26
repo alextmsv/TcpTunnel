@@ -10,8 +10,10 @@ namespace TCPTunnel
     public class ServerInterface : NetWorker
     {
         private static readonly object serverLock = new object();
+        private static readonly object admissionLock = new object();
         internal const int MaxConnectedClients = 64;
         private static TcpListener server;
+        private static BluetoothHubHost bluetoothHost;
         private static CancellationTokenSource serverCancellation;
         private static Task acceptTask = Task.CompletedTask;
         private static readonly List<Task> clientTasks = new List<Task>();
@@ -22,6 +24,7 @@ namespace TCPTunnel
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
+        internal static HubOptions Options { get; private set; } = HubOptions.Default;
         public static string PortMappingStatus => GetPortMappingStatus();
         public static string DisplayAddress => displayAddress;
         public static bool DisplayAddressIsPublic => displayAddressIsPublic;
@@ -49,8 +52,16 @@ namespace TCPTunnel
             return kicked ? KickCommandResult.Success : KickCommandResult.NotFound;
         }
 
-        public static void tryCreateServer()
+        public static void tryCreateServer() => tryCreateServer(HubOptions.Default);
+
+        internal static void tryCreateServer(HubOptions options)
         {
+            if (!options.UsesTcp)
+            {
+                doCreateServer(0, options);
+                return;
+            }
+
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.WriteCenteredLine(
@@ -81,30 +92,62 @@ namespace TCPTunnel
                 return;
             }
 
-            doCreateServer(port);
+            doCreateServer(port, options);
         }
 
-        public static bool doCreateServer(int port)
+        public static bool doCreateServer(int port) => doCreateServer(port, HubOptions.Default);
+
+        internal static bool doCreateServer(int port, HubOptions options)
         {
             if (!UserInterface.EnsureNickname()) return false;
-            if (ConsoleGraphic.Enabled)
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.StartingListener), ConsoleTheme.SystemText, 0, true, 3);
+            ShowHubProgress(Lang.Get(options.UsesTcp ? TextId.StartingListener : TextId.BluetoothHubStarting), true);
 
             string error;
-            if (!TryStartServer(port, out error, nickname))
+            bool advertisingBlocked;
+            bool started = TryStartServer(port, options, out error, nickname, out advertisingBlocked);
+            if (!started && advertisingBlocked)
+            {
+                ShowHubProgress(Lang.Get(TextId.BluetoothRequestingElevation), false);
+                if (BluetoothPolicy.RequestAllowAdvertising(out string elevationError))
+                {
+                    started = TryStartServer(port, options, out error, nickname, out advertisingBlocked);
+                    if (!started && advertisingBlocked)
+                        error = Lang.Get(TextId.BluetoothStillBlocked);
+                }
+                else
+                {
+                    error = elevationError;
+                }
+            }
+
+            if (!started)
+            {
+                ShowHubProgress(Lang.Get(TextId.CreateHubFailed, error), false);
+                return false;
+            }
+
+            if (!options.UsesTcp)
             {
                 if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.CreateHubFailed, error), ConsoleTheme.SystemText);
+                {
+                    ConsoleGraphic.DrawServerEndpointCard(Lang.Get(TextId.BluetoothEndpoint), 0);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.LocalClientConnecting), ConsoleTheme.SystemText, 3);
+                }
                 else
-                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.CreateHubFailed, error));
-                return false;
+                {
+                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.BluetoothHubStarted));
+                }
+                return UserInterface.DoConnectLocal(CreateLocalConnection());
             }
 
             if (ConsoleGraphic.Enabled)
             {
                 ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ListenerStarted), ConsoleTheme.SystemText);
-                Thread.Sleep(180);
-                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConfiguringNat), ConsoleTheme.SystemText);
+                if (options.UsesPortMapping)
+                {
+                    Thread.Sleep(180);
+                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.ConfiguringNat), ConsoleTheme.SystemText);
+                }
             }
             else
             {
@@ -112,9 +155,15 @@ namespace TCPTunnel
                 ConsoleGraphic.WriteContentLine(Lang.Get(TextId.LocalClientBackground));
             }
 
-            StartPortMapping(port, serverCancellation.Token);
-
-            ResolveDisplayAddress(port, serverCancellation.Token);
+            if (options.UsesPortMapping)
+            {
+                StartPortMapping(port, serverCancellation.Token);
+                ResolveDisplayAddress(port, serverCancellation.Token);
+            }
+            else
+            {
+                displayAddress = NetworkAddressResolver.GetLocalIPv4Address();
+            }
 
             if (ConsoleGraphic.Enabled)
             {
@@ -123,6 +172,28 @@ namespace TCPTunnel
             }
 
             return UserInterface.DoConnect("127.0.0.1", port, 1);
+        }
+
+        private static void ShowHubProgress(string text, bool starting)
+        {
+            if (ConsoleGraphic.Enabled)
+            {
+                if (starting)
+                    ConsoleGraphic.WriteBottomStatus(text, ConsoleTheme.SystemText, 0, true, 3);
+                else
+                    ConsoleGraphic.WriteBottomStatus(text, ConsoleTheme.SystemText);
+            }
+            else
+            {
+                ConsoleGraphic.WriteContentLine(text);
+            }
+        }
+
+        internal static IChatConnection CreateLocalConnection()
+        {
+            var (hubSide, clientSide) = LocalChatConnection.CreatePair();
+            AdmitConnection(hubSide);
+            return clientSide;
         }
 
         private static void ResolveDisplayAddress(int port, CancellationToken cancellationToken)
@@ -149,14 +220,34 @@ namespace TCPTunnel
             }
         }
 
-        public static bool TryStartServer(int port, out string error, string administratorNickname = null)
+        public static bool TryStartServer(int port, out string error, string administratorNickname = null) =>
+            TryStartServer(port, HubOptions.Default, out error, administratorNickname, out _);
+
+        internal static bool TryStartServer(
+            int port,
+            HubOptions options,
+            out string error,
+            string administratorNickname,
+            out bool advertisingBlocked)
         {
-            if (port < 1 || port > 65535)
+            advertisingBlocked = false;
+            if (options == null || !options.IsValid)
+            {
+                error = Lang.Get(TextId.HubOptionsInvalid);
+                return false;
+            }
+            if (options.UsesTcp && (port < 1 || port > 65535))
             {
                 error = Lang.Get(TextId.PortOutOfRange);
                 return false;
             }
+            if (options.Bluetooth && !IsNicknameValid(administratorNickname))
+            {
+                error = Lang.Get(TextId.HubOptionsInvalid);
+                return false;
+            }
 
+            CancellationToken token;
             lock (serverLock)
             {
                 if (isRunning)
@@ -165,24 +256,31 @@ namespace TCPTunnel
                     return false;
                 }
 
+                TcpListener listener = null;
                 try
                 {
-                    TcpListener listener = new TcpListener(IPAddress.Any, port);
-                    listener.Start();
+                    if (options.UsesTcp)
+                    {
+                        listener = new TcpListener(IPAddress.Any, port);
+                        listener.Start();
+                    }
 
                     server = listener;
                     serverCancellation = new CancellationTokenSource();
+                    token = serverCancellation.Token;
                     displayAddress = "127.0.0.1";
                     displayAddressIsPublic = false;
-                    ListeningPort = port;
+                    ListeningPort = options.UsesTcp ? port : 0;
+                    Options = options;
                     AdministratorNickname = IsNicknameValid(administratorNickname) ? administratorNickname : String.Empty;
                     isRunning = true;
-                    acceptTask = AcceptLoopAsync(listener, serverCancellation.Token);
-                    error = null;
-                    return true;
+                    acceptTask = listener == null
+                        ? Task.CompletedTask
+                        : AcceptLoopAsync(listener, options.IpMode == HubIpMode.LanOnly, token);
                 }
                 catch (Exception ex)
                 {
+                    try { listener?.Stop(); } catch { }
                     server = null;
                     serverCancellation = null;
                     isRunning = false;
@@ -191,12 +289,52 @@ namespace TCPTunnel
                     return false;
                 }
             }
+
+            if (!options.Bluetooth)
+            {
+                error = null;
+                return true;
+            }
+
+            BluetoothHubStartStatus status = BluetoothHubHost.TryStart(
+                options.BeaconMode,
+                administratorNickname,
+                AdmitConnection,
+                () => broadcaster.AuthenticatedClientCount,
+                out BluetoothHubHost host,
+                out string bluetoothError);
+            if (status == BluetoothHubStartStatus.Started)
+            {
+                bool current;
+                lock (serverLock)
+                {
+                    current = isRunning && serverCancellation != null && serverCancellation.Token == token;
+                    if (current)
+                        bluetoothHost = host;
+                }
+                if (!current)
+                {
+                    host.Dispose();
+                    error = Lang.Get(TextId.BluetoothHubStartFailed, String.Empty);
+                    return false;
+                }
+                error = null;
+                return true;
+            }
+
+            StopServer();
+            advertisingBlocked = status == BluetoothHubStartStatus.AdvertisingBlockedByPolicy;
+            error = advertisingBlocked
+                ? Lang.Get(TextId.BluetoothAdvertisingBlocked)
+                : Lang.Get(TextId.BluetoothHubStartFailed, bluetoothError);
+            return false;
         }
 
         public static void StopServer()
         {
             CancellationTokenSource cancellation;
             TcpListener listener;
+            BluetoothHubHost bluetooth;
             Task accepting;
             Task[] clientsToDrain;
 
@@ -210,15 +348,18 @@ namespace TCPTunnel
                 displayAddressIsPublic = false;
                 cancellation = serverCancellation;
                 listener = server;
+                bluetooth = bluetoothHost;
                 accepting = acceptTask;
                 clientsToDrain = clientTasks.ToArray();
                 clientTasks.Clear();
                 serverCancellation = null;
                 server = null;
+                bluetoothHost = null;
             }
 
+            try { bluetooth?.Dispose(); } catch { }
             try { cancellation.Cancel(); } catch { }
-            try { listener.Stop(); } catch { }
+            try { listener?.Stop(); } catch { }
             broadcaster.DisconnectAll();
             try
             {
@@ -230,7 +371,44 @@ namespace TCPTunnel
             try { mappingCleanup.Wait(TimeSpan.FromSeconds(3)); } catch { }
         }
 
-        private static async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)
+        internal static void AdmitConnection(IChatConnection connection)
+        {
+            CancellationToken token;
+            lock (serverLock)
+            {
+                if (!isRunning || serverCancellation == null)
+                {
+                    connection.Dispose();
+                    return;
+                }
+                token = serverCancellation.Token;
+            }
+            Admit(connection, token);
+        }
+
+        private static void Admit(IChatConnection connection, CancellationToken cancellationToken)
+        {
+            Client client = new Client(connection);
+            lock (admissionLock)
+            {
+                if (broadcaster.ConnectionCount >= MaxConnectedClients)
+                {
+                    client.Close();
+                    return;
+                }
+                broadcaster.AddConnection(client);
+            }
+            Task clientTask = ServerClientLoopAsync(client, cancellationToken);
+            lock (serverLock)
+            {
+                if (isRunning && serverCancellation != null && serverCancellation.Token == cancellationToken)
+                    clientTasks.Add(clientTask);
+                else
+                    broadcaster.RemoveClient(client);
+            }
+        }
+
+        private static async Task AcceptLoopAsync(TcpListener listener, bool lanOnly, CancellationToken cancellationToken)
         {
             try
             {
@@ -246,21 +424,13 @@ namespace TCPTunnel
                         break;
                     }
 
-                    Client client = new Client(incoming);
-                    if (broadcaster.ConnectionCount >= MaxConnectedClients)
+                    if (lanOnly && !LanPolicy.IsAllowed((incoming.Client.RemoteEndPoint as IPEndPoint)?.Address))
                     {
-                        client.Close();
+                        incoming.Close();
                         continue;
                     }
-                    broadcaster.AddConnection(client);
-                    Task clientTask = ServerClientLoopAsync(client, cancellationToken);
-                    lock (serverLock)
-                    {
-                        if (isRunning && Object.ReferenceEquals(server, listener))
-                            clientTasks.Add(clientTask);
-                        else
-                            broadcaster.RemoveClient(client);
-                    }
+
+                    Admit(new TcpChatConnection(incoming), cancellationToken);
                 }
             }
             catch (ObjectDisposedException)

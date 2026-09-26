@@ -50,7 +50,7 @@ namespace TCPTunnel
                     text = text.Substring(0, Math.Min(text.Length, width));
                     int blockWidth = header.Length == logo.Length + 1 && index < logo.Length ? logoWidth : text.Length;
                     Console.SetCursorPosition(1 + Math.Max(0, (width - blockWidth) / 2), index + 1);
-                    Console.ForegroundColor = ConsoleTheme.MenuText;
+                    ConsoleGraphic.ApplyContentColors(ConsoleTheme.MenuText);
                     Console.Write(text);
                 }
                 Console.ResetColor();

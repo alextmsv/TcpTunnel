@@ -12,12 +12,14 @@
 #define RESOURCE_RUNTIME_CONFIG 103
 #define RESOURCE_SHARP_OPEN_NAT 104
 #define RESOURCE_PAYLOAD_ID 105
+#define RESOURCE_WINDOWS_SDK 106
+#define RESOURCE_WINRT_RUNTIME 107
 
 #define COREHOST_LIB_LOAD_FAILURE ((int32_t)0x80008082)
 #define COREHOST_LIB_MISSING_FAILURE ((int32_t)0x80008083)
 #define FRAMEWORK_MISSING_FAILURE ((int32_t)0x80008096)
 
-#define DOWNLOAD_URL L"https://dotnet.microsoft.com/download/dotnet/8.0"
+#define DOWNLOAD_URL L"https://dotnet.microsoft.com/ru-ru/download/dotnet/thank-you/runtime-8.0.31-windows-x64-installer"
 #define MAX_RUNTIME_PATH 32768
 
 typedef void* hostfxr_handle;
@@ -373,7 +375,11 @@ static BOOL extract_managed_payload(
         !combine_path(file_path, _countof(file_path), version_directory, L"TCPTunnel.runtimeconfig.json") ||
         !write_resource_file(RESOURCE_RUNTIME_CONFIG, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"SharpOpenNat.dll") ||
-        !write_resource_file(RESOURCE_SHARP_OPEN_NAT, file_path))
+        !write_resource_file(RESOURCE_SHARP_OPEN_NAT, file_path) ||
+        !combine_path(file_path, _countof(file_path), version_directory, L"Microsoft.Windows.SDK.NET.dll") ||
+        !write_resource_file(RESOURCE_WINDOWS_SDK, file_path) ||
+        !combine_path(file_path, _countof(file_path), version_directory, L"WinRT.Runtime.dll") ||
+        !write_resource_file(RESOURCE_WINRT_RUNTIME, file_path))
         return FALSE;
 
     return TRUE;
@@ -402,6 +408,29 @@ static void write_stderr_text(const wchar_t* text)
     HeapFree(GetProcessHeap(), 0, utf8);
 }
 
+static int exit_after_key(int exit_code)
+{
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode;
+    DWORD read;
+    INPUT_RECORD record;
+
+    if (input == NULL || input == INVALID_HANDLE_VALUE ||
+        GetFileType(input) != FILE_TYPE_CHAR || !GetConsoleMode(input, &mode))
+        return exit_code;
+
+    write_stderr_text(L"\r\nНажмите любую клавишу для выхода... / Press any key to exit...\r\n");
+    FlushConsoleInputBuffer(input);
+    for (;;)
+    {
+        if (!ReadConsoleInputW(input, &record, 1, &read) || read == 0)
+            break;
+        if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown)
+            break;
+    }
+    return exit_code;
+}
+
 static void open_runtime_download_page(void)
 {
     HINSTANCE result;
@@ -409,7 +438,9 @@ static void open_runtime_download_page(void)
     write_stderr_text(
         L"\r\nДля запуска TCPTunnel требуется .NET 8 Runtime (x64).\r\n"
         L"TCPTunnel requires .NET 8 Runtime (x64).\r\n"
-        L"Открываю официальную страницу загрузки: " DOWNLOAD_URL L"\r\n\r\n");
+        L"Скачиваю установщик .NET 8 Runtime через браузер / Downloading the .NET 8 Runtime installer: " DOWNLOAD_URL L"\r\n"
+        L"Запустите скачанный установщик, затем снова откройте TCPTunnel.\r\n"
+        L"Run the downloaded installer, then open TCPTunnel again.\r\n\r\n");
     if (GetEnvironmentVariableW(
             L"TCPTUNNEL_SUPPRESS_RUNTIME_DOWNLOAD",
             suppress_browser,
@@ -452,20 +483,20 @@ int wmain(int argc, wchar_t** argv)
             _countof(hostfxr_path)))
     {
         open_runtime_download_page();
-        return (int)FRAMEWORK_MISSING_FAILURE;
+        return exit_after_key((int)FRAMEWORK_MISSING_FAILURE);
     }
 
     if (!extract_managed_payload(assembly_path, _countof(assembly_path)))
     {
         write_stderr_text(L"TCPTunnel: не удалось подготовить файлы приложения.\r\n");
-        return ERROR_WRITE_FAULT;
+        return exit_after_key(ERROR_WRITE_FAULT);
     }
 
     hostfxr = LoadLibraryW(hostfxr_path);
     if (hostfxr == NULL)
     {
         open_runtime_download_page();
-        return (int)COREHOST_LIB_LOAD_FAILURE;
+        return exit_after_key((int)COREHOST_LIB_LOAD_FAILURE);
     }
 
     initialize = (hostfxr_initialize_for_dotnet_command_line_fn)GetProcAddress(
@@ -477,14 +508,15 @@ int wmain(int argc, wchar_t** argv)
     {
         FreeLibrary(hostfxr);
         open_runtime_download_page();
-        return (int)COREHOST_LIB_LOAD_FAILURE;
+        return exit_after_key((int)COREHOST_LIB_LOAD_FAILURE);
     }
 
     managed_argv = (const wchar_t**)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(wchar_t*) * argc);
     if (managed_argv == NULL)
     {
         FreeLibrary(hostfxr);
-        return ERROR_NOT_ENOUGH_MEMORY;
+        write_stderr_text(L"TCPTunnel: недостаточно памяти для запуска.\r\n");
+        return exit_after_key(ERROR_NOT_ENOUGH_MEMORY);
     }
     managed_argv[0] = assembly_path;
     for (index = 1; index < argc; ++index)
@@ -492,9 +524,11 @@ int wmain(int argc, wchar_t** argv)
 
     if (GetModuleFileNameW(NULL, host_path, _countof(host_path)) == 0)
     {
+        DWORD error = GetLastError();
         HeapFree(GetProcessHeap(), 0, managed_argv);
         FreeLibrary(hostfxr);
-        return (int)GetLastError();
+        write_stderr_text(L"TCPTunnel: не удалось определить путь к программе.\r\n");
+        return exit_after_key((int)error);
     }
 
     parameters.size = sizeof(parameters);
@@ -510,7 +544,7 @@ int wmain(int argc, wchar_t** argv)
         FreeLibrary(hostfxr);
         if (is_runtime_missing_error(result))
             open_runtime_download_page();
-        return (int)result;
+        return exit_after_key((int)result);
     }
 
     result = run_app(context);

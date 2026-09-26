@@ -43,6 +43,20 @@ namespace TCPTunnel
             }
         }
         internal (int Width, int Height) GetSize() { lock (gate) return (Width, Height); }
+        private int? signal;
+        private long signalAt;
+        internal void SetSignal(int dbm)
+        {
+            lock (gate)
+            {
+                signal = dbm;
+                signalAt = Stopwatch.GetTimestamp();
+            }
+        }
+        internal int? SignalDbm
+        {
+            get { lock (gate) return signal.HasValue && Stopwatch.GetElapsedTime(signalAt).TotalSeconds <= 30 ? signal : null; }
+        }
         internal int? PingMilliseconds
         {
             get { lock (gate) return Stopwatch.GetElapsedTime(receivedAt).TotalSeconds <= 30 ? ping : null; }

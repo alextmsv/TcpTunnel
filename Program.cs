@@ -9,7 +9,13 @@ namespace TCPTunnel
 
         static void Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == BluetoothPolicy.HelperArgument)
+            {
+                Environment.ExitCode = BluetoothPolicy.RunElevatedHelper();
+                return;
+            }
             Console.OutputEncoding = System.Text.Encoding.UTF8;
+            ConsoleGraphic.EnableVirtualTerminalOutput();
             if (ImageViewer.TryRun(args))
                 return;
             Lang.ApplyArguments(args);
@@ -39,6 +45,8 @@ namespace TCPTunnel
                                ImageViewer.RunSelfTest() &&
                                ImageViewer.RunAnimationSelfTest() &&
                                ConsoleTitleAnimator.RunSelfTest() &&
+                               HubBeaconCodec.RunSelfTest() &&
+                               HubOptionRegistry.RunSelfTest() &&
                                UserInterface.RunCommandSelfTest();
                 Console.WriteLine(Lang.Get(success ? TextId.SelfTestOk : TextId.SelfTestFailed));
                 Environment.ExitCode = success ? 0 : 1;
@@ -57,6 +65,7 @@ namespace TCPTunnel
             AppDomain.CurrentDomain.ProcessExit += delegate
             {
                 ConsoleTitleAnimator.Stop();
+                WindowsTerminalTheme.TryClearBackground(out _);
                 ConsoleWindowState.StopTracking();
                 ApplicationSettings.CaptureAndSave();
                 ServerInterface.StopServer();
@@ -84,34 +93,37 @@ namespace TCPTunnel
             if (String.IsNullOrEmpty(text))
                 return;
 
-            int left = shift ? Console.CursorLeft + 1 : Console.CursorLeft;
-            if (left >= Console.BufferWidth)
-                left = ConsoleGraphic.Enabled ? 1 : 0;
-            Console.SetCursorPosition(left, Console.CursorTop);
-
-            Console.ForegroundColor = color;
-            foreach (char symbol in text)
+            lock (ConsoleGraphic.borderAnimationLock)
             {
-                Thread.Sleep(sleep / 2);
+                int left = shift ? Console.CursorLeft + 1 : Console.CursorLeft;
+                if (left >= Console.BufferWidth)
+                    left = ConsoleGraphic.Enabled ? 1 : 0;
+                Console.SetCursorPosition(left, Console.CursorTop);
 
-                if (symbol == '\r')
-                    continue;
-
-                if (symbol == '\n')
+                Console.ForegroundColor = color;
+                foreach (char symbol in text)
                 {
-                    Console.WriteLine();
-                    if (ConsoleGraphic.Enabled && Console.CursorLeft == 0)
-                        Console.SetCursorPosition(1, Console.CursorTop);
-                    continue;
+                    Thread.Sleep(sleep / 2);
+
+                    if (symbol == '\r')
+                        continue;
+
+                    if (symbol == '\n')
+                    {
+                        Console.WriteLine();
+                        if (ConsoleGraphic.Enabled && Console.CursorLeft == 0)
+                            Console.SetCursorPosition(1, Console.CursorTop);
+                        continue;
+                    }
+
+                    if (ConsoleGraphic.Enabled && shift && Console.CursorLeft >= Console.WindowWidth - 1)
+                        Console.SetCursorPosition(1, Console.CursorTop + 1);
+
+                    Console.Write(symbol);
+                    Thread.Sleep(sleep / 2);
                 }
-
-                if (ConsoleGraphic.Enabled && shift && Console.CursorLeft >= Console.WindowWidth - 1)
-                    Console.SetCursorPosition(1, Console.CursorTop + 1);
-
-                Console.Write(symbol);
-                Thread.Sleep(sleep / 2);
+                Console.ResetColor();
             }
-            Console.ResetColor();
         }
         public static void bufferClear()
         {

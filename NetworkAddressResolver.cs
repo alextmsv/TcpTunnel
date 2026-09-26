@@ -116,7 +116,7 @@ namespace TCPTunnel
             return address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
         }
 
-        private static string GetLocalIPv4Address()
+        internal static string GetLocalIPv4Address()
         {
             try
             {

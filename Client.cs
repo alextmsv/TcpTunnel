@@ -48,6 +48,7 @@ namespace TCPTunnel
         public TcpClient TcpClient => (connection as TcpChatConnection)?.Client;
         public Stream Stream { get; }
         internal string ObservedIpAddress => connection.RemoteIpAddress?.ToString() ?? String.Empty;
+        internal ChatTransport Transport => connection.Transport;
         public string IpAddress { get; set; }
         public string Nickname { get; set; }
         public bool IsAuthenticated { get; set; }

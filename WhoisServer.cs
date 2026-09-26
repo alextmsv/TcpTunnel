@@ -20,6 +20,12 @@ namespace TCPTunnel
                 sender.Diagnostics.SetSize(width, height);
                 return;
             }
+            if (sender.Diagnostics.Supported && sender.Transport == ChatTransport.Bluetooth &&
+                WhoisProtocol.TrySignal(message, out int signal))
+            {
+                sender.Diagnostics.SetSignal(signal);
+                return;
+            }
             if (!sender.TryConsumeControlToken()) return;
             if (message == WhoisProtocol.Hello)
             {
@@ -53,10 +59,17 @@ namespace TCPTunnel
                 publicUnavailable = !ServerInterface.DisplayAddressIsPublic;
                 address = publicUnavailable ? "" : ServerInterface.DisplayAddress;
             }
+            string transport = target.Transport switch
+            {
+                ChatTransport.Bluetooth => WhoisProtocol.TransportBluetooth,
+                ChatTransport.Local => WhoisProtocol.TransportLocal,
+                _ => WhoisProtocol.TransportTcp
+            };
             return new WhoisInfo(target.Nickname, address, publicUnavailable, target.Diagnostics.PingMilliseconds,
                 size.Width, size.Height, hasSnake ? snake.Enabled : null, snake.Paused,
                 hasSnake ? snake.DelayMilliseconds : 75, hasSnake ? (int)snake.Color : 10,
-                hasSnake ? snake.Glyph : '-', target.Diagnostics.Messages);
+                hasSnake ? snake.Glyph : '-', target.Diagnostics.Messages,
+                transport, target.Transport == ChatTransport.Bluetooth ? target.Diagnostics.SignalDbm : null);
         }
 
         internal static async Task HeartbeatAsync(Client client, CancellationToken token)

@@ -32,7 +32,7 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
-| 📦 | Lightweight EXE | A native bootstrapper keeps the distributable close to the original size and opens the official .NET 8 download page when the runtime is missing. |
+| 📦 | Two single-file builds | `TCPTunnel.exe` uses the installed .NET 8 Runtime and downloads its installer when it is missing; `TCPTunnel-selfcontained.exe` needs nothing installed. |
 | 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. **(Testing)** |
 
 ## Recent updates
@@ -48,7 +48,12 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 
 ### [Download latest TCPTunnel release version](https://github.com/alextmsv/TcpTunnel/releases/latest)
 
-Attention! TCPTunnel **above** v1.3.0 requires [.NET 8.0 **desktop runtime**](https://dotnet.microsoft.com/download/dotnet/8.0) installed!
+Each release has two executables:
+
+| File | Size | Requirements |
+|---|---|---|
+| `TCPTunnel.exe` | ~25 MB | [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64). If it is missing, the browser downloads the installer and the window waits for a key press. |
+| `TCPTunnel-selfcontained.exe` | ~40 MB | Nothing — .NET is built in. |
 
 ### Host a chat
 
@@ -119,7 +124,13 @@ In ConsoleGraphics settings, Up/Down select a row and Left/Right move backward/f
 
 Classic console profiles store outer window width/height in pixels and maximized state. Windows Terminal owns its viewport: TCPTunnel preserves that geometry instead of forcing the old startup size. Restoring the outer Terminal window in pixels and reporting its pixel size in `/whois` are not yet supported.
 
-Bluetooth and Mesh are still under development. The standalone `tests/BluetoothProbe` checks local Windows API capabilities and provides host/scan/connect modes for a future two-device unpaired transfer test. Only local capability and software checks have run so far. The application uses a shared stream layer, tested with TCP and named pipes; Bluetooth is not yet selectable in its menus.
+### Bluetooth (testing)
+
+**Create server** now opens hub options: `Public WWW hub [ <- ] LAN-only hub`, with `[ BT ]` for a Bluetooth-only hub and a separate Bluetooth checkbox for WWW/LAN hubs. A Bluetooth hub advertises a BLE beacon and accepts RFCOMM connections without pairing; TCP and Bluetooth participants share one chat. If Windows blocks BLE advertising (`AllowAdvertising`), TCPTunnel asks for administrator rights once and enables it.
+
+**Connect to server** offers a Bluetooth search first. Found hubs are listed by signal strength with the owner, access mode and participant count. For Bluetooth participants `/whois` and `/status` show the signal level (reported by the client from the hub's beacon) instead of IP and ping.
+
+LAN-only hubs skip port mapping and accept TCP only from on-link subnets of this computer. A router that rewrites external sources into local addresses cannot be distinguished by the hub. Mesh relaying is not implemented yet.
 
 ### Protocol limits
 
@@ -174,13 +185,13 @@ If other people cannot connect, check the following:
 
 ## Requirements
 
-- Windows 10 or newer
+- Windows 10 or newer (Bluetooth requires Windows 10 1809 or newer)
 
-Official lightweight builds require the [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). The native launcher checks this before starting managed code and automatically opens the official download page when a compatible x64 runtime is unavailable.
+`TCPTunnel.exe` requires the [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64); the Desktop Runtime is not needed. Its native launcher checks this before starting managed code. When the runtime is missing, it downloads the official installer in the browser and waits for a key press so the message stays readable. `TCPTunnel-selfcontained.exe` includes .NET and has no requirements.
 
-Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or a newer SDK capable of targeting `net8.0-windows`.
+Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or a newer SDK capable of targeting `net8.0-windows10.0.19041.0`.
 
-Creating the lightweight release EXE also requires Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. A normal Debug or Release build of the managed project only requires the .NET SDK.
+Creating `TCPTunnel.exe` also requires Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. `TCPTunnel-selfcontained.exe` and normal Debug/Release builds only require the .NET SDK.
 
 ## Building from source
 
@@ -189,7 +200,7 @@ Creating the lightweight release EXE also requires Visual Studio Build Tools wit
 1. Open `TCPTunnel.sln`.
 2. Select the **Release** configuration.
 3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd> to compile and debug the project.
-4. Open a terminal in the project directory and run `dotnet msbuild -t:PublishLite -p:Configuration=Release` to create the distributable executable.
+4. Open a terminal in the project directory and run `dotnet msbuild -t:PublishLite -p:Configuration=Release` and `dotnet msbuild -t:PublishSelfContained -p:Configuration=Release` to create both release executables.
 
 
    or just go [releases](https://github.com/alextmsv/TcpTunnel/releases/latest) lol
@@ -199,20 +210,20 @@ Creating the lightweight release EXE also requires Visual Studio Build Tools wit
 ```powershell
 dotnet restore .\TCPTunnel.sln
 dotnet build .\TCPTunnel.sln -c Release
-dotnet msbuild .\TCPTunnel.csproj `
-  -t:PublishLite `
-  -p:Configuration=Release
+.\build-lite.ps1 -Configuration Release
+.\build-selfcontained.ps1 -Configuration Release
 ```
 
-The distributable executable is created under:
+Both release executables are created under:
 
 ```text
 bin\Release\net8.0-windows\win-x64\publish\TCPTunnel.exe
+bin\Release\net8.0-windows\win-x64\publish\TCPTunnel-selfcontained.exe
 ```
 
-Only that executable needs to be distributed. On first launch it extracts its small managed payload under `%LocalAppData%\TCPTunnel\runtime`, then hosts it inside the original `TCPTunnel.exe` process. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
+Each is a complete single file. `TCPTunnel.exe` extracts its managed payload under `%LocalAppData%\TCPTunnel\runtime` on first launch, then hosts it inside the original process. `TCPTunnel-selfcontained.exe` is a standard compressed .NET single-file build that runs its self-test during the build. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
 
-The lite build has a hard **20 MiB** size gate and fails if the final executable exceeds it.
+The lite build has a hard **32 MiB** size gate and the self-contained build a **64 MiB** gate. Most of the size is the official Windows Runtime projection used for Bluetooth.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 

@@ -11,7 +11,7 @@ $payloadDirectory = Join-Path $projectRoot "obj\LitePayload"
 $bootstrapperDirectory = Join-Path $projectRoot "obj\LiteBootstrapper"
 $publishDirectory = Join-Path $projectRoot "bin\$Configuration\net8.0-windows\win-x64\publish"
 $bootstrapperSource = Join-Path $projectRoot "Bootstrapper\TCPTunnel.Bootstrapper.c"
-$maximumLiteBytes = 20 * 1024 * 1024
+$maximumLiteBytes = 32 * 1024 * 1024
 $recordedBaselineBytes = 442368
 
 function Reset-BuildDirectory([string]$Path) {
@@ -51,6 +51,8 @@ $payloadFiles = [ordered]@{
     '102' = Join-Path $payloadDirectory "TCPTunnel.deps.json"
     '103' = Join-Path $payloadDirectory "TCPTunnel.runtimeconfig.json"
     '104' = Join-Path $payloadDirectory "SharpOpenNat.dll"
+    '106' = Join-Path $payloadDirectory "Microsoft.Windows.SDK.NET.dll"
+    '107' = Join-Path $payloadDirectory "WinRT.Runtime.dll"
 }
 foreach ($payloadFile in $payloadFiles.Values) {
     if (-not (Test-Path -LiteralPath $payloadFile -PathType Leaf)) {
@@ -84,7 +86,9 @@ $resourceText = @(
     '102 RCDATA "' + (ConvertTo-RcPath $payloadFiles['102']) + '"',
     '103 RCDATA "' + (ConvertTo-RcPath $payloadFiles['103']) + '"',
     '104 RCDATA "' + (ConvertTo-RcPath $payloadFiles['104']) + '"',
-    '105 RCDATA "' + (ConvertTo-RcPath $payloadIdFile) + '"'
+    '105 RCDATA "' + (ConvertTo-RcPath $payloadIdFile) + '"',
+    '106 RCDATA "' + (ConvertTo-RcPath $payloadFiles['106']) + '"',
+    '107 RCDATA "' + (ConvertTo-RcPath $payloadFiles['107']) + '"'
 ) -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($resourceFile, $resourceText, [System.Text.Encoding]::Unicode)
 
@@ -124,7 +128,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $stagedResult = Get-Item -LiteralPath $stagedExecutable
 if ($stagedResult.Length -gt $maximumLiteBytes) {
-    throw ("Lite executable exceeds the hard 20 MiB limit: {0:N0} > {1:N0} bytes." -f $stagedResult.Length, $maximumLiteBytes)
+    throw ("Lite executable exceeds the hard 32 MiB limit: {0:N0} > {1:N0} bytes." -f $stagedResult.Length, $maximumLiteBytes)
 }
 Copy-Item -LiteralPath $stagedExecutable -Destination $outputExecutable -Force
 

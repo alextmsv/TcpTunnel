@@ -18,6 +18,8 @@ namespace TCPTunnel
 
         public static void SetCaption(string value, bool animate)
         {
+            // Terminal's tab title is UI outside the console surface; keep it stable.
+            animate = animate && ConsoleWindowState.ClassicWindow != IntPtr.Zero;
             lock (stateLock)
             {
                 caption = value ?? String.Empty;

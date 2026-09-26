@@ -21,6 +21,10 @@ namespace TCPTunnel
         public ConsoleColor BorderColor = ConsoleColor.Magenta;
         public ConsoleColor CornerColor = ConsoleColor.Blue;
         public ConsoleColor SelectionColor = ConsoleColor.Cyan;
+        public bool SelectionCustomColorEnabled;
+        public int SelectionCustomRgb = 0x2E7DE0;
+        public BackgroundColorMode BackgroundMode = BackgroundColorMode.Off;
+        public int BackgroundCustomRgb = 0x101828;
         public MenuSelectionStyle SelectionStyle = MenuSelectionStyle.Fill;
         public ConsoleColor MenuTextColor = ConsoleColor.White;
         public ConsoleColor IncomingColor = ConsoleColor.Green;
@@ -48,6 +52,90 @@ namespace TCPTunnel
 
         public static AppProfile Current { get; private set; } = new AppProfile();
         public static string PendingProfileNickname { get; private set; }
+        internal static bool ProfileWasAutoLoaded { get; private set; }
+        internal sealed record SavedProfile(string Path, string Nickname, ConsoleColor SnakeColor, DateTime ModifiedUtc);
+
+        internal static List<SavedProfile> GetSavedProfiles(string directory = null)
+        {
+            directory ??= GetStorageDirectory();
+            var profiles = new List<SavedProfile>();
+            if (!Directory.Exists(directory)) return profiles;
+            try
+            {
+                foreach (string path in Directory.GetFiles(directory, "*.cfg"))
+                {
+                    if (String.Equals(Path.GetFileName(path), PreferencesFileName, StringComparison.OrdinalIgnoreCase)) continue;
+                    try
+                    {
+                        AppProfile profile = ParseProfile(ReadFile(path), LoadEmbeddedDefaults());
+                        if (NetWorker.IsNicknameValid(profile.Nickname))
+                            profiles.Add(new SavedProfile(Path.GetFullPath(path), profile.Nickname, profile.SnakeColor, File.GetLastWriteTimeUtc(path)));
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+            profiles.Sort((a, b) => {
+                int order = b.ModifiedUtc.CompareTo(a.ModifiedUtc);
+                return order != 0 ? order : StringComparer.OrdinalIgnoreCase.Compare(a.Path, b.Path);
+            });
+            return profiles;
+        }
+
+        internal static bool SelectSavedProfile(SavedProfile selected, bool remember, bool clear, out string error)
+        {
+            lock (sync)
+            {
+                error = null;
+                try
+                {
+                    AppProfile profile = LoadEmbeddedDefaults();
+                    string[] selectedLines = Array.Empty<string>();
+                    if (selected != null)
+                    {
+                        string path = Path.GetFullPath(selected.Path);
+                        if (!String.Equals(Path.GetDirectoryName(path), Path.GetFullPath(GetStorageDirectory()), StringComparison.OrdinalIgnoreCase))
+                            throw new IOException("Invalid profile directory.");
+                        selectedLines = File.ReadAllLines(path, Utf8);
+                        profile = ParseProfile(ParseLines(selectedLines), profile);
+                        if (!NetWorker.IsNicknameValid(profile.Nickname)) throw new IOException("Invalid profile nickname.");
+                    }
+                    string savedPath = selected == null ? null : GetProfilePath(profile.Nickname);
+                    Directory.CreateDirectory(GetStorageDirectory());
+                    if (savedPath != null)
+                        WriteFileAtomic(savedPath, MergeProfileLines(selectedLines, Serialize(profile), false));
+                    if (clear) ClearProfileFiles(GetStorageDirectory(), savedPath);
+                    Current = profile;
+                    alwaysImport = remember;
+                    lastProfileNickname = selected == null ? String.Empty : profile.Nickname;
+                    PendingProfileNickname = null;
+                    NetWorker.nickname = profile.Nickname;
+                    ApplyCurrent();
+                    WriteFileAtomic(GetPreferencesPath(), new[]
+                    {
+                        "lastProfile=" + EncodeText(lastProfileNickname),
+                        "alwaysImport=" + alwaysImport
+                    });
+                    return true;
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                { error = ex.Message; return false; }
+            }
+        }
+
+        internal static void ClearProfileFiles(string directory, string keepPath = null)
+        {
+            string root = Path.GetFullPath(directory);
+            if (!Directory.Exists(root)) return;
+            foreach (string file in Directory.GetFiles(root, "*.cfg", SearchOption.TopDirectoryOnly))
+            {
+                string full = Path.GetFullPath(file);
+                if (!String.Equals(Path.GetDirectoryName(full), root, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Invalid profile directory.");
+                if (keepPath != null && String.Equals(full, Path.GetFullPath(keepPath), StringComparison.OrdinalIgnoreCase)) continue;
+                File.Delete(full);
+            }
+        }
         public static string LastHost => String.IsNullOrWhiteSpace(Current.LastHost) ? "localhost" : Current.LastHost;
         public static int LastPort => Current.LastPort >= 1 && Current.LastPort <= 65535 ? Current.LastPort : 9091;
 
@@ -56,6 +144,8 @@ namespace TCPTunnel
             lock (sync)
             {
                 Current = LoadEmbeddedDefaults();
+                ProfileWasAutoLoaded = false;
+                PendingProfileNickname = null;
                 Dictionary<string, string> preferences = ReadFile(GetPreferencesPath());
                 string encodedNickname;
                 if (preferences.TryGetValue("lastProfile", out encodedNickname))
@@ -67,9 +157,17 @@ namespace TCPTunnel
                 if (NetWorker.IsNicknameValid(lastProfileNickname) && ProfileExists(lastProfileNickname))
                 {
                     if (alwaysImport)
+                    {
                         Current = LoadProfile(lastProfileNickname, Current);
+                        ProfileWasAutoLoaded = NetWorker.IsNicknameValid(Current.Nickname);
+                    }
                     else
                         PendingProfileNickname = lastProfileNickname;
+                }
+                if (!ProfileWasAutoLoaded && PendingProfileNickname == null)
+                {
+                    var profiles = GetSavedProfiles();
+                    if (profiles.Count > 0) PendingProfileNickname = profiles[0].Nickname;
                 }
                 ApplyCurrent();
             }
@@ -128,6 +226,12 @@ namespace TCPTunnel
                 Current.BorderColor = defaults.BorderColor;
                 Current.CornerColor = defaults.CornerColor;
                 Current.SelectionColor = defaults.SelectionColor;
+                Current.SelectionCustomColorEnabled = defaults.SelectionCustomColorEnabled;
+                Current.SelectionCustomRgb = defaults.SelectionCustomRgb;
+                if (Current.BackgroundMode == BackgroundColorMode.WindowsTerminal)
+                    WindowsTerminalTheme.TryClearBackground(out _);
+                Current.BackgroundMode = defaults.BackgroundMode;
+                Current.BackgroundCustomRgb = defaults.BackgroundCustomRgb;
                 Current.SelectionStyle = defaults.SelectionStyle;
                 Current.MenuTextColor = defaults.MenuTextColor;
                 Current.IncomingColor = defaults.IncomingColor;
@@ -165,6 +269,10 @@ namespace TCPTunnel
             profile.Language = AppLanguage.English;
             profile.CornerColor = ConsoleColor.DarkBlue;
             profile.SelectionColor = ConsoleColor.White;
+            profile.SelectionCustomColorEnabled = true;
+            profile.SelectionCustomRgb = 0x2E7DE0;
+            profile.BackgroundMode = BackgroundColorMode.WindowsTerminal;
+            profile.BackgroundCustomRgb = 0x101828;
             profile.IncomingColor = ConsoleColor.Green;
             profile.IncomingTextColor = ConsoleColor.DarkGreen;
             profile.OutgoingColor = ConsoleColor.Cyan;
@@ -188,6 +296,10 @@ namespace TCPTunnel
                 roundTrip.BorderColor == profile.BorderColor &&
                 roundTrip.CornerColor == profile.CornerColor &&
                 roundTrip.SelectionColor == profile.SelectionColor &&
+                roundTrip.SelectionCustomColorEnabled == profile.SelectionCustomColorEnabled &&
+                roundTrip.SelectionCustomRgb == profile.SelectionCustomRgb &&
+                roundTrip.BackgroundMode == profile.BackgroundMode &&
+                roundTrip.BackgroundCustomRgb == profile.BackgroundCustomRgb &&
                 roundTrip.MenuTextColor == profile.MenuTextColor &&
                 roundTrip.IncomingColor == profile.IncomingColor &&
                 roundTrip.IncomingTextColor == profile.IncomingTextColor &&
@@ -225,6 +337,10 @@ namespace TCPTunnel
                     ConsoleTheme.Border == roundTrip.BorderColor &&
                     ConsoleTheme.Corners == roundTrip.CornerColor &&
                     ConsoleTheme.SelectionBackground == roundTrip.SelectionColor &&
+                    ConsoleTheme.SelectionUsesCustomColor == roundTrip.SelectionCustomColorEnabled &&
+                    ConsoleTheme.SelectionCustomRgb == roundTrip.SelectionCustomRgb &&
+                    ConsoleTheme.BackgroundMode == roundTrip.BackgroundMode &&
+                    ConsoleTheme.BackgroundCustomRgb == roundTrip.BackgroundCustomRgb &&
                     ConsoleTheme.MenuText == roundTrip.MenuTextColor &&
                     ConsoleTheme.IncomingMarker == roundTrip.IncomingColor &&
                     ConsoleTheme.IncomingText == roundTrip.IncomingTextColor &&
@@ -277,6 +393,10 @@ namespace TCPTunnel
             Current.BorderColor = ConsoleTheme.Border;
             Current.CornerColor = ConsoleTheme.Corners;
             Current.SelectionColor = ConsoleTheme.SelectionBackground;
+            Current.SelectionCustomColorEnabled = ConsoleTheme.SelectionUsesCustomColor;
+            Current.SelectionCustomRgb = ConsoleTheme.SelectionCustomRgb;
+            Current.BackgroundMode = ConsoleTheme.BackgroundMode;
+            Current.BackgroundCustomRgb = ConsoleTheme.BackgroundCustomRgb;
             Current.SelectionStyle = ConsoleTheme.SelectionStyle;
             Current.MenuTextColor = ConsoleTheme.MenuText;
             Current.IncomingColor = ConsoleTheme.IncomingMarker;
@@ -298,6 +418,12 @@ namespace TCPTunnel
             ConsoleTheme.Border = Current.BorderColor;
             ConsoleTheme.Corners = Current.CornerColor;
             ConsoleTheme.SelectionBackground = Current.SelectionColor;
+            if (Current.SelectionCustomColorEnabled)
+                ConsoleTheme.SetCustomSelectionColor(Current.SelectionCustomRgb);
+            else
+                ConsoleTheme.ClearCustomSelectionColor();
+            ConsoleTheme.BackgroundMode = Current.BackgroundMode;
+            ConsoleTheme.BackgroundCustomRgb = Current.BackgroundCustomRgb;
             ConsoleTheme.SelectionStyle = Current.SelectionStyle;
             ConsoleTheme.MenuText = Current.MenuTextColor;
             ConsoleTheme.IncomingMarker = Current.IncomingColor;
@@ -388,9 +514,24 @@ namespace TCPTunnel
             profile.BorderColor = ReadColor(values, "borderColor", profile.BorderColor, true);
             profile.CornerColor = ReadColor(values, "cornerColor", profile.CornerColor);
             profile.SelectionColor = ReadColor(values, "selectionColor", profile.SelectionColor);
+            if (values.TryGetValue("selectionCustomColorEnabled", out value) && Boolean.TryParse(value, out flag))
+                profile.SelectionCustomColorEnabled = flag;
+            if (values.TryGetValue("selectionCustomRgb", out value) &&
+                Int32.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out number) &&
+                number >= 0 && number <= 0xFFFFFF)
+                profile.SelectionCustomRgb = number;
             if (values.TryGetValue("selectionStyle", out value) &&
                 Enum.TryParse(value, true, out MenuSelectionStyle style) && Enum.IsDefined(typeof(MenuSelectionStyle), style))
                 profile.SelectionStyle = style;
+            if (values.TryGetValue("backgroundMode", out var legacyBackground) && (legacyBackground == "ContentArea" || legacyBackground == "1"))
+                profile.BackgroundMode = BackgroundColorMode.WindowsTerminal;
+            if (values.TryGetValue("backgroundMode", out value) &&
+                Enum.TryParse(value, true, out BackgroundColorMode backgroundMode) && Enum.IsDefined(typeof(BackgroundColorMode), backgroundMode))
+                profile.BackgroundMode = backgroundMode;
+            if (values.TryGetValue("backgroundCustomRgb", out value) &&
+                Int32.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out number) &&
+                number >= 0 && number <= 0xFFFFFF)
+                profile.BackgroundCustomRgb = number;
             profile.MenuTextColor = ReadColor(values, "menuTextColor", profile.MenuTextColor);
             profile.IncomingColor = ReadColor(values, "incomingColor", profile.IncomingColor);
             profile.IncomingTextColor = ReadColor(values, "incomingTextColor", profile.IncomingTextColor);
@@ -425,6 +566,10 @@ namespace TCPTunnel
                 "snakeDelay=" + profile.SnakeDelay, "snakeColor=" + (int)profile.SnakeColor,
                 "snakeGlyph=" + EncodeText(profile.SnakeGlyph.ToString()), "borderColor=" + (int)profile.BorderColor,
                 "cornerColor=" + (int)profile.CornerColor, "selectionColor=" + (int)profile.SelectionColor,
+                "selectionCustomColorEnabled=" + profile.SelectionCustomColorEnabled,
+                "selectionCustomRgb=" + profile.SelectionCustomRgb.ToString("X6", CultureInfo.InvariantCulture),
+                "backgroundMode=" + profile.BackgroundMode,
+                "backgroundCustomRgb=" + profile.BackgroundCustomRgb.ToString("X6", CultureInfo.InvariantCulture),
                 "selectionStyle=" + profile.SelectionStyle,
                 "menuTextColor=" + (int)profile.MenuTextColor,
                 "incomingColor=" + (int)profile.IncomingColor, "incomingTextColor=" + (int)profile.IncomingTextColor,
@@ -445,6 +590,10 @@ namespace TCPTunnel
                 SnakeDelay = value.SnakeDelay, SnakeColor = value.SnakeColor, SnakeGlyph = value.SnakeGlyph,
                 BorderColor = value.BorderColor, CornerColor = value.CornerColor,
                 SelectionColor = value.SelectionColor, MenuTextColor = value.MenuTextColor,
+                SelectionCustomColorEnabled = value.SelectionCustomColorEnabled,
+                SelectionCustomRgb = value.SelectionCustomRgb,
+                BackgroundMode = value.BackgroundMode,
+                BackgroundCustomRgb = value.BackgroundCustomRgb,
                 SelectionStyle = value.SelectionStyle,
                 IncomingColor = value.IncomingColor,
                 IncomingTextColor = value.IncomingTextColor,

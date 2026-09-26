@@ -31,11 +31,15 @@ namespace TCPTunnel
             string path)
         {
             WriteSystemChatLine(Lang.Get(TextId.PreparingAnimation));
+            TransferProgress upload = null;
             try
             {
                 AnimatedImagePacket packet = Task.Run(() => ImageCodec.PrepareAnimation(path))
                     .GetAwaiter().GetResult();
                 string transferId = ImageAnimationProtocol.CreateTransferId();
+                upload = new TransferProgress(
+                    percent => Lang.Get(TextId.AnimationUploading, percent),
+                    Lang.Get(TextId.AnimationUploadingPlain));
                 MessageProtocol.WriteStringAsync(
                     stream,
                     ImageAnimationProtocol.CreateClientBegin(transferId, packet),
@@ -50,11 +54,14 @@ namespace TCPTunnel
                             packet.FrameDelays[index],
                             packet.PackedFrames[index]),
                         cancellationToken).GetAwaiter().GetResult();
+                    upload.Report(index + 1, packet.FrameCount);
                 }
                 MessageProtocol.WriteStringAsync(
                     stream,
                     ImageAnimationProtocol.CreateClientEnd(transferId),
                     cancellationToken).GetAwaiter().GetResult();
+                upload.Remove();
+                upload = null;
 
                 int viewportWidth;
                 int usableRows;
@@ -75,6 +82,76 @@ namespace TCPTunnel
             catch (Exception ex) when (ex is InvalidDataException || ex is FormatException)
             {
                 WriteSystemChatLine(Lang.Get(TextId.ImageDecodeFailed));
+            }
+            finally
+            {
+                upload?.Remove();
+            }
+        }
+
+        private sealed class TransferProgress
+        {
+            private const long RevealMilliseconds = 250;
+            private const long RedrawMilliseconds = 200;
+            private readonly Func<int, string> format;
+            private readonly string plainText;
+            private readonly long started = Stopwatch.GetTimestamp();
+            private ChatHistoryEntry entry;
+            private bool plainShown;
+            private int percent;
+            private long lastRedraw;
+
+            internal TransferProgress(Func<int, string> format, string plainText)
+            {
+                this.format = format;
+                this.plainText = plainText;
+            }
+
+            internal void Report(int done, int total)
+            {
+                long now = Stopwatch.GetTimestamp();
+                lock (consoleLock)
+                {
+                    percent = total <= 0 ? 0 : Math.Clamp(done * 100 / total, 0, 100);
+                    if (plainShown)
+                        return;
+                    if (entry == null)
+                    {
+                        if (Stopwatch.GetElapsedTime(started, now).TotalMilliseconds < RevealMilliseconds)
+                            return;
+                        if (!ConsoleGraphic.Enabled)
+                        {
+                            plainShown = true;
+                            WriteSystemChatLine(plainText);
+                            return;
+                        }
+                        entry = new ChatHistoryEntry(() => format(percent));
+                        chatHistory.Add(entry);
+                        TrimChatHistoryLocked();
+                        lastRedraw = now;
+                        if (EnsureConsoleGeometryLocked() && !RedrawChatLayoutLocked())
+                            MarkConsoleResizePendingLocked();
+                        return;
+                    }
+                    if (!ConsoleGraphic.Enabled || Stopwatch.GetElapsedTime(lastRedraw, now).TotalMilliseconds < RedrawMilliseconds)
+                        return;
+                    lastRedraw = now;
+                    if (!RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                }
+            }
+
+            internal void Remove()
+            {
+                lock (consoleLock)
+                {
+                    if (entry == null)
+                        return;
+                    bool removed = chatHistory.Remove(entry);
+                    entry = null;
+                    if (removed && ConsoleGraphic.Enabled && !RedrawChatLayoutLocked())
+                        MarkConsoleResizePendingLocked();
+                }
             }
         }
 
@@ -137,15 +214,21 @@ namespace TCPTunnel
         {
             nextDelayMilliseconds = 100;
             if (consoleResizePending)
+            {
+                FinishMentionBlinkLocked();
                 return HasVisibleAnimationTargetLocked();
+            }
 
             ConsoleGraphic.ConsoleGeometry geometry;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out geometry) ||
                 !hasKnownConsoleGeometry || !geometry.IsSameAs(knownConsoleGeometry))
             {
+                FinishMentionBlinkLocked();
                 MarkConsoleResizePendingLocked();
                 return HasVisibleAnimationTargetLocked();
             }
+
+            bool blinkActive = TickMentionBlinkLocked(ref nextDelayMilliseconds);
 
             int previousLeft;
             int previousTop;
@@ -157,7 +240,7 @@ namespace TCPTunnel
             catch (IOException)
             {
                 MarkConsoleResizePendingLocked();
-                return false;
+                return blinkActive;
             }
 
             bool found = false;
@@ -181,7 +264,7 @@ namespace TCPTunnel
                     char[] row = entry.AnimationRowBuffer;
                     if (row == null || row.Length != entry.AnimationVisibleWidth)
                         row = entry.AnimationRowBuffer = new char[entry.AnimationVisibleWidth];
-                    Console.ForegroundColor = ConsoleColor.Gray;
+                    ConsoleColor rowBackground = Console.BackgroundColor;
                     for (int visibleRow = 0; visibleRow < entry.AnimationVisibleRows; visibleRow++)
                     {
                         int top = entry.AnimationTop + visibleRow;
@@ -192,9 +275,8 @@ namespace TCPTunnel
                         int left = ConsoleGraphic.Enabled ? ConsoleGraphic.ContentLeft : 0;
                         if (left < 0 || left + row.Length > Console.BufferWidth)
                             continue;
-                        Console.SetCursorPosition(left, top);
                         ImageRenderer.FillAsciiRow(entry.Animation, frame, sourceRow, row);
-                        Console.Write(row);
+                        ConsoleGraphic.WriteContentRow(left, top, row, row.Length, ConsoleColor.Gray, rowBackground);
                     }
                     entry.LastRenderedAnimationFrame = frame;
                 }
@@ -209,7 +291,7 @@ namespace TCPTunnel
                 MarkConsoleResizePendingLocked();
             }
             nextDelayMilliseconds = Math.Max(5, Math.Min(100, nextDelayMilliseconds));
-            return found;
+            return found || blinkActive;
         }
 
         private static bool HasVisibleAnimationTargetLocked()

@@ -27,9 +27,20 @@ namespace TCPTunnel
             if (info == null) { WriteSystemChatLine(Lang.Get(TextId.WhoisNotFound)); return; }
             string unavailable = Lang.Get(TextId.StatusUnavailable);
             WriteSystemChatLine("@" + info.Nickname);
-            WriteSystemChatLine(info.PublicAddressUnavailable ? Lang.Get(TextId.WhoisPublicIpUnavailable) :
-                "IP: " + (String.IsNullOrEmpty(info.Address) ? unavailable : info.Address));
-            WriteSystemChatLine(info.PingMilliseconds.HasValue ? Lang.Get(TextId.WhoisPing, info.PingMilliseconds) : Lang.Get(TextId.WhoisPingUnavailable));
+            if (info.Transport == WhoisProtocol.TransportBluetooth)
+            {
+                WriteSystemChatLine(Lang.Get(TextId.WhoisViaBluetooth));
+                WriteSystemChatLine(info.SignalDbm.HasValue ? Lang.Get(TextId.WhoisSignal, info.SignalDbm) : Lang.Get(TextId.WhoisSignalUnavailable));
+            }
+            else
+            {
+                if (info.Transport == WhoisProtocol.TransportLocal)
+                    WriteSystemChatLine(Lang.Get(TextId.WhoisLocalOwner));
+                else
+                    WriteSystemChatLine(info.PublicAddressUnavailable ? Lang.Get(TextId.WhoisPublicIpUnavailable) :
+                        "IP: " + (String.IsNullOrEmpty(info.Address) ? unavailable : info.Address));
+                WriteSystemChatLine(info.PingMilliseconds.HasValue ? Lang.Get(TextId.WhoisPing, info.PingMilliseconds) : Lang.Get(TextId.WhoisPingUnavailable));
+            }
             WriteSystemChatLine(Lang.Get(TextId.WhoisWindow, info.WindowWidth > 0 && info.WindowHeight > 0 ? info.WindowWidth + "×" + info.WindowHeight : unavailable));
             if (info.SnakeEnabled.HasValue)
             {
@@ -87,6 +98,7 @@ namespace TCPTunnel
                     catch (OperationCanceledException error) { throw new System.IO.IOException("Window metadata send timed out.", error); }
                     sentSize = size;
                 }
+                ReportBluetoothSignal(now);
             }
             if (now < nextWhoisBlink) return;
             nextWhoisBlink = now + 400;

@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <RootNamespace>TCPTunnel</RootNamespace>
     <AssemblyName>TCPTunnel</AssemblyName>
     <AssemblyTitle>TCPTunnel</AssemblyTitle>
@@ -32,6 +33,10 @@
 
   <Target Name="PublishLite">
     <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-lite.ps1&quot; -Configuration $(Configuration)" />
+  </Target>
+
+  <Target Name="PublishSelfContained">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-selfcontained.ps1&quot; -Configuration $(Configuration)" />
   </Target>
 
 </Project>
