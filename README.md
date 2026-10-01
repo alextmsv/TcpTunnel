@@ -2,7 +2,7 @@
 
 # TCPTunnel
 
-### A lightweight multiplayer TCP chat for Windows cmd terminals
+### A lightweight multiplayer TCP/Bluetooth chat for Windows cmd terminals
 
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows)](#requirements)
