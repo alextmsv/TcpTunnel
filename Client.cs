@@ -44,7 +44,6 @@ namespace TCPTunnel
                 }, Close);
         }
 
-        // Kept for existing TCP callers; transport-neutral code uses Stream/ObservedIpAddress.
         public TcpClient TcpClient => (connection as TcpChatConnection)?.Client;
         public Stream Stream { get; }
         internal string ObservedIpAddress => connection.RemoteIpAddress?.ToString() ?? String.Empty;
@@ -140,7 +139,7 @@ namespace TCPTunnel
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
 
-            return sendQueue.Enqueue(new[] { MessageProtocol.EncodeFrame(message) }, cancellationToken);
+            return SendEncodedAsync(EncodedFrameBatch.Encode(new[] { message }), cancellationToken);
         }
 
         internal Task SendBatchAsync(IReadOnlyList<string> messages, CancellationToken cancellationToken)
@@ -150,11 +149,11 @@ namespace TCPTunnel
             if (messages.Count == 0)
                 return Task.CompletedTask;
 
-            var frames = new byte[messages.Count][];
-            for (int index = 0; index < messages.Count; index++)
-                frames[index] = MessageProtocol.EncodeFrame(messages[index] ?? throw new ArgumentException("A message batch cannot contain null values.", nameof(messages)));
-            return sendQueue.Enqueue(frames, cancellationToken);
+            return SendEncodedAsync(EncodedFrameBatch.Encode(messages), cancellationToken);
         }
+
+        internal Task SendEncodedAsync(EncodedFrameBatch frames, CancellationToken cancellationToken) =>
+            sendQueue.Enqueue(frames, cancellationToken);
 
         public void Close()
         {

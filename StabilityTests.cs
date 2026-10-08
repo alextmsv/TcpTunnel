@@ -20,6 +20,7 @@ namespace TCPTunnel
                        ImageRenderer.RunSelfTest() &&
                        ImageRenderer.RunAnimationSelfTest() &&
                        ImageViewer.RunAnimationSelfTest() &&
+                       RuntimeRegressionTests.RunAsync().GetAwaiter().GetResult() &&
                        RunLoopbackBroadcastStressAsync().GetAwaiter().GetResult() &&
                        RunAuthenticatedSessionStressAsync().GetAwaiter().GetResult();
             }

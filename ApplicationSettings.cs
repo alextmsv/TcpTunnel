@@ -378,7 +378,6 @@ namespace TCPTunnel
             }
             catch
             {
-                // Settings persistence must never interrupt a chat session.
             }
         }
 

@@ -75,7 +75,7 @@ The Hub runs in the background of the same process, while the host connects loca
 
 ### Share an image
 
-Drag exactly one `.jpg`, `.jpeg`, `.png`, or `.gif` file from Explorer into the chat input and press <kbd>Enter</kbd>. TCPTunnel decodes it locally, removes all container metadata, and sends a small 4-bit grayscale raster—not the original file, filename, or path. Paths containing spaces and quoted paths are supported.
+Drag exactly one `.jpg`, `.jpeg`, `.png`, or `.gif` file from Explorer into the chat input and press <kbd>Enter</kbd>. TCPTunnel decodes it locally, removes all container metadata, and sends a small 4-bit grayscale raster—not the original file, filename, or path. Paths containing spaces, Unicode characters or apostrophes are supported, including quoted paths and PowerShell-escaped apostrophes.
 
 `.webp` follows the same flow when a compatible Windows Imaging Component codec is installed. If the codec is unavailable, the error remains local and the chat connection stays active.
 
@@ -140,6 +140,8 @@ LAN-only hubs skip port mapping and accept TCP only from on-link subnets of this
 - Maximum image control frame: **8 KiB**
 - Maximum GIF: **500 frames**, **60 seconds**, **90–2,000 ms** per composed frame
 - Authentication timeout: **7 seconds**
+- Incomplete frame timeout: **30 seconds** from its first byte; idle chats keep waiting normally
+- Incomplete GIF inactivity timeout: **180 seconds**; abandoned transfers release their partial frames without closing the chat
 - Rate limit: **5 messages/second**, with a short burst allowance
 - Image rate limit: **1 image per 5 seconds**, with a burst of 2
 - Nickname length: **3–20 characters**, unique per Hub
@@ -214,6 +216,12 @@ dotnet build .\TCPTunnel.sln -c Release
 .\build-selfcontained.ps1 -Configuration Release
 ```
 
+The publish scripts locate an installed .NET SDK even when `dotnet` is absent from
+`PATH`, including a local SDK under `.dotnet` or `obj\audit-tools\dotnet`.
+Use `-DotNetPath "C:\path\to\dotnet.exe"` to select an SDK explicitly.
+The lite script also accepts `-VisualStudioPath "C:\path\to\BuildTools"` and
+`-WindowsSdkPath "C:\path\to\Windows Kits\10"` for custom native tool installations.
+
 Both release executables are created under:
 
 ```text
@@ -232,6 +240,10 @@ Verify a copied executable at any time:
 ```powershell
 .\TCPTunnel.exe -self-test
 ```
+
+Run `TCPTunnel.exe -stress-test` to additionally check session cleanup across Hub restarts,
+partial-frame deadlines, abandoned GIF transfers, shared send-buffer ownership, queue limits,
+slow-recipient isolation, and ordered loopback broadcasts.
 
 Expected output:
 

@@ -1,11 +1,21 @@
 param(
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$DotNetPath,
+    [string]$VisualStudioPath,
+    [string]$WindowsSdkPath
 )
 
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $projectRoot 'build-tools.ps1')
+$dotnetExecutable = Resolve-DotNetSdk $projectRoot $DotNetPath
+Write-Host "Using .NET SDK: $dotnetExecutable"
+$vcvars = Resolve-VisualCppToolchain $projectRoot $VisualStudioPath
+Write-Host "Using Visual C++ tools: $vcvars"
+$windowsBuildSdk = Resolve-WindowsBuildSdk $projectRoot $WindowsSdkPath
+Write-Host "Using Windows SDK: $($windowsBuildSdk.Include)"
 $projectFile = Join-Path $projectRoot "TCPTunnel.csproj"
 $payloadDirectory = Join-Path $projectRoot "obj\LitePayload"
 $bootstrapperDirectory = Join-Path $projectRoot "obj\LiteBootstrapper"
@@ -35,7 +45,7 @@ Reset-BuildDirectory $payloadDirectory
 Reset-BuildDirectory $bootstrapperDirectory
 New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
 
-& dotnet publish $projectFile `
+& $dotnetExecutable publish $projectFile `
     -c $Configuration `
     -r win-x64 `
     --self-contained false `
@@ -92,19 +102,6 @@ $resourceText = @(
 ) -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($resourceFile, $resourceText, [System.Text.Encoding]::Unicode)
 
-$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-    throw "Visual Studio Installer (vswhere.exe) was not found. Install Desktop development with C++."
-}
-$visualStudioPath = (& $vswhere -latest -products * -property installationPath).Trim()
-if ([String]::IsNullOrWhiteSpace($visualStudioPath)) {
-    throw "Visual Studio was not found. Install Desktop development with C++."
-}
-$vcvars = Join-Path $visualStudioPath "VC\Auxiliary\Build\vcvars64.bat"
-if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) {
-    throw "The Visual C++ x64 toolchain was not found. Install Desktop development with C++."
-}
-
 $resourceObject = Join-Path $bootstrapperDirectory "TCPTunnel.Resources.res"
 $objectFile = Join-Path $bootstrapperDirectory "TCPTunnel.Bootstrapper.obj"
 $outputExecutable = Join-Path $publishDirectory "TCPTunnel.exe"
@@ -114,6 +111,9 @@ $nativeCommands = @"
 @echo off
 call "$vcvars" >nul
 if errorlevel 1 exit /b %errorlevel%
+set "PATH=$($windowsBuildSdk.Bin);%PATH%"
+set "INCLUDE=$($windowsBuildSdk.Include)\ucrt;$($windowsBuildSdk.Include)\shared;$($windowsBuildSdk.Include)\um;%INCLUDE%"
+set "LIB=$($windowsBuildSdk.UmLib);$($windowsBuildSdk.UcrtLib);%LIB%"
 rc.exe /nologo /fo"$resourceObject" "$resourceFile"
 if errorlevel 1 exit /b %errorlevel%
 cl.exe /nologo /O1 /MT /W4 /WX /utf-8 /DUNICODE /D_UNICODE /Fo"$objectFile" /Fe"$stagedExecutable" "$bootstrapperSource" "$resourceObject" /link /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA shell32.lib advapi32.lib user32.lib

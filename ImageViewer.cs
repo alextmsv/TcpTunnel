@@ -223,8 +223,6 @@ namespace TCPTunnel
                 ex is InvalidOperationException ||
                 ex is System.IO.IOException)
             {
-                // Terminal hosts differ in how much geometry control they allow.
-                // Rendering still uses whatever viewport is available.
             }
         }
 

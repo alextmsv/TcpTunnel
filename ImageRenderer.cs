@@ -186,8 +186,7 @@ namespace TCPTunnel
                 int mapped = Math.Max(0,
                     ((cumulative - firstCount) * 15 + range / 2) / range);
 
-                // Histogram stretching may push the brightest shade of a dark
-                // image to level 15. Reserve the blank glyph for actual white.
+                // WARNING: Allowing stretched dark shades to use the blank glyph erases image detail.
                 if (level < 15 && mapped >= 15)
                     mapped = 14;
                 toneMap[level] = (byte)mapped;

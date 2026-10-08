@@ -52,7 +52,7 @@ namespace TCPTunnel
             {
                 info = JsonSerializer.Deserialize<WhoisInfo>(parts[2]);
                 if (info != null && !ValidInfo(info)) { info = null; return false; }
-                id = parts[1]; return true; // JSON null explicitly means not found.
+                id = parts[1]; return true;
             }
             catch (JsonException) { return false; }
         }

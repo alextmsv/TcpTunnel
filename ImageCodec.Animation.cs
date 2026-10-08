@@ -314,9 +314,7 @@ namespace TCPTunnel
                         else
                         {
                             SkipGifSubBlocks(stream);
-                            // A graphic control extension also applies to a plain-text
-                            // rendering block. Do not accidentally carry its timing and
-                            // disposal metadata into the following image frame.
+                            // WARNING: Plain-text GIF blocks consume control metadata; carrying it forward corrupts frame timing and disposal.
                             if (label == 0x01)
                             {
                                 pendingDelay = ImageAnimationProtocol.MinFrameDelayMilliseconds;

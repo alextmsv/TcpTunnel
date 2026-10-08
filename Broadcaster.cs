@@ -129,9 +129,10 @@ namespace TCPTunnel
             try
             {
                 Client[] recipients = GetAuthenticatedClients(sender);
+                EncodedFrameBatch frames = recipients.Length == 0 ? null : EncodedFrameBatch.Encode(messages);
                 deliveries = new Task[recipients.Length];
                 for (int index = 0; index < recipients.Length; index++)
-                    deliveries[index] = SendBatchSafelyAsync(recipients[index], messages, cancellationToken);
+                    deliveries[index] = SendSafelyAsync(recipients[index], frames, cancellationToken);
             }
             finally
             {
@@ -213,8 +214,9 @@ namespace TCPTunnel
                         .ToArray();
                 }
 
+                EncodedFrameBatch frames = recipients.Length == 0 ? null : EncodedFrameBatch.Encode(new[] { message });
                 deliveries = recipients
-                    .Select(recipient => SendSafelyAsync(recipient, message, cancellationToken))
+                    .Select(recipient => SendSafelyAsync(recipient, frames, cancellationToken))
                     .ToArray();
             }
             finally
@@ -244,26 +246,11 @@ namespace TCPTunnel
                 client.Close();
         }
 
-        private async Task SendSafelyAsync(Client recipient, string message, CancellationToken cancellationToken)
+        private async Task SendSafelyAsync(Client recipient, EncodedFrameBatch frames, CancellationToken cancellationToken)
         {
             try
             {
-                await recipient.SendAsync(message, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                RemoveClient(recipient);
-            }
-        }
-
-        private async Task SendBatchSafelyAsync(
-            Client recipient,
-            IReadOnlyList<string> messages,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                await recipient.SendBatchAsync(messages, cancellationToken).ConfigureAwait(false);
+                await recipient.SendEncodedAsync(frames, cancellationToken).ConfigureAwait(false);
             }
             catch
             {

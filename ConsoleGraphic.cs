@@ -145,7 +145,6 @@ namespace TCPTunnel
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetConsoleMode(IntPtr handle, uint mode);
 
-        // Keep full-screen menu redraws out of Terminal's scrollback; chat uses the main buffer.
         internal const bool MenuScreenSupported = false;
 
         internal static void SetMenuScreen(bool active)
@@ -229,7 +228,7 @@ namespace TCPTunnel
             }
         }
 
-        // Caller must ResetColor() before and after - never mix with ForegroundColor/BackgroundColor=.
+        // WARNING: Mixing this with console color properties without ResetColor() corrupts subsequent colors.
         internal static void WriteCustomColor(int? foregroundRgb, int? backgroundRgb)
         {
             if (!foregroundRgb.HasValue && !backgroundRgb.HasValue)
@@ -411,7 +410,6 @@ namespace TCPTunnel
                             Console.Write(option[characterIndex]);
                             Console.ResetColor();
                         }
-                        // Allow local and remote snakes to render between text animation frames.
                         if (animate && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow && !IsInputWaiting())
                         {
                             Thread.Sleep(animationDelay);
@@ -913,8 +911,7 @@ namespace TCPTunnel
                 Console.SetWindowSize(width, height);
                 Console.SetWindowPosition(0, 0);
 
-                // Широкий buffer создаёт горизонтальную прокрутку и визуально
-                // сдвигает рамку относительно окна. Высоту оставляем для истории.
+                // WARNING: A buffer wider than the viewport adds horizontal scrolling and shifts the frame.
                 if (Console.BufferWidth != Console.WindowWidth)
                 {
                     Console.SetBufferSize(
@@ -924,8 +921,6 @@ namespace TCPTunnel
             }
             catch (Exception)
             {
-                // Некоторые терминалы не разрешают менять геометрию программно.
-                // В этом случае интерфейс использует доступный размер окна.
             }
         }
 
@@ -1401,8 +1396,7 @@ namespace TCPTunnel
             int perimeterLength,
             long now)
         {
-            // Step must stay proportional to real elapsed time - Client.TryGetSnakeProfile on the
-            // hub extrapolates other participants' step with this same formula.
+            // WARNING: Changing this timing formula without Client.TryGetSnakeProfile desynchronizes remote snakes.
             long delayTicks = Math.Max(1L, Stopwatch.Frequency * delayMilliseconds / 1000L);
             long elapsedTicks = now - lastMoveTimestamp;
             if (elapsedTicks < delayTicks)

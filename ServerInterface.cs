@@ -16,7 +16,7 @@ namespace TCPTunnel
         private static BluetoothHubHost bluetoothHost;
         private static CancellationTokenSource serverCancellation;
         private static Task acceptTask = Task.CompletedTask;
-        private static readonly List<Task> clientTasks = new List<Task>();
+        private static readonly HashSet<Task> clientTasks = new HashSet<Task>();
         private static Task portMappingLifecycle = Task.CompletedTask;
         private static volatile bool isRunning;
         private static volatile string displayAddress = "127.0.0.1";
@@ -350,7 +350,8 @@ namespace TCPTunnel
                 listener = server;
                 bluetooth = bluetoothHost;
                 accepting = acceptTask;
-                clientsToDrain = clientTasks.ToArray();
+                clientsToDrain = new Task[clientTasks.Count];
+                clientTasks.CopyTo(clientsToDrain);
                 clientTasks.Clear();
                 serverCancellation = null;
                 server = null;
@@ -406,6 +407,15 @@ namespace TCPTunnel
                 else
                     broadcaster.RemoveClient(client);
             }
+            // WARNING: Register removal after insertion; remove only this task, or an old session can affect a restarted Hub.
+            _ = RetireClientTaskAsync(clientTask);
+        }
+
+        private static async Task RetireClientTaskAsync(Task clientTask)
+        {
+            try { await clientTask.ConfigureAwait(false); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            finally { lock (serverLock) clientTasks.Remove(clientTask); }
         }
 
         private static async Task AcceptLoopAsync(TcpListener listener, bool lanOnly, CancellationToken cancellationToken)
@@ -435,11 +445,9 @@ namespace TCPTunnel
             }
             catch (ObjectDisposedException)
             {
-                // Listener закрыт при остановке Hub.
             }
             catch (SocketException)
             {
-                // Listener закрыт либо сеть стала недоступна.
             }
         }
 

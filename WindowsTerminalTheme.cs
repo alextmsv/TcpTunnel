@@ -170,7 +170,7 @@ namespace TCPTunnel
                 catch (IOException ex) { error = ex.Message; return false; }
             }
         }
-        // Store only the values this feature owns; restoring must not discard other Terminal edits.
+        // WARNING: Restoring unrelated Terminal values discards the user's edits made during the session.
         internal sealed class SavedAppearance
         {
             public string ProfileId { get; set; }
@@ -231,7 +231,6 @@ namespace TCPTunnel
             return json.Substring(0, start) + replacement + json.Substring(start + original.Length);
         }
 
-        // Edit raw JSON tokens to preserve comments, formatting and unrelated settings.
         internal static string EditProperty(string json, string property, string value)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(json);

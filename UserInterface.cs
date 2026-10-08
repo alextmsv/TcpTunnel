@@ -163,12 +163,13 @@ namespace TCPTunnel
             var animationAssembler = new ImageAnimationAssembler();
             TransferProgress download = null;
             int downloadFrames = 0;
+            Action expireDownload = () => { download?.Remove(); download = null; };
             Func<string, CancellationToken, Task> sendControl = (frame, token) => MessageProtocol.WriteStringAsync(stream, frame, token);
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    string message = await MessageProtocol.ReadStringAsync(stream, cancellationToken).ConfigureAwait(false);
+                    string message = await animationAssembler.ReadNextAsync(stream, cancellationToken, expireDownload).ConfigureAwait(false);
                     if (await status.Whois.ReceiveAsync(message, sendControl, ReceiveWhoisNotice, cancellationToken).ConfigureAwait(false)) continue;
                     if (status.Receive(message)) continue;
                     if (ImageAnimationProtocol.IsAnimationControlMessage(message))
@@ -250,7 +251,6 @@ namespace TCPTunnel
             }
             catch (OperationCanceledException)
             {
-                // Сеанс завершён локальным пользователем.
             }
             catch (EndOfStreamException)
             {
@@ -270,11 +270,9 @@ namespace TCPTunnel
             }
             catch (IOException)
             {
-                // Соединение оборвалось.
             }
             catch (SocketException)
             {
-                // Соединение оборвалось.
             }
             finally
             {
@@ -724,11 +722,7 @@ namespace TCPTunnel
                 int totalRows = ConsoleGraphic.Enabled
                     ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1)
                     : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight) - 1);
-                // Image size must not depend on whether the input editor happens
-                // to be active at the instant the packet is frozen. The sender is
-                // between input loops after Enter while receivers normally still
-                // have an active prompt, which previously produced different sizes
-                // for identical console geometry.
+                // WARNING: Using current input-editor state here gives senders and receivers different image sizes.
                 usableRows = GetStableImageUsableRows(totalRows);
                 historyVersion = imageHistoryVersion;
             }
@@ -1649,9 +1643,7 @@ namespace TCPTunnel
                 if (!consoleReady)
                     return;
 
-                // MoveBufferArea is not reliable when messages and the editable input
-                // line update the same graphical rectangle in quick succession. The CG
-                // view is therefore rendered as one fixed snapshot from chatHistory.
+                // WARNING: MoveBufferArea races with editable-input redraws and corrupts the graphical chat layout.
                 if (ConsoleGraphic.Enabled)
                 {
                     ISet<ChatHistoryEntry> animatedEntries = null;
@@ -1951,9 +1943,6 @@ namespace TCPTunnel
             if (!hasDirectionMarker)
                 return false;
 
-            // A real chat frame always has the form ">>> [nickname]: text".
-            // System protocol lines also use the direction marker for readability,
-            // but do not have a nickname envelope and must not inherit chat colors.
             return message.Length <= 4 || message[4] != '[' ||
                    message.IndexOf("]: ", 4, StringComparison.Ordinal) < 0;
         }

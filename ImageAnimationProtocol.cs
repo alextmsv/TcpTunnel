@@ -1,6 +1,9 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace TCPTunnel
 {
@@ -59,9 +62,8 @@ namespace TCPTunnel
 
     internal sealed class ImageAnimationAssembler
     {
-        // A fully packed animation is still below 1 MiB, but slow WAN links can
-        // legitimately need more than 15 seconds to deliver it.
         private const int TransferTimeoutMilliseconds = 180_000;
+        private readonly TimeSpan transferTimeout;
         private string transferId;
         private string sender;
         private int width;
@@ -73,7 +75,45 @@ namespace TCPTunnel
         private int durationMilliseconds;
         private long deadlineTimestamp;
 
-        public bool IsActive => transferId != null;
+        internal ImageAnimationAssembler(TimeSpan? transferTimeout = null)
+        {
+            this.transferTimeout = transferTimeout ?? TimeSpan.FromMilliseconds(TransferTimeoutMilliseconds);
+            if (this.transferTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(transferTimeout));
+        }
+
+        public bool IsActive
+        {
+            get
+            {
+                if (transferId != null && System.Diagnostics.Stopwatch.GetTimestamp() >= deadlineTimestamp)
+                    Reset();
+                return transferId != null;
+            }
+        }
+
+        // WARNING: Reuse the pending read after expiry; a second read can steal bytes and corrupt framing.
+        internal async Task<string> ReadNextAsync(Stream stream, CancellationToken token, Action onTransferExpired = null)
+        {
+            bool wasActive = transferId != null;
+            bool active = IsActive;
+            if (wasActive && !active) onTransferExpired?.Invoke();
+            Task<string> read = MessageProtocol.ReadStringAsync(stream, token);
+            if (active)
+            {
+                double remainingSeconds = (double)(deadlineTimestamp - System.Diagnostics.Stopwatch.GetTimestamp()) /
+                    System.Diagnostics.Stopwatch.Frequency;
+                try
+                {
+                    return await read.WaitAsync(TimeSpan.FromSeconds(Math.Max(0, remainingSeconds)), token).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    Reset();
+                    onTransferExpired?.Invoke();
+                }
+            }
+            return await read.ConfigureAwait(false);
+        }
 
         public ImageAnimationAssemblyResult Accept(
             ImageAnimationControlFrame control,
@@ -108,7 +148,7 @@ namespace TCPTunnel
                 nextFrame = 0;
                 durationMilliseconds = 0;
                 deadlineTimestamp = now +
-                    System.Diagnostics.Stopwatch.Frequency * TransferTimeoutMilliseconds / 1000L;
+                    (long)(System.Diagnostics.Stopwatch.Frequency * transferTimeout.TotalSeconds);
                 return ImageAnimationAssemblyResult.Accepted;
             }
 
@@ -119,7 +159,7 @@ namespace TCPTunnel
             }
 
             deadlineTimestamp = now +
-                System.Diagnostics.Stopwatch.Frequency * TransferTimeoutMilliseconds / 1000L;
+                (long)(System.Diagnostics.Stopwatch.Frequency * transferTimeout.TotalSeconds);
             if (control.Kind == ImageAnimationControlKind.Frame)
             {
                 int expectedLength = ImageProtocol.GetPackedLength(width, height);
@@ -180,8 +220,6 @@ namespace TCPTunnel
     {
         public const int MaxFrames = 500;
         public const int MaxDurationMilliseconds = 60_000;
-        // Browsers commonly clamp extremely small GIF delays. Microsoft's WIC
-        // sample uses 90 ms as a compatibility floor, which also bounds redraw CPU.
         public const ushort MinFrameDelayMilliseconds = 90;
         public const ushort MaxFrameDelayMilliseconds = 2_000;
         public const int MaxControlFrameCharacters = 8192;

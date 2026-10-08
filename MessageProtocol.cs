@@ -12,7 +12,7 @@ namespace TCPTunnel
     {
         public const int MaxFrameBytes = 16 * 1024;
         public const int MaxMessageCharacters = 2000;
-        private static readonly TimeSpan PayloadReadTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan FrameReadTimeout = TimeSpan.FromSeconds(30);
 
         private static readonly System.Text.Encoding Utf8 = new System.Text.UTF8Encoding(false, true);
         private static readonly ConditionalWeakTable<Stream, SemaphoreSlim> writeLocks = new();
@@ -33,25 +33,29 @@ namespace TCPTunnel
         public static Task<string> ReadStringAsync(NetworkStream stream, CancellationToken cancellationToken) =>
             ReadStringAsync((Stream)stream, cancellationToken);
 
-        internal static async Task<string> ReadStringAsync(Stream stream, CancellationToken cancellationToken)
-        {
-            int byteCount = await Read7BitEncodedIntAsync(stream, cancellationToken).ConfigureAwait(false);
-            if (byteCount < 0 || byteCount > MaxFrameBytes)
-                throw new InvalidDataException(Lang.Get(TextId.FrameTooLarge, byteCount, MaxFrameBytes));
-            if (byteCount == 0)
-                return String.Empty;
+        internal static Task<string> ReadStringAsync(Stream stream, CancellationToken cancellationToken) =>
+            ReadStringAsync(stream, cancellationToken, FrameReadTimeout);
 
-            byte[] payload = ArrayPool<byte>.Shared.Rent(byteCount);
-            using var payloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            payloadCancellation.CancelAfter(PayloadReadTimeout);
+        internal static async Task<string> ReadStringAsync(Stream stream, CancellationToken cancellationToken, TimeSpan frameReadTimeout)
+        {
+            if (frameReadTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(frameReadTimeout));
+            byte[] payload = null;
+            using var frameCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
+                int byteCount = await Read7BitEncodedIntAsync(stream, frameCancellation, frameReadTimeout).ConfigureAwait(false);
+                if (byteCount < 0 || byteCount > MaxFrameBytes)
+                    throw new InvalidDataException(Lang.Get(TextId.FrameTooLarge, byteCount, MaxFrameBytes));
+                if (byteCount == 0)
+                    return String.Empty;
+
+                payload = ArrayPool<byte>.Shared.Rent(byteCount);
                 int offset = 0;
                 while (offset < byteCount)
                 {
                     int read = await stream.ReadAsync(
                         payload.AsMemory(offset, byteCount - offset),
-                        payloadCancellation.Token).ConfigureAwait(false);
+                        frameCancellation.Token).ConfigureAwait(false);
                     if (read == 0)
                         throw new EndOfStreamException();
                     offset += read;
@@ -65,7 +69,7 @@ namespace TCPTunnel
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(payload);
+                if (payload != null) ArrayPool<byte>.Shared.Return(payload);
             }
         }
 
@@ -108,7 +112,7 @@ namespace TCPTunnel
             }
         }
 
-        private static async Task<int> Read7BitEncodedIntAsync(Stream stream, CancellationToken cancellationToken)
+        private static async Task<int> Read7BitEncodedIntAsync(Stream stream, CancellationTokenSource frameCancellation, TimeSpan frameReadTimeout)
         {
             byte[] singleByte = ArrayPool<byte>.Shared.Rent(1);
             try
@@ -118,9 +122,12 @@ namespace TCPTunnel
                 {
                     int read = await stream.ReadAsync(
                         singleByte.AsMemory(0, 1),
-                        cancellationToken).ConfigureAwait(false);
+                        frameCancellation.Token).ConfigureAwait(false);
                     if (read == 0)
                         throw new EndOfStreamException();
+
+                    // WARNING: Starting the deadline before the first byte disconnects healthy idle chats.
+                    if (shift == 0) frameCancellation.CancelAfter(frameReadTimeout);
 
                     byte current = singleByte[0];
                     if (shift == 28 && (current & 0xF0) != 0)

@@ -991,7 +991,6 @@ namespace TCPTunnel
                     ? Lang.Get(TextId.CustomColor) : GetSnakeColorName(ConsoleTheme.SelectionBackground));
                 choices[8] = Lang.Get(TextId.CustomSelectionColor) + ": " + (ConsoleTheme.SelectionUsesCustomColor
                     ? "#" + ConsoleTheme.SelectionCustomRgb.ToString("X6", CultureInfo.InvariantCulture) : Lang.Get(TextId.CustomColorOff));
-                // Only the border is absent in plain mode; message and selection colors still apply.
                 int firstOption = ConsoleGraphic.Enabled ? 0 : 1;
                 var choice = ReadOptionsChoice(
                     Lang.Get(TextId.InterfaceColors),

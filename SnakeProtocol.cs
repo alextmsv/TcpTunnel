@@ -240,6 +240,5 @@ namespace TCPTunnel
         {
             return ((step % ReferencePerimeterLength) + ReferencePerimeterLength) % ReferencePerimeterLength;
         }
-        // Ну и херня аххахахахахахах, зато забавная
     }
 }

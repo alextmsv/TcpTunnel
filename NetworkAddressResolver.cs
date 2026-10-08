@@ -50,15 +50,12 @@ namespace TCPTunnel
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                // Определение публичного адреса превысило собственный короткий таймаут.
             }
             catch (HttpRequestException)
             {
-                // Интернет или внешний сервис определения адреса недоступен.
             }
             catch (SocketException)
             {
-                // DNS либо сетевой маршрут недоступен.
             }
 
             cancellationToken.ThrowIfCancellationRequested();

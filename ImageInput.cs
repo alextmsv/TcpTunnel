@@ -28,11 +28,11 @@ namespace TCPTunnel
                 return ImageInputKind.NotImage;
             if (candidate.StartsWith("& ", StringComparison.Ordinal))
                 candidate = candidate.Substring(2).TrimStart();
-            if (candidate.Length >= 2 &&
-                ((candidate[0] == '"' && candidate[candidate.Length - 1] == '"') ||
-                 (candidate[0] == '\'' && candidate[candidate.Length - 1] == '\'')))
+            if (candidate.Length >= 2 && candidate[0] == '"' && candidate[candidate.Length - 1] == '"')
                 candidate = candidate.Substring(1, candidate.Length - 2);
-            else if (candidate.IndexOf('"') >= 0 || candidate.IndexOf('\'') >= 0)
+            else if (candidate.Length >= 2 && candidate[0] == '\'' && candidate[candidate.Length - 1] == '\'')
+                candidate = candidate.Substring(1, candidate.Length - 2).Replace("''", "'");
+            else if (candidate.IndexOf('"') >= 0)
                 return ImageInputKind.NotImage;
 
             Uri fileUri;
@@ -74,6 +74,7 @@ namespace TCPTunnel
                 value.Equals(@"C:\x\a.jpeg", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\x\a.png", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\my images\a.png", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals(@"C:\x\someone's.png", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\x\a.webp", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals(@"C:\x\a.gif", StringComparison.OrdinalIgnoreCase);
             string path;
@@ -86,6 +87,10 @@ namespace TCPTunnel
                    Classify("'C:\\x\\a.gif'", exists, out path) == ImageInputKind.AnimatedGif &&
                    Classify("& \"C:\\x\\a.gif\"", exists, out path) == ImageInputKind.AnimatedGif &&
                    Classify("file:///C:/x/a.gif", exists, out path) == ImageInputKind.AnimatedGif &&
+                   Classify(@"C:\x\someone's.png", exists, out path) == ImageInputKind.SupportedImage &&
+                   Classify("\"C:\\x\\someone's.png\"", exists, out path) == ImageInputKind.SupportedImage &&
+                   Classify("& 'C:\\x\\someone''s.png'", exists, out path) == ImageInputKind.SupportedImage &&
+                   Classify("file:///C:/x/someone%27s.png", exists, out path) == ImageInputKind.SupportedImage &&
                    Classify(@"C:\missing.png", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"/ping C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&
                    Classify(@"look C:\x\a.jpg", exists, out path) == ImageInputKind.NotImage &&

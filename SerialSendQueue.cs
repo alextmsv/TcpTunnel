@@ -15,11 +15,11 @@ namespace TCPTunnel
     {
         private sealed class Item
         {
-            internal readonly byte[][] Frames;
+            internal readonly EncodedFrameBatch Frames;
             internal readonly int Bytes;
             internal readonly CancellationToken Token;
             internal readonly TaskCompletionSource Result = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            internal Item(byte[][] frames, int bytes, CancellationToken token) { Frames = frames; Bytes = bytes; Token = token; }
+            internal Item(EncodedFrameBatch frames, CancellationToken token) { Frames = frames; Bytes = frames.ByteCount; Token = token; }
         }
 
         private readonly Func<ReadOnlyMemory<byte>, CancellationToken, Task> writer;
@@ -50,19 +50,14 @@ namespace TCPTunnel
 
         internal Task Completion => completion.Task;
 
-        internal Task Enqueue(IReadOnlyList<byte[]> frames, CancellationToken cancellationToken)
+        internal Task Enqueue(IReadOnlyList<byte[]> frames, CancellationToken cancellationToken) =>
+            Enqueue(EncodedFrameBatch.Snapshot(frames), cancellationToken);
+
+        internal Task Enqueue(EncodedFrameBatch frames, CancellationToken cancellationToken)
         {
             if (frames == null) throw new ArgumentNullException(nameof(frames));
             if (frames.Count == 0) return Task.CompletedTask;
-            var snapshot = new byte[frames.Count][];
-            long total = 0;
-            for (int i = 0; i < frames.Count; i++)
-            {
-                if (frames[i] == null) throw new ArgumentException("A frame cannot be null.", nameof(frames));
-                snapshot[i] = (byte[])frames[i].Clone(); total += snapshot[i].Length;
-            }
-            if (total > Int32.MaxValue) throw new InvalidDataException("Send batch is too large.");
-            var item = new Item(snapshot, (int)total, cancellationToken);
+            var item = new Item(frames, cancellationToken);
             lock (gate)
             {
                 if (closed) { item.Result.TrySetException(new ObjectDisposedException(nameof(SerialSendQueue))); return item.Result.Task; }
@@ -97,11 +92,11 @@ namespace TCPTunnel
                         if (item.Token.IsCancellationRequested) item.Result.TrySetCanceled(item.Token);
                         else
                         {
-                            foreach (byte[] frame in item.Frames)
+                            for (int index = 0; index < item.Frames.Count; index++)
                             {
                                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(item.Token, stop.Token);
                                 linked.CancelAfter(timeout);
-                                await writer(frame, linked.Token).WaitAsync(timeout, linked.Token).ConfigureAwait(false);
+                                await writer(item.Frames[index], linked.Token).WaitAsync(timeout, linked.Token).ConfigureAwait(false);
                             }
                             item.Result.TrySetResult();
                         }

@@ -10,7 +10,7 @@ namespace TCPTunnel
     internal static partial class ImageViewer
     {
         private const string AnimationViewerArgument = "--animation-view";
-        private const int AnimationFileMagic = 0x31414754; // TGA1
+        private const int AnimationFileMagic = 0x31414754;
         private const int MaxAnimationFileBytes = 8 * 1024 * 1024;
 
         public static bool Launch(AnimatedImagePacket packet)
@@ -60,7 +60,7 @@ namespace TCPTunnel
 
                 CloseHandle(process.hThread);
                 CloseHandle(process.hProcess);
-                path = null; // The viewer owns and deletes it now.
+                path = null; // WARNING: The viewer now owns this file; caller cleanup would delete it before the viewer reads it.
                 return true;
             }
             catch (Exception ex) when (

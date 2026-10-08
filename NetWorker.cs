@@ -350,7 +350,7 @@ namespace TCPTunnel
 
                 while (!serverCancellationToken.IsCancellationRequested)
                 {
-                    string message = await MessageProtocol.ReadStringAsync(client.Stream, serverCancellationToken).ConfigureAwait(false);
+                    string message = await animationAssembler.ReadNextAsync(client.Stream, serverCancellationToken).ConfigureAwait(false);
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
@@ -496,31 +496,24 @@ namespace TCPTunnel
             }
             catch (OperationCanceledException)
             {
-                // Hub остановлен или истёк таймаут авторизации.
             }
             catch (EndOfStreamException)
             {
-                // Клиент штатно закрыл соединение.
             }
             catch (IOException)
             {
-                // Некорректный пакет или оборванное соединение.
             }
             catch (SocketException)
             {
-                // Соединение оборвалось.
             }
             catch (ObjectDisposedException)
             {
-                // Соединение закрыто при остановке Hub.
             }
             catch (TimeoutException)
             {
-                // Клиент не завершил авторизацию вовремя.
             }
             catch (Exception)
             {
-                // Ошибка конкретного клиента не должна останавливать Hub.
             }
             finally
             {

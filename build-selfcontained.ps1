@@ -1,11 +1,15 @@
 param(
     [ValidateSet("Debug", "Release")]
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$DotNetPath
 )
 
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $projectRoot 'build-tools.ps1')
+$dotnetExecutable = Resolve-DotNetSdk $projectRoot $DotNetPath
+Write-Host "Using .NET SDK: $dotnetExecutable"
 $projectFile = Join-Path $projectRoot "TCPTunnel.csproj"
 $stagingDirectory = Join-Path $projectRoot "obj\SelfContainedPublish"
 $publishDirectory = Join-Path $projectRoot "bin\$Configuration\net8.0-windows\win-x64\publish"
@@ -32,7 +36,7 @@ function Reset-BuildDirectory([string]$Path) {
 Reset-BuildDirectory $stagingDirectory
 New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
 
-& dotnet publish $projectFile `
+& $dotnetExecutable publish $projectFile `
     -c $Configuration `
     -r win-x64 `
     --self-contained true `
