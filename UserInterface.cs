@@ -241,7 +241,11 @@ namespace TCPTunnel
                             connected = false;
                             return;
                         }
-                        WriteSystemChatLine(">>> " + localizedSystemMessage);
+                        if (systemKind == SystemMessageKind.SecurityNotice)
+                        {
+                            foreach (string line in localizedSystemMessage.Split('\n')) WriteSystemChatLine(line.TrimEnd('\r'));
+                        }
+                        else WriteSystemChatLine(">>> " + localizedSystemMessage);
                     }
                     else
                     {
@@ -301,6 +305,7 @@ namespace TCPTunnel
             string ip = Console.ReadLine();
             if (String.IsNullOrWhiteSpace(ip))
                 ip = defaultHost;
+            if (ip.StartsWith("tct2:", StringComparison.Ordinal)) return ConnectInvitation(ip);
 
             Program.matrix(Lang.Get(TextId.EnterServerPortSaved, defaultPort));
             string rawPort = Console.ReadLine();
@@ -410,6 +415,8 @@ namespace TCPTunnel
             if (IsNicknameValid(nickname))
                 return true;
 
+            if (NicknamePolicy.IsLegacyProfileName(ApplicationSettings.Current.Nickname))
+                Program.matrix(Lang.Get(TextId.NicknameRules));
             Program.matrix(Lang.Get(TextId.EnterYourNickname));
             nickname = filterNick(Console.ReadLine());
             return IsNicknameValid(nickname);
@@ -450,10 +457,34 @@ namespace TCPTunnel
         private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host, bool localHub = false)
         {
             Stream stream = connection.Stream;
+            string greeting = ReadWithTimeoutAsync(connection, stream, CancellationToken.None).GetAwaiter().GetResult();
+            TCPTunnel.Cryptography.SecureClientBridge secure = null;
+            string secureEndpoint = connection is BluetoothChatConnection bluetooth ? "bt:" + bluetooth.RemoteAddress.ToString("X12") : "tcp:" + host.Trim('[', ']').ToLowerInvariant() + ":" + (remoteEndPoint?.Port ?? ServerInterface.ListeningPort);
+            try
+            {
+                if (greeting.StartsWith("E2E2:", StringComparison.Ordinal))
+                {
+                    secure = TCPTunnel.Cryptography.SecureClientBridge.ConnectAsync(stream, greeting, nickname,
+                        ApplicationSettings.OpenIdentity(), boot => expectedInvitation == null ? TCPTunnel.Cryptography.SecureClientBridge.VerifyTrust(boot, secureEndpoint) : TCPTunnel.Cryptography.SecureClientBridge.TrustVerifiedInvitation(boot, expectedInvitation, secureEndpoint), CancellationToken.None, ConsoleGraphic.WriteContentLine).GetAwaiter().GetResult();
+                    stream = secure.Stream;
+                    greeting = MessageProtocol.ReadStringAsync(stream, CancellationToken.None).GetAwaiter().GetResult();
+                }
+                else if (expectedInvitation != null || (!localHub && !(ServerInterface.IsRunning && remoteEndPoint != null && remoteEndPoint.Port == ServerInterface.ListeningPort && NetworkAddressResolver.IsLoopback(remoteEndPoint.Address)) &&
+                    !Array.Exists(Environment.GetCommandLineArgs(), argument => argument == "--allow-unencrypted")))
+                    throw new IOException(Lang.Current == AppLanguage.Russian ? "Hub не поддерживает E2E. Для явно разрешённого открытого чата запусти TCPTunnel с --allow-unencrypted." : "Hub does not support E2E. Explicitly allow plaintext chat with --allow-unencrypted.");
+                currentE2E = secure != null || (localHub && ServerInterface.SecureHub != null);
+                RunClientSessionCore(connection, stream, greeting, remoteEndPoint, host, localHub);
+            }
+            finally { currentE2E = false; secure?.Dispose(); }
+        }
+
+        private static bool currentE2E;
+        private static void RunClientSessionCore(IChatConnection connection, Stream stream, string greeting, IPEndPoint remoteEndPoint, string host, bool localHub)
+        {
             using (var authCancellation = new CancellationTokenSource())
             {
                 CancellationToken authToken = authCancellation.Token;
-                string authRequest = ReadWithTimeoutAsync(connection, stream, authToken).GetAwaiter().GetResult();
+                string authRequest = greeting;
                 if (!DO_AUTH_MESSAGE.Equals(authRequest, StringComparison.Ordinal))
                     throw new IOException(Lang.Get(TextId.UnknownAuthProtocol));
 
@@ -480,7 +511,7 @@ namespace TCPTunnel
             currentTransport = connection.Transport;
             ConsoleGraphic.ClearRemoteSnakes();
             isLocalHubSession = ServerInterface.IsRunning &&
-                                (localHub ||
+                                (ServerInterface.Options.EndToEndEncryption ? localHub && connection.Transport == ChatTransport.Local : localHub ||
                                  (remoteEndPoint != null &&
                                   remoteEndPoint.Port == ServerInterface.ListeningPort &&
                                   NetworkAddressResolver.IsLoopback(remoteEndPoint.Address)));
@@ -505,6 +536,7 @@ namespace TCPTunnel
                     ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort
                     : remoteEndPoint == null ? host : NetworkAddressResolver.FormatEndpoint(remoteEndPoint);
             WriteSystemChatLine(Lang.Get(TextId.ConnectedCommands, displayedEndpoint));
+            WriteSystemChatLine("E2E: " + (currentE2E ? "TRUE" : "FALSE"));
             if (isLocalHubSession && ServerInterface.Options.UsesPortMapping && !ServerInterface.DisplayAddressIsPublic)
             {
                 WriteSystemChatLine(
@@ -533,6 +565,7 @@ namespace TCPTunnel
                     string message = ReadChatMessage();
                     if (message == null)
                         break;
+                    if (HandleEncryptionCommand(message)) continue;
                     CommandDisposition commandResult = Commands.InitCommand(message, commandContext);
                     if (commandResult == CommandDisposition.EndSession)
                     {
@@ -789,7 +822,7 @@ namespace TCPTunnel
                 return Lang.Get(TextId.AuthNicknameTaken);
 
             if (response != null && response.StartsWith(AUTH_ERROR_MESSAGE + ":", StringComparison.Ordinal))
-                return response.Substring((AUTH_ERROR_MESSAGE + ":").Length).Trim();
+                return Lang.Get(TextId.NicknameRejected);
 
             return Lang.Get(TextId.NicknameRejected);
         }
@@ -2112,16 +2145,7 @@ namespace TCPTunnel
             return ConsoleTheme.SystemText;
         }
 
-        private static string SanitizeForConsole(string message)
-        {
-            if (String.IsNullOrEmpty(message))
-                return String.Empty;
-
-            StringBuilder safe = new StringBuilder(message.Length);
-            foreach (char character in message)
-                safe.Append(Char.IsControl(character) ? ' ' : character);
-            return safe.ToString();
-        }
+        private static string SanitizeForConsole(string message) { return ConsoleText.Safe(message); }
 
         private static void ResetChatSessionLayout()
         {

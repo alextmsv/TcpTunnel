@@ -45,7 +45,9 @@ namespace TCPTunnel
         }
 
         public TcpClient TcpClient => (connection as TcpChatConnection)?.Client;
-        public Stream Stream { get; }
+        public Stream Stream { get; internal set; }
+        internal bool SecureWireEnabled { get; set; }
+        internal bool HideClientIpAddresses { get; } = ServerInterface.Options.HideClientIpAddresses;
         internal string ObservedIpAddress => connection.RemoteIpAddress?.ToString() ?? String.Empty;
         internal ChatTransport Transport => connection.Transport;
         public string IpAddress { get; set; }
@@ -53,6 +55,10 @@ namespace TCPTunnel
         public bool IsAuthenticated { get; set; }
         public bool IsReady { get; internal set; }
         internal bool SupportsHubStatus { get; set; }
+        internal ConnectionAdmission.Lease Admission { get; set; }
+        internal bool PromoteAdmission() => Admission?.Promote() ?? true;
+        internal string AdmissionOrigin => connection.Transport == ChatTransport.Tcp ? "tcp:" + (connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown") :
+            connection is BluetoothChatConnection bluetooth ? "bt:" + bluetooth.RemoteAddress.ToString("X12") : "bt:unknown";
         internal WhoisPeer Diagnostics { get; } = new WhoisPeer();
 
         internal void UpdateSnakeProfile(SnakeProfile profile)
@@ -139,7 +145,7 @@ namespace TCPTunnel
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
 
-            return SendEncodedAsync(EncodedFrameBatch.Encode(new[] { message }), cancellationToken);
+            return SecureWireEnabled ? SendSecureAsync(1, System.Text.Encoding.UTF8.GetBytes(message), cancellationToken) : SendEncodedAsync(EncodedFrameBatch.Encode(new[] { message }), cancellationToken);
         }
 
         internal Task SendBatchAsync(IReadOnlyList<string> messages, CancellationToken cancellationToken)
@@ -155,12 +161,21 @@ namespace TCPTunnel
         internal Task SendEncodedAsync(EncodedFrameBatch frames, CancellationToken cancellationToken) =>
             sendQueue.Enqueue(frames, cancellationToken);
 
+        internal async Task SendSecureAsync(byte kind, byte[] payload, CancellationToken token)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadline.CancelAfter(TimeSpan.FromMinutes(3));
+            await SendEncodedAsync(TCPTunnel.Cryptography.SecureWire.EncodeBatch(kind, payload), deadline.Token).ConfigureAwait(false);
+        }
+
         public void Close()
         {
             if (Interlocked.Exchange(ref closed, 1) != 0)
                 return;
 
             sendQueue.Close();
+            Admission?.Dispose();
+            if (!Object.ReferenceEquals(Stream, connection.Stream)) { try { Stream.Dispose(); } catch { } }
             try { connection.Dispose(); } catch { }
         }
 

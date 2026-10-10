@@ -19,13 +19,15 @@ namespace TCPTunnel
             internal readonly int Bytes;
             internal readonly CancellationToken Token;
             internal readonly TaskCompletionSource Result = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            internal LinkedListNode<Item> Node;
+            internal CancellationTokenRegistration Cancellation;
             internal Item(EncodedFrameBatch frames, CancellationToken token) { Frames = frames; Bytes = frames.ByteCount; Token = token; }
         }
 
         private readonly Func<ReadOnlyMemory<byte>, CancellationToken, Task> writer;
         private readonly Action abort;
         private readonly object gate = new object();
-        private readonly Queue<Item> items = new Queue<Item>();
+        private readonly LinkedList<Item> items = new LinkedList<Item>();
         private readonly SemaphoreSlim signal = new SemaphoreSlim(0);
         private readonly CancellationTokenSource stop = new CancellationTokenSource();
         private readonly TaskCompletionSource completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -57,6 +59,7 @@ namespace TCPTunnel
         {
             if (frames == null) throw new ArgumentNullException(nameof(frames));
             if (frames.Count == 0) return Task.CompletedTask;
+            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
             var item = new Item(frames, cancellationToken);
             lock (gate)
             {
@@ -66,12 +69,25 @@ namespace TCPTunnel
                     var error = new SendQueueFullException(Lang.Get(TextId.ClientNotReceiving));
                     FailLocked(error); item.Result.TrySetException(error); return item.Result.Task;
                 }
-                operations++; bytes += item.Bytes; items.Enqueue(item); signal.Release();
+                operations++; bytes += item.Bytes; item.Node = items.AddLast(item);
+                item.Cancellation = cancellationToken.Register(() => CancelQueued(item));
+                if (item.Node.List == null) item.Cancellation.Unregister();
+                if (signal.CurrentCount == 0) signal.Release();
             }
             return item.Result.Task;
         }
 
         internal void Close() { lock (gate) FailLocked(new ObjectDisposedException(nameof(SerialSendQueue))); }
+
+        private void CancelQueued(Item item)
+        {
+            lock (gate)
+            {
+                if (item.Node?.List == null) return;
+                items.Remove(item.Node); operations--; bytes -= item.Bytes;
+                item.Result.TrySetCanceled(item.Token); item.Cancellation.Unregister();
+            }
+        }
 
         private async Task RunAsync()
         {
@@ -80,13 +96,18 @@ namespace TCPTunnel
                 while (true)
                 {
                     Item item;
-                    lock (gate) item = items.Count == 0 ? null : items.Dequeue();
+                    lock (gate)
+                    {
+                        item = items.First?.Value;
+                        if (item != null) items.RemoveFirst();
+                    }
                     if (item == null)
                     {
                         if (closed) break;
                         await signal.WaitAsync(stop.Token).ConfigureAwait(false);
                         continue;
                     }
+                    item.Cancellation.Dispose();
                     try
                     {
                         if (item.Token.IsCancellationRequested) item.Result.TrySetCanceled(item.Token);
@@ -119,7 +140,11 @@ namespace TCPTunnel
                 stop.Cancel();
                 try { signal.Release(); } catch { }
             }
-            while (items.Count > 0) items.Dequeue().Result.TrySetException(error);
+            while (items.First != null)
+            {
+                Item item = items.First.Value; items.RemoveFirst(); operations--; bytes -= item.Bytes;
+                item.Cancellation.Unregister(); item.Result.TrySetException(error);
+            }
         }
     }
 }

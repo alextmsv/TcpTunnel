@@ -36,17 +36,7 @@ namespace TCPTunnel
 
         public static bool IsNicknameValid(string name)
         {
-            if (String.IsNullOrWhiteSpace(name) || name.Length > 20 || name.Length < 3)
-                return false;
-
-            const string illegalCharacters = @"!@#$%^&*()[]{}+,/\|";
-            foreach (char character in name)
-            {
-                if (Char.IsWhiteSpace(character) || Char.IsControl(character) || illegalCharacters.IndexOf(character) >= 0)
-                    return false;
-            }
-
-            return true;
+            return NicknamePolicy.IsValid(name);
         }
 
         public static string filterNick(string name, bool force = false)
@@ -152,9 +142,7 @@ namespace TCPTunnel
                 return DescribeNatException(ex);
             }
 
-            int[] lifetimes = mapper == PortMapper.Upnp
-                ? new[] { 0, RenewableMappingLifetimeSeconds }
-                : new[] { RenewableMappingLifetimeSeconds };
+            int[] lifetimes = new[] { RenewableMappingLifetimeSeconds };
             string lastError = null;
 
             foreach (int lifetime in lifetimes)
@@ -303,6 +291,12 @@ namespace TCPTunnel
 
         public static async Task ServerClientLoopAsync(Client client, CancellationToken serverCancellationToken)
         {
+            var secureHub = ServerInterface.SecureHub;
+            if (secureHub != null)
+            {
+                await secureHub.RunAsync(client, serverCancellationToken).ConfigureAwait(false);
+                return;
+            }
             bool authenticated = false;
             string authenticatedNickname = null;
             var animationAssembler = new ImageAnimationAssembler();
@@ -327,7 +321,8 @@ namespace TCPTunnel
                         return;
                     }
 
-                    if (!broadcaster.TryReserveNickname(client, requestedNickname))
+                    if ((ServerInterface.IsRunning && client.Transport != ChatTransport.Local && NicknamePolicy.Same(requestedNickname, ServerInterface.AdministratorNickname)) ||
+                        !broadcaster.TryReserveNickname(client, requestedNickname))
                     {
                         await client.SendAsync(AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN", serverCancellationToken).ConfigureAwait(false);
                         return;

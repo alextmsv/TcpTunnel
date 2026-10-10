@@ -211,6 +211,13 @@ namespace TCPTunnel
 
         internal const int VirtualTerminalProcessingFlag = 0x0004;
 
+        internal static void DisableQuickEdit()
+        {
+            if (Console.IsInputRedirected) return;
+            IntPtr input = GetStdHandle(-10);
+            if (GetConsoleMode(input, out uint mode)) SetConsoleMode(input, (mode | 0x0080u) & ~0x0040u);
+        }
+
         internal static bool EnableVirtualTerminalOutput()
         {
             if (consoleOutputHandle == IntPtr.Zero || consoleOutputHandle == invalidHandleValue || Console.IsOutputRedirected)
@@ -1108,20 +1115,7 @@ namespace TCPTunnel
             TrySetContentCursor(ContentLeft, ContentTop);
         }
 
-        private static string SanitizeConsoleText(string message)
-        {
-            if (String.IsNullOrEmpty(message))
-                return String.Empty;
-
-            char[] characters = message.ToCharArray();
-            for (int index = 0; index < characters.Length; index++)
-            {
-                if (Char.IsControl(characters[index]))
-                    characters[index] = ' ';
-            }
-
-            return new string(characters);
-        }
+        private static string SanitizeConsoleText(string message) => ConsoleText.Safe(message);
 
         public static int EnsureContentSpace(int startRow, int requiredRows)
         {
@@ -1179,6 +1173,7 @@ namespace TCPTunnel
 
         public static void WriteContentLine(string message)
         {
+            message = ConsoleText.Safe(message);
             if (!Enabled)
             {
                 Console.WriteLine(message);

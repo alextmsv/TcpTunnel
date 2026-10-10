@@ -50,7 +50,7 @@ namespace TCPTunnel
                 bool nicknameTaken = clients.Any(existing =>
                     existing.IsAuthenticated &&
                     !Object.ReferenceEquals(existing, client) &&
-                    String.Equals(existing.Nickname, nickname, StringComparison.OrdinalIgnoreCase));
+                    NicknamePolicy.Same(existing.Nickname, nickname));
 
                 if (nicknameTaken)
                     return false;
@@ -68,6 +68,7 @@ namespace TCPTunnel
             {
                 if (!clients.Contains(client) || !client.IsAuthenticated || client.IsReady)
                     return false;
+                if (!client.PromoteAdmission()) return false;
                 client.IsReady = true;
                 return true;
             }
@@ -79,6 +80,7 @@ namespace TCPTunnel
             {
                 delivery = Task.CompletedTask;
                 if (!clients.Contains(client) || !client.IsAuthenticated || client.IsReady) return false;
+                if (!client.PromoteAdmission()) return false;
                 string[] roster = clients.Where(other => other.IsReady && !Object.ReferenceEquals(other, client))
                     .Select(other => SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, other.Nickname)).ToArray();
                 delivery = client.SendBatchAsync(roster, token);

@@ -15,10 +15,32 @@ namespace TCPTunnel
                 return;
             }
             Console.OutputEncoding = System.Text.Encoding.UTF8;
+            ConsoleGraphic.DisableQuickEdit();
             ConsoleGraphic.EnableVirtualTerminalOutput();
             if (ImageViewer.TryRun(args))
                 return;
             Lang.ApplyArguments(args);
+            if (Array.Exists(args, argument => argument == "-third-party-notices"))
+            {
+                var assembly = typeof(Program).Assembly;
+                foreach (string resource in assembly.GetManifestResourceNames())
+                {
+                    if (!resource.StartsWith("TCPTunnel.NativeCrypto.", StringComparison.Ordinal)) continue;
+                    using var reader = new System.IO.StreamReader(assembly.GetManifestResourceStream(resource));
+                    Console.WriteLine(resource); Console.WriteLine(reader.ReadToEnd());
+                }
+                return;
+            }
+            if (Array.Exists(args, argument => argument == "-e2e-test"))
+            {
+                bool secureSuccess = TCPTunnel.Cryptography.SecureBoundaryTests.SecureWireBoundsSelfTest().GetAwaiter().GetResult() &&
+                    ImageViewer.PrivateViewerPipeSelfTest().GetAwaiter().GetResult() &&
+                    TCPTunnel.Cryptography.SecureBoundaryTests.SecureProfileAndHubLifecycleSelfTest().GetAwaiter().GetResult() &&
+                    TCPTunnel.Cryptography.SecureIntegrationTests.SecureTcpSelfTest().GetAwaiter().GetResult() && TCPTunnel.Cryptography.SecureIntegrationTests.SecureBluetoothTransportSelfTest().GetAwaiter().GetResult() &&
+                    TCPTunnel.Cryptography.SecureIntegrationTests.SecureMixedTransportSelfTest().GetAwaiter().GetResult();
+                Console.WriteLine(secureSuccess ? "TCPTunnel E2E test: OK" : "TCPTunnel E2E test: FAILED");
+                Environment.ExitCode = secureSuccess ? 0 : 1; return;
+            }
 
             if (Array.Exists(args, argument => String.Equals(argument, "-stress-test", StringComparison.OrdinalIgnoreCase)))
             {

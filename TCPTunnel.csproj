@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <RootNamespace>TCPTunnel</RootNamespace>
     <AssemblyName>TCPTunnel</AssemblyName>
@@ -23,12 +23,18 @@
 
   <ItemGroup>
     <Compile Remove="tests/**/*.cs" />
+    <Compile Remove="CryptoPrototype/**/*.cs" />
+    <None Include="obj/NativeCrypto/x86_64-pc-windows-msvc/release/tcptunnel_crypto.dll" Link="tcptunnel_crypto.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <PackageReference Include="SharpOpenNat" Version="4.0.19" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="default.cfg"
                       LogicalName="TCPTunnel.default.cfg" />
+    <EmbeddedResource Include="SecurityData/confusables.txt" LogicalName="TCPTunnel.Security.Confusables" />
+    <EmbeddedResource Include="SecurityData/LICENSE.txt" LogicalName="TCPTunnel.NativeCrypto.Licenses.Unicode.txt" />
+    <EmbeddedResource Include="NativeCrypto/THIRD_PARTY_NOTICES.md" LogicalName="TCPTunnel.NativeCrypto.Notices" />
+    <EmbeddedResource Include="NativeCrypto/third-party-licenses/*" LogicalName="TCPTunnel.NativeCrypto.Licenses.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <Target Name="PublishLite">

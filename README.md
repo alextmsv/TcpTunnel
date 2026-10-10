@@ -4,7 +4,7 @@
 
 ### A lightweight multiplayer TCP/Bluetooth chat for Windows cmd terminals
 
-[![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows)](#requirements)
 [![Transport](https://img.shields.io/badge/transport-TCP-00B4D8?style=for-the-badge)](#how-it-works)
 [![Build](https://img.shields.io/badge/build-stable-2EA44F?style=for-the-badge)](#building-from-source)
@@ -18,7 +18,7 @@
 TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a stable asynchronous TCP core, an animated terminal interface, automatic UPnP port mapping, and a portable single-file application binary.
 
 > [!IMPORTANT]
-> Chat traffic is currently sent as plain TCP **without encryption**. Do not use TCPTunnel for confidential conversations on untrusted networks, encryption in my plans!
+> End-to-end encryption is enabled by default for TCP and Bluetooth. Verify the owner's fingerprint through a trusted channel or use a trusted invitation. The owner is a member of the encrypted group and can read its messages.
 
 ## Highlights
 
@@ -32,7 +32,7 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 | 🛡️ | Stability limits | Authentication timeout, message-size limits, rate limiting, duplicate nickname protection, and strict UTF-8 validation. |
 | 🖥️ | ConsoleGraphics | Animated menu, bounded text rendering, fast frame drawing, and an optional classic plain-console mode. |
 | 🔌 | UPnP / NAT-PMP | Attempts UPnP first, falls back to NAT-PMP, and removes the selected TCP mapping on shutdown. |
-| 📦 | Two single-file builds | `TCPTunnel.exe` uses the installed .NET 8 Runtime and downloads its installer when it is missing; `TCPTunnel-selfcontained.exe` needs nothing installed. |
+| 📦 | Two single-file builds | `TCPTunnel.exe` uses the installed .NET 10 Runtime and downloads its installer when it is missing; `TCPTunnel-selfcontained.exe` needs nothing installed. |
 | 🎨 | Saved profiles | Nickname, recent endpoint, language, colors, and snake design are restored from a per-user profile. **(Testing)** |
 
 ## Recent updates
@@ -42,7 +42,7 @@ TCPTunnel is a nostalgic Windows console chat brought back to 80's vibes with a 
 - Added consistent sender/receiver image sizing and the `/look` viewer for previews that need substantial downscaling.
 - Expanded `.cfg` profiles with the full interface palette, live color previews, and reliable theme application after import.
 - System messages, Hub startup notices, and the endpoint card now follow the configured system color instead of hard-coded success colors.
-- Added the lightweight native launcher, automatic .NET 8 runtime check, and a reproducible lite publish command.
+- Added the lightweight native launcher, automatic .NET 10 runtime check, and a reproducible lite publish command.
 
 ## Quick start
 
@@ -52,8 +52,8 @@ Each release has two executables:
 
 | File | Size | Requirements |
 |---|---|---|
-| `TCPTunnel.exe` | ~25 MB | [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64). If it is missing, the browser downloads the installer and the window waits for a key press. |
-| `TCPTunnel-selfcontained.exe` | ~40 MB | Nothing — .NET is built in. |
+| `TCPTunnel.exe` | 29.78 MiB | [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64). If it is missing, the browser downloads the installer and the window waits for a key press. |
+| `TCPTunnel-selfcontained.exe` | 43.37 MiB | Nothing — .NET is built in. |
 
 ### Host a chat
 
@@ -90,7 +90,7 @@ GIF frames are composed according to their disposal metadata and animate directl
 
 | Command | Action |
 |---|---|
-| `/help` | Show the available commands and their syntax. |
+| `/help [command]` | Show a description on each command's own line, or detailed localized help for one command, including arguments, examples and permissions. |
 | `/status` | Show the connected Hub's administrator, connection timing and participant count, plus your own running Hub and its port mapping. |
 | `/whois nickname` | Show a participant's connection IP, session RTT, reported window size, snake and accepted message count. `@` is optional; the participant receives a highlighted notice. |
 | `/ping <host:port>` | Check an endpoint locally without sending the command to other participants. |
@@ -131,6 +131,12 @@ Classic console profiles store outer window width/height in pixels and maximized
 **Connect to server** offers a Bluetooth search first. Found hubs are listed by signal strength with the owner, access mode and participant count. For Bluetooth participants `/whois` and `/status` show the signal level (reported by the client from the hub's beacon) instead of IP and ping.
 
 LAN-only hubs skip port mapping and accept TCP only from on-link subnets of this computer. A router that rewrites external sources into local addresses cannot be distinguished by the hub. Mesh relaying is not implemented yet.
+
+Hub options include **Hide IP addresses of clients**. When enabled, the server
+returns only non-address diagnostics through `/whois`, including for queries
+about yourself or the owner. Modified clients cannot request an unredacted reply.
+The Hub's connection address remains visible to clients, and its operating system
+necessarily knows the remote addresses of TCP connections.
 
 ### Protocol limits
 
@@ -185,15 +191,79 @@ If other people cannot connect, check the following:
 > [!NOTE]
 > UPnP cannot bypass strict NAT or carrier-grade NAT (CGNAT). Those networks require a public relay/VPS, a VPN with port forwarding, or another tunnelling solution.
 
+## Encrypted chat
+
+The server settings show **End-to-End encryption** after Bluetooth. `/status`
+reports the established session as `E2E: TRUE/FALSE` and the owner's service state.
+Unchecking the option creates a plaintext Hub. Remote plaintext connections require
+an explicit `--allow-unencrypted` launch argument; there is no automatic fallback.
+
+Profiles store `identityId` and `identityFingerprint` in `.cfg`. The private key
+is a separate current-user DPAPI file under `%LocalAppData%\TCPTunnel\identities`.
+Missing or damaged keys are not regenerated. A nickname remains reserved to its
+approved key after disconnects; another key cannot enter using that nickname.
+
+The owner uses `/invite`, which copies the public `tct2:` invitation to clipboard, and sends it through a trusted
+channel. Paste it into the server-address prompt, or launch with
+`-nickname yourName -invite "tct2:..."`. Bluetooth-only invitations connect directly
+by RFCOMM. Without an invitation, the first connection requires entering the full
+owner fingerprint after checking it through a trusted channel. The owner then
+checks the client's fingerprint and runs `/approve nickname fingerprint`.
+`/pending` lists numbered requests with the full key on its own line. `/pending 1` copies the key of request [1] without console borders or wrapping; `/identity` shows and copies the current profile fingerprint. Numbers are not reassigned during the current application run, and expired requests cannot be approved.
+An invitation supplies trust information, not permission to read the room.
+
+Membership changes rotate MLS keys. New arrivals cannot read old epochs; removed
+members cannot read future epochs. `/kick` also revokes future admission for that
+key. Text, images and complete GIF transfers are encrypted; `/look` passes media
+through a private Windows pipe with process verification, without pixels in command
+arguments or temporary GIF files. Saving dialogue history is a separate future feature.
+
+`Hide IP addresses of clients` is enforced by the Hub's separate address-free reply
+path, including over E2E; changing a client does not enable address disclosure.
+Discovery beacons remain public and are not identity proofs. A compromised endpoint
+can access the messages and keys available to that endpoint.
+
+Verified owners are also pinned to the TCP hostname/port or Bluetooth device address.
+A different key at an already trusted endpoint is rejected, including when it
+claims a different room. A legitimate owner-key replacement requires an explicit
+local trust reset and verification through a trusted channel. DNS aliases are
+separate endpoints; invitations continue to pin the exact owner key.
+
+Unauthenticated connections have a separate limit of 24, at most four per source,
+with a bounded admission rate. They do not consume the 64 authenticated slots.
+TLS handshakes have a 15-second deadline; manual approval remains available for
+two minutes. Slow writers are isolated from the MLS room lock, and cancelled
+queued messages release their capacity immediately.
+
+Nicknames use normalized letters, digits, `_`, `-`, and `.`. Invisible and bidi
+characters are rejected; Unicode confusable spellings cannot reserve an existing
+identity. Old profile keys and room reservations are retained. An old nickname
+that no longer meets these rules must be changed before connecting; migrating to
+a new, unused nickname retains that loaded profile's key. Its new room nickname
+needs approval. Selecting an existing profile continues to select its own key.
+
+UPnP mappings use renewable leases. Bluetooth policy errors are explained without
+changing system policy or launching the application with administrator privileges.
+The native lite launcher excludes the working directory from DLL search and uses
+Control Flow Guard and CET compatibility. Release builds are not Authenticode signed.
+
+Windows CI builds the pinned crypto provider, audits its dependency lockfile,
+runs regressions, and verifies both published executables. To compare a downloaded
+file with a trusted release checksum, use `Get-FileHash <file> -Algorithm SHA256`.
+
+Verify a ready EXE with `-e2e-test`. Crypto dependency licenses are embedded and can
+be printed with `-third-party-notices`. The radio smoke test checks only the local
+Bluetooth host; actual inter-computer radio transfer needs a second machine.
+
 ## Requirements
 
 - Windows 10 or newer (Bluetooth requires Windows 10 1809 or newer)
 
-`TCPTunnel.exe` requires the [.NET 8 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64); the Desktop Runtime is not needed. Its native launcher checks this before starting managed code. When the runtime is missing, it downloads the official installer in the browser and waits for a key press so the message stays readable. `TCPTunnel-selfcontained.exe` includes .NET and has no requirements.
+`TCPTunnel.exe` requires the [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64); the Desktop Runtime is not needed. Its native launcher checks this before starting managed code. When the runtime is missing, it downloads the official installer in the browser and waits for a key press so the message stays readable. `TCPTunnel-selfcontained.exe` includes .NET and has no requirements.
 
-Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or a newer SDK capable of targeting `net8.0-windows10.0.19041.0`.
+Building from source requires the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or a newer SDK capable of targeting `net10.0-windows10.0.19041.0`.
 
-Creating `TCPTunnel.exe` also requires Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. `TCPTunnel-selfcontained.exe` and normal Debug/Release builds only require the .NET SDK.
+Creating `TCPTunnel.exe` also requires Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. All builds require the MLS DLL built first with `build-crypto.ps1`: Rust 1.99.0 MSVC, Visual C++ tools, Windows SDK and cargo-audit are build dependencies. Users of a ready EXE do not need Rust.
 
 ## Building from source
 
@@ -201,7 +271,7 @@ Creating `TCPTunnel.exe` also requires Visual Studio Build Tools with **Desktop 
 
 1. Open `TCPTunnel.sln`.
 2. Select the **Release** configuration.
-3. Press <kbd>Ctrl</kbd> + <kbd>B</kbd> to compile and debug the project.
+3. Run `./build-crypto.ps1 -Configuration Release` once, then press <kbd>Ctrl</kbd> + <kbd>B</kbd> to compile and debug the project.
 4. Open a terminal in the project directory and run `dotnet msbuild -t:PublishLite -p:Configuration=Release` and `dotnet msbuild -t:PublishSelfContained -p:Configuration=Release` to create both release executables.
 
 
@@ -211,6 +281,7 @@ Creating `TCPTunnel.exe` also requires Visual Studio Build Tools with **Desktop 
 
 ```powershell
 dotnet restore .\TCPTunnel.sln
+.\build-crypto.ps1 -Configuration Release
 dotnet build .\TCPTunnel.sln -c Release
 .\build-lite.ps1 -Configuration Release
 .\build-selfcontained.ps1 -Configuration Release
@@ -225,13 +296,13 @@ The lite script also accepts `-VisualStudioPath "C:\path\to\BuildTools"` and
 Both release executables are created under:
 
 ```text
-bin\Release\net8.0-windows\win-x64\publish\TCPTunnel.exe
-bin\Release\net8.0-windows\win-x64\publish\TCPTunnel-selfcontained.exe
+bin\Release\net10.0-windows\win-x64\publish\TCPTunnel.exe
+bin\Release\net10.0-windows\win-x64\publish\TCPTunnel-selfcontained.exe
 ```
 
 Each is a complete single file. `TCPTunnel.exe` extracts its managed payload under `%LocalAppData%\TCPTunnel\runtime` on first launch, then hosts it inside the original process. `TCPTunnel-selfcontained.exe` is a standard compressed .NET single-file build that runs its self-test during the build. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
 
-The lite build has a hard **32 MiB** size gate and the self-contained build a **64 MiB** gate. Most of the size is the official Windows Runtime projection used for Bluetooth.
+The verified E2E release sizes are **29.78 MiB** for lite and **43.37 MiB** for self-contained (11 October 2026). The lite build has a hard **32 MiB** size gate and the self-contained build a **64 MiB** gate. Most of the lite size is the official Windows Runtime projection used for Bluetooth.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 
@@ -256,7 +327,7 @@ TCPTunnel self-test: OK
 ```text
 TCPTunnel
 ├── Broadcaster.cs              # Ordered multi-client broadcasting
-├── Bootstrapper/               # Native .NET 8 check and in-process launcher
+├── Bootstrapper/               # Native .NET 10 check and in-process launcher
 ├── ApplicationSettings.cs      # Atomic per-user profile persistence
 ├── Client.cs                   # Client state, sending, and rate limits
 ├── ConsoleGraphic.cs           # Console frame and bounded output
@@ -286,8 +357,15 @@ TCPTunnel
 
 ## Roadmap
 
+E2E chat is implemented with OpenMLS for TCP and Bluetooth RFCOMM. New Hubs enable
+it by default. The owner is a visible MLS participant whose coordinator runs in
+the Hub process; that process holds the owner's keys and decrypted messages.
+See [the implementation and protection boundaries](ENCRYPTION_DESIGN.md) and
+[crypto build instructions](NativeCrypto/README.md). Independent security auditing
+and a two-computer physical RFCOMM test have not been performed here.
+
 - [V] Add english language support
-- [ ] End-to-end encrypted chat
+- [V] End-to-end encrypted chat
 - [ ] Relay mode for strict NAT and CGNAT
 - [ ] Improved connection discovery and invitations
 - [ ] Automated integration tests

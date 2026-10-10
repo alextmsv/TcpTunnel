@@ -78,9 +78,7 @@ namespace TCPTunnel
             sentSignal = signal;
         }
 
-        internal static bool EnterOwnHub() => ServerInterface.Options.UsesTcp
-            ? DoConnect("127.0.0.1", ServerInterface.ListeningPort, 1)
-            : DoConnectLocal(ServerInterface.CreateLocalConnection());
+        internal static bool EnterOwnHub() => DoConnectLocal(ServerInterface.CreateLocalConnection());
 
         internal static bool DoConnectLocal(IChatConnection connection)
         {
@@ -89,7 +87,7 @@ namespace TCPTunnel
                 connection.Dispose();
                 return false;
             }
-            return RunPreparedConnection(connection, Lang.Get(TextId.BluetoothEndpoint), true);
+            return RunPreparedConnection(connection, ServerInterface.Options.UsesTcp ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort : Lang.Get(TextId.BluetoothEndpoint), true);
         }
 
         private static bool RunPreparedConnection(IChatConnection connection, string host, bool localHub)

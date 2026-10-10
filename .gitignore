@@ -24,7 +24,7 @@ project.nuget.cache
 *.pdb
 *.cache
 TestResults/
-/tests/
+/tests/artifacts/
 coverage/
 *.coverage
 *.coveragexml
@@ -33,6 +33,8 @@ coverage/
 *.log
 *.tmp
 *.temp
+*.key
+*.trust
 ~$*
 
 # IDEs and operating system metadata

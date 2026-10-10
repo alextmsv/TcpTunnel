@@ -25,6 +25,7 @@ namespace TCPTunnel
 
         public static bool TryRun(string[] args)
         {
+            if (TryRunPrivate(args)) return true;
             if (TryRunAnimation(args))
                 return true;
             if (args == null || args.Length == 0 ||
@@ -95,47 +96,9 @@ namespace TCPTunnel
 
         public static bool Launch(ImagePacket packet)
         {
-            if (packet == null || ImageProtocol.GetPackedLength(packet.Width, packet.Height) != packet.PackedPixels.Length)
-                return false;
-
-            string executable = Environment.ProcessPath;
-            if (String.IsNullOrWhiteSpace(executable))
-                return false;
-            string payload = Convert.ToBase64String(packet.PackedPixels);
-            var commandLine = new StringBuilder();
-            commandLine.Append('"').Append(executable.Replace("\"", "\"\"")).Append('"')
-                .Append(' ').Append(ViewerArgument)
-                .Append(' ').Append(packet.Width)
-                .Append(' ').Append(packet.Height)
-                .Append(' ').Append(payload)
-                .Append(' ').Append(Lang.Current == AppLanguage.Russian ? "ru" : "en");
-
-            STARTUPINFO startup = new STARTUPINFO
-            {
-                cb = Marshal.SizeOf<STARTUPINFO>(),
-                dwFlags = StartfUseShowWindow,
-                wShowWindow = SwShowMaximized
-            };
-            PROCESS_INFORMATION process;
-            bool started = CreateProcess(
-                executable,
-                commandLine,
-                IntPtr.Zero,
-                IntPtr.Zero,
-                false,
-                CreateNewConsole,
-                IntPtr.Zero,
-                null,
-                ref startup,
-                out process);
-            if (!started)
-                return false;
-
-            CloseHandle(process.hThread);
-            CloseHandle(process.hProcess);
-            return true;
+            if (packet == null || packet.PackedPixels == null || ImageProtocol.GetPackedLength(packet.Width, packet.Height) != packet.PackedPixels.Length) return false;
+            return LaunchPrivate(new ViewerPayload(packet, null));
         }
-
         internal static bool RunSelfTest()
         {
             ViewerLayout wide = CalculateViewerLayout(160, 72, 200, 100);

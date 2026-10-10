@@ -147,6 +147,12 @@ namespace TCPTunnel
                     else
                         ServerInterface.tryCreateServer();
                 }
+                if (args.Contains("-invite"))
+                {
+                    int inviteIndex = args.IndexOf("-invite");
+                    if (inviteIndex + 1 < args.Count) UserInterface.ConnectInvitation(args[inviteIndex + 1]);
+                }
+
                 if (args.Contains("-ping"))
                 {
                     object[] endpoint = splitIPByArg(args, "-ping");

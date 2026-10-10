@@ -19,7 +19,7 @@ Write-Host "Using Windows SDK: $($windowsBuildSdk.Include)"
 $projectFile = Join-Path $projectRoot "TCPTunnel.csproj"
 $payloadDirectory = Join-Path $projectRoot "obj\LitePayload"
 $bootstrapperDirectory = Join-Path $projectRoot "obj\LiteBootstrapper"
-$publishDirectory = Join-Path $projectRoot "bin\$Configuration\net8.0-windows\win-x64\publish"
+$publishDirectory = Join-Path $projectRoot "bin\$Configuration\net10.0-windows\win-x64\publish"
 $bootstrapperSource = Join-Path $projectRoot "Bootstrapper\TCPTunnel.Bootstrapper.c"
 $maximumLiteBytes = 32 * 1024 * 1024
 $recordedBaselineBytes = 442368
@@ -63,6 +63,7 @@ $payloadFiles = [ordered]@{
     '104' = Join-Path $payloadDirectory "SharpOpenNat.dll"
     '106' = Join-Path $payloadDirectory "Microsoft.Windows.SDK.NET.dll"
     '107' = Join-Path $payloadDirectory "WinRT.Runtime.dll"
+    '108' = Join-Path $payloadDirectory "tcptunnel_crypto.dll"
 }
 foreach ($payloadFile in $payloadFiles.Values) {
     if (-not (Test-Path -LiteralPath $payloadFile -PathType Leaf)) {
@@ -98,7 +99,8 @@ $resourceText = @(
     '104 RCDATA "' + (ConvertTo-RcPath $payloadFiles['104']) + '"',
     '105 RCDATA "' + (ConvertTo-RcPath $payloadIdFile) + '"',
     '106 RCDATA "' + (ConvertTo-RcPath $payloadFiles['106']) + '"',
-    '107 RCDATA "' + (ConvertTo-RcPath $payloadFiles['107']) + '"'
+    '107 RCDATA "' + (ConvertTo-RcPath $payloadFiles['107']) + '"',
+    '108 RCDATA "' + (ConvertTo-RcPath $payloadFiles['108']) + '"'
 ) -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($resourceFile, $resourceText, [System.Text.Encoding]::Unicode)
 
@@ -116,7 +118,7 @@ set "INCLUDE=$($windowsBuildSdk.Include)\ucrt;$($windowsBuildSdk.Include)\shared
 set "LIB=$($windowsBuildSdk.UmLib);$($windowsBuildSdk.UcrtLib);%LIB%"
 rc.exe /nologo /fo"$resourceObject" "$resourceFile"
 if errorlevel 1 exit /b %errorlevel%
-cl.exe /nologo /O1 /MT /W4 /WX /utf-8 /DUNICODE /D_UNICODE /Fo"$objectFile" /Fe"$stagedExecutable" "$bootstrapperSource" "$resourceObject" /link /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA shell32.lib advapi32.lib user32.lib
+cl.exe /nologo /O1 /MT /guard:cf /W4 /WX /utf-8 /DUNICODE /D_UNICODE /Fo"$objectFile" /Fe"$stagedExecutable" "$bootstrapperSource" "$resourceObject" /link /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /guard:cf /CETCOMPAT shell32.lib advapi32.lib user32.lib
 exit /b %errorlevel%
 "@
 [System.IO.File]::WriteAllText($nativeBuildScript, $nativeCommands, [System.Text.Encoding]::ASCII)
@@ -130,9 +132,18 @@ $stagedResult = Get-Item -LiteralPath $stagedExecutable
 if ($stagedResult.Length -gt $maximumLiteBytes) {
     throw ("Lite executable exceeds the hard 32 MiB limit: {0:N0} > {1:N0} bytes." -f $stagedResult.Length, $maximumLiteBytes)
 }
+$previousDotNetRoot = $env:DOTNET_ROOT
+try {
+    $env:DOTNET_ROOT = Split-Path -Parent $dotnetExecutable
+    & $stagedExecutable -e2e-test | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Lite encrypted transport checks failed.' }
+}
+finally { $env:DOTNET_ROOT = $previousDotNetRoot }
 Copy-Item -LiteralPath $stagedExecutable -Destination $outputExecutable -Force
 
 $result = Get-Item -LiteralPath $outputExecutable
+$hash = (Get-FileHash -LiteralPath $outputExecutable -Algorithm SHA256).Hash
+[IO.File]::WriteAllText($outputExecutable + '.sha256', "$hash  $($result.Name)`n", [Text.Encoding]::ASCII)
 $delta = $result.Length - $recordedBaselineBytes
 Write-Host "Lite TCPTunnel build created: $($result.FullName)"
 Write-Host ("Size: {0:N0} bytes ({1:N2} MiB)" -f $result.Length, ($result.Length / 1MB))

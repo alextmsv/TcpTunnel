@@ -32,7 +32,7 @@ namespace TCPTunnel
         internal void RecordServerReason(SystemMessageKind systemKind, string text)
         {
             if (systemKind != SystemMessageKind.Kicked && systemKind != SystemMessageKind.MessageTooLong &&
-                systemKind != SystemMessageKind.TooManyMessages)
+                systemKind != SystemMessageKind.TooManyMessages && systemKind != SystemMessageKind.EncryptionError)
                 return;
             lock (gate)
             {

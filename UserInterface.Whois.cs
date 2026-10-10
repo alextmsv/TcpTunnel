@@ -37,7 +37,8 @@ namespace TCPTunnel
                 if (info.Transport == WhoisProtocol.TransportLocal)
                     WriteSystemChatLine(Lang.Get(TextId.WhoisLocalOwner));
                 else
-                    WriteSystemChatLine(info.PublicAddressUnavailable ? Lang.Get(TextId.WhoisPublicIpUnavailable) :
+                    WriteSystemChatLine(info.AddressHidden ? Lang.Get(TextId.WhoisIpHidden) :
+                        info.PublicAddressUnavailable ? Lang.Get(TextId.WhoisPublicIpUnavailable) :
                         "IP: " + (String.IsNullOrEmpty(info.Address) ? unavailable : info.Address));
                 WriteSystemChatLine(info.PingMilliseconds.HasValue ? Lang.Get(TextId.WhoisPing, info.PingMilliseconds) : Lang.Get(TextId.WhoisPingUnavailable));
             }

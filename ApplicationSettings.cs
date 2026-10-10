@@ -10,6 +10,8 @@ namespace TCPTunnel
 {
     internal sealed class AppProfile
     {
+        public Guid IdentityId;
+        public string IdentityFingerprint = String.Empty;
         public string Nickname = String.Empty;
         public string LastHost = "localhost";
         public int LastPort = 9091;
@@ -68,10 +70,10 @@ namespace TCPTunnel
                     try
                     {
                         AppProfile profile = ParseProfile(ReadFile(path), LoadEmbeddedDefaults());
-                        if (NetWorker.IsNicknameValid(profile.Nickname))
+                        if (NicknamePolicy.IsLegacyProfileName(profile.Nickname))
                             profiles.Add(new SavedProfile(Path.GetFullPath(path), profile.Nickname, profile.SnakeColor, File.GetLastWriteTimeUtc(path)));
                     }
-                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+                    catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException) { }
                 }
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
@@ -98,7 +100,7 @@ namespace TCPTunnel
                             throw new IOException("Invalid profile directory.");
                         selectedLines = File.ReadAllLines(path, Utf8);
                         profile = ParseProfile(ParseLines(selectedLines), profile);
-                        if (!NetWorker.IsNicknameValid(profile.Nickname)) throw new IOException("Invalid profile nickname.");
+                        if (!NicknamePolicy.IsLegacyProfileName(profile.Nickname)) throw new IOException("Invalid profile nickname.");
                     }
                     string savedPath = selected == null ? null : GetProfilePath(profile.Nickname);
                     Directory.CreateDirectory(GetStorageDirectory());
@@ -118,7 +120,7 @@ namespace TCPTunnel
                     });
                     return true;
                 }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException)
                 { error = ex.Message; return false; }
             }
         }
@@ -154,12 +156,12 @@ namespace TCPTunnel
                 alwaysImport = preferences.TryGetValue("alwaysImport", out encodedNickname) &&
                                Boolean.TryParse(encodedNickname, out parsedAlways) && parsedAlways;
 
-                if (NetWorker.IsNicknameValid(lastProfileNickname) && ProfileExists(lastProfileNickname))
+                if (NicknamePolicy.IsLegacyProfileName(lastProfileNickname) && ProfileExists(lastProfileNickname))
                 {
                     if (alwaysImport)
                     {
                         Current = LoadProfile(lastProfileNickname, Current);
-                        ProfileWasAutoLoaded = NetWorker.IsNicknameValid(Current.Nickname);
+                        ProfileWasAutoLoaded = NicknamePolicy.IsLegacyProfileName(Current.Nickname);
                     }
                     else
                         PendingProfileNickname = lastProfileNickname;
@@ -177,7 +179,7 @@ namespace TCPTunnel
         {
             lock (sync)
             {
-                if (!NetWorker.IsNicknameValid(PendingProfileNickname) || !ProfileExists(PendingProfileNickname))
+                if (!NicknamePolicy.IsLegacyProfileName(PendingProfileNickname) || !ProfileExists(PendingProfileNickname))
                     return false;
 
                 Current = LoadProfile(PendingProfileNickname, Current);
@@ -366,6 +368,14 @@ namespace TCPTunnel
             if (!NetWorker.IsNicknameValid(nickname))
                 return;
 
+            if (!String.Equals(Current.Nickname, nickname, StringComparison.OrdinalIgnoreCase))
+            {
+                string selectedPath = GetProfilePath(nickname);
+                var identityProfile = File.Exists(selectedPath) ? ParseProfile(ReadFile(selectedPath), LoadEmbeddedDefaults()) :
+                    (!NetWorker.IsNicknameValid(Current.Nickname) && NicknamePolicy.IsLegacyProfileName(Current.Nickname) ? Current : new AppProfile());
+                Current.IdentityId = identityProfile.IdentityId;
+                Current.IdentityFingerprint = identityProfile.IdentityFingerprint;
+            }
             CaptureCurrent(nickname);
             try
             {
@@ -488,6 +498,10 @@ namespace TCPTunnel
         internal static AppProfile ParseProfile(Dictionary<string, string> values, AppProfile fallback)
         {
             var profile = Clone(fallback);
+            profile.IdentityId = Guid.Empty; profile.IdentityFingerprint = String.Empty;
+            if (values.TryGetValue("identityId", out var identityId)) { if (identityId.Length != 0 && !Guid.TryParse(identityId, out profile.IdentityId)  ) throw new InvalidDataException("Invalid profile identity id."); }
+            if (values.TryGetValue("identityFingerprint", out var identityFingerprint)) profile.IdentityFingerprint = identityFingerprint;
+            if ((profile.IdentityId == Guid.Empty) != String.IsNullOrEmpty(profile.IdentityFingerprint)) throw new InvalidDataException("Incomplete profile identity reference.");
             string value;
             int number;
             bool flag;
@@ -559,6 +573,7 @@ namespace TCPTunnel
         {
             return new[]
             {
+                "identityId=" + (profile.IdentityId == Guid.Empty ? String.Empty : profile.IdentityId.ToString("N")), "identityFingerprint=" + profile.IdentityFingerprint,
                 "version=1", "nickname=" + EncodeText(profile.Nickname), "lastHost=" + EncodeText(profile.LastHost),
                 "lastPort=" + profile.LastPort, "graphics=" + profile.GraphicsEnabled,
                 "language=" + (profile.Language == AppLanguage.English ? "en" : "ru"),
@@ -584,6 +599,7 @@ namespace TCPTunnel
         {
             return new AppProfile
             {
+                IdentityId = value.IdentityId, IdentityFingerprint = value.IdentityFingerprint,
                 Nickname = value.Nickname, LastHost = value.LastHost, LastPort = value.LastPort,
                 GraphicsEnabled = value.GraphicsEnabled, Language = value.Language,
                 SnakeDelay = value.SnakeDelay, SnakeColor = value.SnakeColor, SnakeGlyph = value.SnakeGlyph,
@@ -693,7 +709,27 @@ namespace TCPTunnel
         private static bool ProfileExists(string nickname) { return File.Exists(GetProfilePath(nickname)); }
         private static string GetPreferencesPath() { return Path.Combine(GetStorageDirectory(), PreferencesFileName); }
         private static string GetProfilePath(string nickname) { return Path.Combine(GetStorageDirectory(), EncodeFileName(nickname) + ".cfg"); }
-        private static string GetStorageDirectory() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TCPTunnel", "profiles"); }
+        internal static string DataDirectory => Environment.GetEnvironmentVariable("TCPTUNNEL_DATA_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TCPTunnel");
+        private static string GetStorageDirectory() { return Path.Combine(DataDirectory, "profiles"); }
+        internal static TCPTunnel.Cryptography.NativeMlsSession OpenIdentity()
+        {
+            lock (sync)
+            {
+                if (!NetWorker.IsNicknameValid(NetWorker.nickname)) throw new InvalidOperationException("Choose a profile nickname before creating an identity.");
+                if (!String.Equals(Current.Nickname, NetWorker.nickname, StringComparison.OrdinalIgnoreCase)) SaveCurrentProfileLocked(NetWorker.nickname);
+                var store = new TCPTunnel.Cryptography.ProfileIdentityStore(Path.Combine(DataDirectory, "identities"));
+                if (Current.IdentityId == Guid.Empty)
+                {
+                    if (!NetWorker.IsNicknameValid(NetWorker.nickname)) throw new InvalidOperationException("Choose a profile nickname before creating an identity.");
+                    var reference = store.Create(Guid.NewGuid());
+                    Current.IdentityId = reference.IdentityId; Current.IdentityFingerprint = reference.Fingerprint;
+                    Directory.CreateDirectory(GetStorageDirectory());
+                    string path = GetProfilePath(NetWorker.nickname);
+                    WriteFileAtomic(path, MergeProfileLines(File.Exists(path) ? File.ReadAllLines(path) : Array.Empty<string>(), Serialize(Current), false));
+                }
+                return store.Open(new TCPTunnel.Cryptography.ProfileIdentityReference(Current.IdentityId, Current.IdentityFingerprint));
+            }
+        }
         private static string EncodeFileName(string value) { return Convert.ToBase64String(Utf8.GetBytes(value)).TrimEnd('=').Replace('+', '-').Replace('/', '_'); }
         private static string EncodeText(string value) { return Convert.ToBase64String(Utf8.GetBytes(value ?? String.Empty)); }
         private static string DecodeText(string value) { try { return Utf8.GetString(Convert.FromBase64String(value ?? String.Empty)); } catch { return null; } }

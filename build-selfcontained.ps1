@@ -12,7 +12,7 @@ $dotnetExecutable = Resolve-DotNetSdk $projectRoot $DotNetPath
 Write-Host "Using .NET SDK: $dotnetExecutable"
 $projectFile = Join-Path $projectRoot "TCPTunnel.csproj"
 $stagingDirectory = Join-Path $projectRoot "obj\SelfContainedPublish"
-$publishDirectory = Join-Path $projectRoot "bin\$Configuration\net8.0-windows\win-x64\publish"
+$publishDirectory = Join-Path $projectRoot "bin\$Configuration\net10.0-windows\win-x64\publish"
 $outputExecutable = Join-Path $publishDirectory "TCPTunnel-selfcontained.exe"
 $maximumBytes = 64 * 1024 * 1024
 
@@ -58,9 +58,13 @@ if ($staged.Length -gt $maximumBytes) {
 if ($LASTEXITCODE -ne 0) {
     throw "Self-contained executable failed its self-test with exit code $LASTEXITCODE."
 }
+& $stagedExecutable -e2e-test | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'Self-contained encrypted transport checks failed.' }
 
 Copy-Item -LiteralPath $stagedExecutable -Destination $outputExecutable -Force
 
 $result = Get-Item -LiteralPath $outputExecutable
+$hash = (Get-FileHash -LiteralPath $outputExecutable -Algorithm SHA256).Hash
+[IO.File]::WriteAllText($outputExecutable + '.sha256', "$hash  $($result.Name)`n", [Text.Encoding]::ASCII)
 Write-Host "Self-contained TCPTunnel build created: $($result.FullName)"
 Write-Host ("Size: {0:N0} bytes ({1:N2} MiB)" -f $result.Length, ($result.Length / 1MB))

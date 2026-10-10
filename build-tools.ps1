@@ -18,11 +18,11 @@ function Resolve-DotNetSdk([string]$ProjectRoot, [string]$ExplicitPath) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
         $resolved = (Resolve-Path -LiteralPath $candidate).ProviderPath
         $sdks = & $resolved --list-sdks 2>$null
-        if ($LASTEXITCODE -eq 0 -and ($sdks | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 8 })) {
+        if ($LASTEXITCODE -eq 0 -and ($sdks | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) {
             return $resolved
         }
     }
-    throw '.NET SDK 8 or newer was not found. Install the SDK, or pass -DotNetPath "C:\path\to\dotnet.exe". A runtime alone cannot build this project.'
+    throw '.NET SDK 10 or newer was not found. Install the SDK, or pass -DotNetPath "C:\path\to\dotnet.exe". A runtime alone cannot build this project.'
 }
 
 function Resolve-VisualCppToolchain([string]$ProjectRoot, [string]$ExplicitPath) {

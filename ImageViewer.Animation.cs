@@ -15,69 +15,9 @@ namespace TCPTunnel
 
         public static bool Launch(AnimatedImagePacket packet)
         {
-            if (!ImageAnimationProtocol.IsValidPacket(packet, false))
-                return false;
-
-            string executable = Environment.ProcessPath;
-            if (String.IsNullOrWhiteSpace(executable))
-                return false;
-
-            string path = null;
-            try
-            {
-                string directory = GetAnimationViewerDirectory();
-                Directory.CreateDirectory(directory);
-                CleanupOldAnimationFiles(directory);
-                path = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tca");
-                WriteAnimationFile(path, packet);
-
-                var commandLine = new StringBuilder();
-                commandLine.Append('"').Append(executable.Replace("\"", "\"\"")).Append('"')
-                    .Append(' ').Append(AnimationViewerArgument)
-                    .Append(' ').Append('"').Append(path.Replace("\"", "\"\"")).Append('"')
-                    .Append(' ').Append(Lang.Current == AppLanguage.Russian ? "ru" : "en");
-
-                STARTUPINFO startup = new STARTUPINFO
-                {
-                    cb = Marshal.SizeOf<STARTUPINFO>(),
-                    dwFlags = StartfUseShowWindow,
-                    wShowWindow = SwShowMaximized
-                };
-                PROCESS_INFORMATION process;
-                bool started = CreateProcess(
-                    executable,
-                    commandLine,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    false,
-                    CreateNewConsole,
-                    IntPtr.Zero,
-                    null,
-                    ref startup,
-                    out process);
-                if (!started)
-                    return false;
-
-                CloseHandle(process.hThread);
-                CloseHandle(process.hProcess);
-                path = null; // WARNING: The viewer now owns this file; caller cleanup would delete it before the viewer reads it.
-                return true;
-            }
-            catch (Exception ex) when (
-                ex is IOException || ex is UnauthorizedAccessException ||
-                ex is ArgumentException || ex is NotSupportedException)
-            {
-                return false;
-            }
-            finally
-            {
-                if (path != null)
-                {
-                    try { File.Delete(path); } catch { }
-                }
-            }
+            if (!ImageAnimationProtocol.IsValidPacket(packet, false)) return false;
+            return LaunchPrivate(new ViewerPayload(null, packet));
         }
-
         private static bool TryRunAnimation(string[] args)
         {
             if (args == null || args.Length == 0 ||

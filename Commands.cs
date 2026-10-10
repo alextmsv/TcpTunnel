@@ -70,9 +70,9 @@ namespace TCPTunnel
             switch (command)
             {
                 case "/help":
-                    if (!HasExactArgumentCount(tokens, 0))
-                        return WriteUsage(context, TextId.CommandHelp);
-                    context.WriteLine(Lang.Get(TextId.CommandHelp), ConsoleColor.DarkGreen);
+                    if (tokens.Count > 2)
+                        return WriteUsage(context, TextId.HelpUsage);
+                    CommandHelp.Show(tokens.Count == 2 ? tokens[1].Value : null, context.WriteLine);
                     return CommandDisposition.Handled;
 
                 case "/clear":

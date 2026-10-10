@@ -38,6 +38,7 @@ namespace TCPTunnel
             var current = new List<string>
             {
                 Lang.Get(TextId.StatusCurrent, endpoint == null ? host : host.Contains(':') ? "[" + host.Trim('[', ']') + "]:" + endpoint.Port : host + ":" + endpoint.Port),
+                "E2E: " + (currentE2E ? "TRUE" : "FALSE"),
                 Lang.Get(TextId.StatusAdministrator, String.IsNullOrEmpty(remote?.Owner) ? unavailable : "@" + remote.Owner),
                 Lang.Get(connected ? TextId.StatusConnected : TextId.StatusDisconnected),
                 link,
@@ -51,6 +52,7 @@ namespace TCPTunnel
                 string access = Lang.Get(TextId.StatusAccess, DescribeHubAccess(ownOptions));
                 if (isLocalHubSession)
                 {
+                    current.Add("E2E service: " + (ServerInterface.SecureHub?.ServiceStatus ?? "DISABLED"));
                     current.Add(access);
                     if (ownOptions.UsesPortMapping)
                         current.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
@@ -66,6 +68,7 @@ namespace TCPTunnel
                     if (ownOptions.UsesPortMapping)
                         own.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
                     own.Add(Lang.Get(TextId.StatusParticipants, ownStatus.Participants));
+                    own.Add("E2E service: " + (ServerInterface.SecureHub?.ServiceStatus ?? "DISABLED"));
                 }
             }
             if (token.IsCancellationRequested || !connected) return;

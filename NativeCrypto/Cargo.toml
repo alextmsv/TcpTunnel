@@ -1,0 +1,32 @@
+[package]
+name = "tcptunnel-crypto"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+name = "tcptunnel_crypto"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openmls = "=0.9.1"
+openmls_basic_credential = "=0.6.0"
+openmls_rust_crypto = "=0.6.0"
+openmls_traits = "=0.6.0"
+sha2 = "=0.10.9"
+zeroize = "=1.9.0"
+
+[patch.crates-io]
+openmls_rust_crypto = { path = "../obj/CryptoVendor/openmls_rust_crypto-0.6.0" }
+core-models = { path = "../obj/CryptoVendor/core-models-0.0.7" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hax)'] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = "s"
+strip = "symbols"
+panic = "unwind"

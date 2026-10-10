@@ -1,0 +1,39 @@
+name: Windows validation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install pinned Rust tools
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          cargo +1.99.0 install cargo-audit --version 0.22.2 --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Audit installation failed.' }
+      - name: Build and audit cryptography
+        run: ./build-crypto.ps1
+      - name: Run application regression tests
+        run: |
+          dotnet run --project tests/TCPTunnel.Tests/TCPTunnel.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Regression checks failed.' }
+      - name: Build and verify both executables
+        run: |
+          ./build-lite.ps1
+          ./build-selfcontained.ps1
+      - name: Record checksums
+        run: Get-FileHash bin/Release/net10.0-windows/win-x64/publish/*.exe -Algorithm SHA256

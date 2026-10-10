@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -17,7 +18,8 @@ namespace TCPTunnel
             await AbandonedAnimationSelfTest().ConfigureAwait(false) &&
             await SharedBatchOwnershipSelfTest().ConfigureAwait(false) &&
             await SendQueueLimitsSelfTest().ConfigureAwait(false) &&
-            await SlowRecipientIsolationSelfTest().ConfigureAwait(false);
+            await SlowRecipientIsolationSelfTest().ConfigureAwait(false) &&
+            await WhoisPrivacySelfTest().ConfigureAwait(false);
 
         public static async Task<bool> CompletedSessionsSelfTest()
         {
@@ -33,7 +35,7 @@ namespace TCPTunnel
                 probe.Start();
                 int port = ((IPEndPoint)probe.LocalEndpoint).Port;
                 probe.Stop();
-                if (!ServerInterface.TryStartServer(port, new HubOptions(HubIpMode.LanOnly, false),
+                if (!ServerInterface.TryStartServer(port, new HubOptions(HubIpMode.LanOnly, false, EndToEndEncryption: false),
                     out _, "runtimeOwner", out _)) return false;
                 try
                 {
@@ -251,6 +253,78 @@ namespace TCPTunnel
                 return written == 0;
             }
             finally { byteLimited.Close(); }
+        }
+
+        public static async Task<bool> WhoisPrivacySelfTest()
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            HubOptions savedOptions = ServerInterface.Options;
+            var optionsProperty = typeof(ServerInterface).GetProperty("Options", BindingFlags.Static | BindingFlags.NonPublic);
+            try
+            {
+                foreach (bool hidden in new[] { false, true })
+                {
+                    using var probe = new TcpListener(IPAddress.Loopback, 0);
+                    probe.Start();
+                    int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+                    probe.Stop();
+                    if (!ServerInterface.TryStartServer(port, new HubOptions(HubIpMode.LanOnly, false, hidden, false), out _, "privateAdministrator", out _)) return false;
+                    using var target = new TcpClient();
+                    using var requester = new TcpClient();
+                    try
+                    {
+                        using (var impersonator = new TcpClient())
+                        {
+                            await impersonator.ConnectAsync(IPAddress.Loopback, port, stop.Token).ConfigureAwait(false);
+                            Stream stream = impersonator.GetStream();
+                            if (await MessageProtocol.ReadStringAsync(stream, stop.Token).ConfigureAwait(false) != NetWorker.DO_AUTH_MESSAGE) return false;
+                            await MessageProtocol.WriteStringAsync(stream, "REPLY:privateAdministrator", stop.Token).ConfigureAwait(false);
+                            if (await MessageProtocol.ReadStringAsync(stream, stop.Token).ConfigureAwait(false) != NetWorker.AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN") return false;
+                        }
+                        async Task Authenticate(TcpClient peer, string nick)
+                        {
+                            await peer.ConnectAsync(IPAddress.Loopback, port, stop.Token).ConfigureAwait(false);
+                            Stream stream = peer.GetStream();
+                            if (await MessageProtocol.ReadStringAsync(stream, stop.Token).ConfigureAwait(false) != NetWorker.DO_AUTH_MESSAGE) throw new IOException("Missing challenge");
+                            await MessageProtocol.WriteStringAsync(stream, "REPLY:" + nick, stop.Token).ConfigureAwait(false);
+                            if (await MessageProtocol.ReadStringAsync(stream, stop.Token).ConfigureAwait(false) != NetWorker.AUTH_OK_MESSAGE) throw new IOException("Auth failed");
+                        }
+                        async Task<string> Until(Func<string, bool> predicate)
+                        {
+                            while (true)
+                            {
+                                string message = await MessageProtocol.ReadStringAsync(requester.GetStream(), stop.Token).ConfigureAwait(false);
+                                if (predicate(message)) return message;
+                            }
+                        }
+                        await Authenticate(target, "privateOwner").ConfigureAwait(false);
+                        await Authenticate(requester, "requester").ConfigureAwait(false);
+                        Client victim = NetWorker.broadcaster.GetAuthenticatedClients().First(client => client.Nickname == "privateOwner");
+                        victim.IpAddress = "203.0.113.53";
+                        await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Hello, stop.Token).ConfigureAwait(false);
+                        await Until(message => message == WhoisProtocol.Capabilities).ConfigureAwait(false);
+                        string id = Guid.NewGuid().ToString("N");
+                        if (hidden)
+                            await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Request(id, "privateOwner") + "|includeIp=true", stop.Token).ConfigureAwait(false);
+                        await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Request(id, "privateOwner"), stop.Token).ConfigureAwait(false);
+                        string reply = await Until(message => WhoisProtocol.TryReply(message, out string replyId, out _) && replyId == id).ConfigureAwait(false);
+                        if (!WhoisProtocol.TryReply(reply, out _, out WhoisInfo info) || info == null || info.AddressHidden != hidden ||
+                            info.Address != (hidden ? String.Empty : "203.0.113.53")) return false;
+                        if (hidden && (reply.Contains("203.0.113.53", StringComparison.Ordinal) || info.PublicAddressUnavailable)) return false;
+                        string selfId = Guid.NewGuid().ToString("N");
+                        await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Request(selfId, "requester"), stop.Token).ConfigureAwait(false);
+                        string selfReply = await Until(message => WhoisProtocol.TryReply(message, out string replyId, out _) && replyId == selfId).ConfigureAwait(false);
+                        if (!WhoisProtocol.TryReply(selfReply, out _, out WhoisInfo self) || self.AddressHidden != hidden ||
+                            self.Address != (hidden ? String.Empty : "127.0.0.1")) return false;
+                    }
+                    finally { target.Close(); requester.Close(); ServerInterface.StopServer(); }
+                }
+                var context = new HubOptionContext { Options = new HubOptions(HubIpMode.Public, false, true), Bluetooth = BluetoothAvailability.Available };
+                context.Options = HubOptionRegistry.All.First(option => option.Id == "mode").Change(context, 1);
+                context.Options = HubOptionRegistry.All.First(option => option.Id == "bluetooth").Change(context, 1);
+                return context.Options.HideClientIpAddresses && context.Options.IpMode == HubIpMode.LanOnly && context.Options.Bluetooth;
+            }
+            finally { ServerInterface.StopServer(); optionsProperty.SetValue(null, savedOptions); }
         }
 
         private sealed class RecordingConnection : IChatConnection

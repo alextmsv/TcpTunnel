@@ -10,7 +10,7 @@ namespace TCPTunnel
     public class ServerInterface : NetWorker
     {
         private static readonly object serverLock = new object();
-        private static readonly object admissionLock = new object();
+        private static ConnectionAdmission admission = new ConnectionAdmission();
         internal const int MaxConnectedClients = 64;
         private static TcpListener server;
         private static BluetoothHubHost bluetoothHost;
@@ -21,6 +21,7 @@ namespace TCPTunnel
         private static volatile bool isRunning;
         private static volatile string displayAddress = "127.0.0.1";
         private static volatile bool displayAddressIsPublic;
+        internal static TCPTunnel.Cryptography.SecureHubService SecureHub { get; private set; }
 
         public static bool IsRunning => isRunning;
         public static int ListeningPort { get; private set; }
@@ -29,7 +30,8 @@ namespace TCPTunnel
         public static string DisplayAddress => displayAddress;
         public static bool DisplayAddressIsPublic => displayAddressIsPublic;
         public static string AdministratorNickname { get; private set; } = String.Empty;
-        public static int ConnectedClientCount => broadcaster.AuthenticatedClientCount;
+        public static int ConnectedClientCount => SecureHub?.ParticipantCount ?? broadcaster.AuthenticatedClientCount;
+        internal static ulong BluetoothAddress => bluetoothHost?.Address ?? 0;
 
         internal static LocalHubSnapshot CaptureStatus()
         {
@@ -45,7 +47,7 @@ namespace TCPTunnel
             if (String.Equals(targetNickname, administratorNickname, StringComparison.OrdinalIgnoreCase))
                 return KickCommandResult.CannotKickSelf;
 
-            bool kicked = await broadcaster.KickAsync(
+            bool kicked = SecureHub != null ? await SecureHub.KickAsync(targetNickname, reason).ConfigureAwait(false) : await broadcaster.KickAsync(
                 targetNickname,
                 reason,
                 CancellationToken.None).ConfigureAwait(false);
@@ -107,17 +109,7 @@ namespace TCPTunnel
             bool started = TryStartServer(port, options, out error, nickname, out advertisingBlocked);
             if (!started && advertisingBlocked)
             {
-                ShowHubProgress(Lang.Get(TextId.BluetoothRequestingElevation), false);
-                if (BluetoothPolicy.RequestAllowAdvertising(out string elevationError))
-                {
-                    started = TryStartServer(port, options, out error, nickname, out advertisingBlocked);
-                    if (!started && advertisingBlocked)
-                        error = Lang.Get(TextId.BluetoothStillBlocked);
-                }
-                else
-                {
-                    error = elevationError;
-                }
+                BluetoothPolicy.RequestAllowAdvertising(out error);
             }
 
             if (!started)
@@ -171,7 +163,7 @@ namespace TCPTunnel
                 ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.LocalClientConnecting), ConsoleTheme.SystemText, 3);
             }
 
-            return UserInterface.DoConnect("127.0.0.1", port, 1);
+            return UserInterface.DoConnectLocal(CreateLocalConnection());
         }
 
         private static void ShowHubProgress(string text, bool starting)
@@ -259,6 +251,8 @@ namespace TCPTunnel
                 TcpListener listener = null;
                 try
                 {
+                    if (options.EndToEndEncryption)
+                        SecureHub = new TCPTunnel.Cryptography.SecureHubService(administratorNickname, ApplicationSettings.OpenIdentity());
                     if (options.UsesTcp)
                     {
                         listener = new TcpListener(IPAddress.Any, port);
@@ -272,6 +266,7 @@ namespace TCPTunnel
                     displayAddressIsPublic = false;
                     ListeningPort = options.UsesTcp ? port : 0;
                     Options = options;
+                    admission = new ConnectionAdmission();
                     AdministratorNickname = IsNicknameValid(administratorNickname) ? administratorNickname : String.Empty;
                     isRunning = true;
                     acceptTask = listener == null
@@ -280,6 +275,7 @@ namespace TCPTunnel
                 }
                 catch (Exception ex)
                 {
+                    SecureHub?.Dispose(); SecureHub = null;
                     try { listener?.Stop(); } catch { }
                     server = null;
                     serverCancellation = null;
@@ -300,7 +296,7 @@ namespace TCPTunnel
                 options.BeaconMode,
                 administratorNickname,
                 AdmitConnection,
-                () => broadcaster.AuthenticatedClientCount,
+                () => ConnectedClientCount,
                 out BluetoothHubHost host,
                 out string bluetoothError);
             if (status == BluetoothHubStartStatus.Started)
@@ -337,6 +333,7 @@ namespace TCPTunnel
             BluetoothHubHost bluetooth;
             Task accepting;
             Task[] clientsToDrain;
+            TCPTunnel.Cryptography.SecureHubService crypto;
 
             lock (serverLock)
             {
@@ -356,6 +353,8 @@ namespace TCPTunnel
                 serverCancellation = null;
                 server = null;
                 bluetoothHost = null;
+                crypto = SecureHub;
+                SecureHub = null;
             }
 
             try { bluetooth?.Dispose(); } catch { }
@@ -368,6 +367,7 @@ namespace TCPTunnel
                 Task.WhenAll(all).Wait(TimeSpan.FromSeconds(3));
             }
             catch { }
+            crypto?.Dispose();
             Task mappingCleanup = StopPortMapping();
             try { mappingCleanup.Wait(TimeSpan.FromSeconds(3)); } catch { }
         }
@@ -390,9 +390,12 @@ namespace TCPTunnel
         private static void Admit(IChatConnection connection, CancellationToken cancellationToken)
         {
             Client client = new Client(connection);
-            lock (admissionLock)
+            lock (serverLock)
             {
-                if (broadcaster.ConnectionCount >= MaxConnectedClients)
+                if (!isRunning || serverCancellation == null || serverCancellation.Token != cancellationToken)
+                { client.Close(); return; }
+                client.Admission = admission.TryAcquire(client.AdmissionOrigin, client.Transport == ChatTransport.Local);
+                if (client.Admission == null)
                 {
                     client.Close();
                     return;

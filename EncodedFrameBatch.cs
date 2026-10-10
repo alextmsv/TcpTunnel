@@ -40,5 +40,6 @@ namespace TCPTunnel
                     throw new ArgumentException("A frame cannot be null.", nameof(source))).Clone();
             return new EncodedFrameBatch(frames);
         }
+        internal static EncodedFrameBatch TakeOwnership(byte[][] freshBuffers) => new EncodedFrameBatch(freshBuffers);
     }
 }

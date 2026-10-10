@@ -8,7 +8,11 @@ namespace TCPTunnel
     internal sealed record WhoisInfo(string Nickname, string Address, bool PublicAddressUnavailable,
         int? PingMilliseconds, int WindowWidth, int WindowHeight, bool? SnakeEnabled, bool Paused,
         int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages,
-        string Transport = null, int? SignalDbm = null);
+        string Transport = null, int? SignalDbm = null, bool AddressHidden = false);
+
+    internal sealed record WhoisDiagnosticsSnapshot(string Nickname, int? PingMilliseconds,
+        int WindowWidth, int WindowHeight, bool? SnakeEnabled, bool Paused,
+        int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages, string Transport, int? SignalDbm);
 
     internal static class WhoisProtocol
     {
@@ -19,6 +23,14 @@ namespace TCPTunnel
         internal static bool IsControl(string message) => message?.StartsWith(Prefix, StringComparison.Ordinal) == true;
         internal static string Request(string id, string nick) => Prefix + "GET|" + id + "|" + Encode(nick);
         internal static string Reply(string id, WhoisInfo info) => Prefix + "REPLY|" + id + "|" + JsonSerializer.Serialize(info);
+        internal static string HiddenReply(string id, WhoisDiagnosticsSnapshot info) => Prefix + "REPLY|" + id + "|" +
+            JsonSerializer.Serialize(new
+            {
+                info.Nickname, Address = String.Empty, PublicAddressUnavailable = false,
+                info.PingMilliseconds, info.WindowWidth, info.WindowHeight, info.SnakeEnabled,
+                info.Paused, info.SnakeDelay, info.SnakeColor, info.SnakeGlyph, info.Messages,
+                info.Transport, info.SignalDbm, AddressHidden = true
+            });
         internal static string Notice(string nick) => Prefix + "NOTICE|" + Encode(nick);
         internal static string Size(int width, int height) => Prefix + "SIZE|" + width + "|" + height;
         internal static string Ping(string id) => Prefix + "PING|" + id;
@@ -74,6 +86,7 @@ namespace TCPTunnel
                 int.TryParse(parts[1], out width) && int.TryParse(parts[2], out height) && ValidSize(width, height);
         }
         private static bool ValidInfo(WhoisInfo info) => NetWorker.IsNicknameValid(info.Nickname) &&
+            (!info.AddressHidden || (info.Address == String.Empty && !info.PublicAddressUnavailable)) &&
             (info.Transport is null or TransportTcp or TransportBluetooth or TransportLocal) &&
             (info.SignalDbm == null || ValidSignal(info.SignalDbm.Value)) &&
             (info.Address == "" || IPAddress.TryParse(info.Address, out _)) && info.Messages >= 0 &&

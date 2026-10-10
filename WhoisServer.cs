@@ -37,8 +37,13 @@ namespace TCPTunnel
             if (!WhoisProtocol.TryRequest(message, out string id, out string nick)) return;
             Client target = NetWorker.broadcaster.GetAuthenticatedClients()
                 .FirstOrDefault(client => String.Equals(client.Nickname, nick, StringComparison.OrdinalIgnoreCase));
-            WhoisInfo info = target == null ? null : Snapshot(target);
-            await sender.SendAsync(WhoisProtocol.Reply(id, info), token).ConfigureAwait(false);
+            string reply;
+            // WARNING: The hidden path must not call Snapshot; it reads real network addresses.
+            if (target != null && (sender.HideClientIpAddresses || target.HideClientIpAddresses))
+                reply = WhoisProtocol.HiddenReply(id, SnapshotDiagnostics(target));
+            else
+                reply = WhoisProtocol.Reply(id, target == null ? null : Snapshot(target));
+            await sender.SendAsync(reply, token).ConfigureAwait(false);
             if (target != null && !Object.ReferenceEquals(target, sender) && target.Diagnostics.Supported &&
                 target.Diagnostics.ShouldNotify(sender.Nickname))
             {
@@ -49,8 +54,7 @@ namespace TCPTunnel
 
         internal static WhoisInfo Snapshot(Client target)
         {
-            bool hasSnake = target.TryGetSnakeProfile(out SnakeProfile snake);
-            var size = target.Diagnostics.GetSize();
+            WhoisDiagnosticsSnapshot diagnostics = SnapshotDiagnostics(target);
             string address = target.IpAddress ?? "";
             bool publicUnavailable = false;
             if (String.Equals(target.Nickname, ServerInterface.AdministratorNickname, StringComparison.OrdinalIgnoreCase) &&
@@ -59,13 +63,23 @@ namespace TCPTunnel
                 publicUnavailable = !ServerInterface.DisplayAddressIsPublic;
                 address = publicUnavailable ? "" : ServerInterface.DisplayAddress;
             }
+            return new WhoisInfo(diagnostics.Nickname, address, publicUnavailable, diagnostics.PingMilliseconds,
+                diagnostics.WindowWidth, diagnostics.WindowHeight, diagnostics.SnakeEnabled, diagnostics.Paused,
+                diagnostics.SnakeDelay, diagnostics.SnakeColor, diagnostics.SnakeGlyph, diagnostics.Messages,
+                diagnostics.Transport, diagnostics.SignalDbm);
+        }
+
+        private static WhoisDiagnosticsSnapshot SnapshotDiagnostics(Client target)
+        {
+            bool hasSnake = target.TryGetSnakeProfile(out SnakeProfile snake);
+            var size = target.Diagnostics.GetSize();
             string transport = target.Transport switch
             {
                 ChatTransport.Bluetooth => WhoisProtocol.TransportBluetooth,
                 ChatTransport.Local => WhoisProtocol.TransportLocal,
                 _ => WhoisProtocol.TransportTcp
             };
-            return new WhoisInfo(target.Nickname, address, publicUnavailable, target.Diagnostics.PingMilliseconds,
+            return new WhoisDiagnosticsSnapshot(target.Nickname, target.Diagnostics.PingMilliseconds,
                 size.Width, size.Height, hasSnake ? snake.Enabled : null, snake.Paused,
                 hasSnake ? snake.DelayMilliseconds : 75, hasSnake ? (int)snake.Color : 10,
                 hasSnake ? snake.Glyph : '-', target.Diagnostics.Messages,

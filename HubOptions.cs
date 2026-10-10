@@ -9,7 +9,7 @@ namespace TCPTunnel
 {
     internal enum HubIpMode { Public = 0, LanOnly = 1, Off = 2 }
 
-    internal sealed record HubOptions(HubIpMode IpMode, bool Bluetooth)
+    internal sealed record HubOptions(HubIpMode IpMode, bool Bluetooth, bool HideClientIpAddresses = false, bool EndToEndEncryption = true)
     {
         internal static HubOptions Default { get; } = new HubOptions(HubIpMode.Public, false);
 
@@ -48,7 +48,12 @@ namespace TCPTunnel
         internal static IReadOnlyList<HubOptionDescriptor> All { get; } = new[]
         {
             new HubOptionDescriptor { Id = "mode", Render = RenderMode, Change = ChangeMode },
-            new HubOptionDescriptor { Id = "bluetooth", Render = RenderBluetooth, Change = ChangeBluetooth }
+            new HubOptionDescriptor { Id = "bluetooth", Render = RenderBluetooth, Change = ChangeBluetooth },
+            new HubOptionDescriptor { Id = "e2e", Render = context =>
+                new HubOptionView("End-to-End encryption " + (context.Options.EndToEndEncryption ? "[ V ]" : "[   ]"), -1, 0, false),
+                Change = (context, direction) => context.Options with { EndToEndEncryption = !context.Options.EndToEndEncryption } },
+            new HubOptionDescriptor { Id = "hide-client-ip", Render = RenderIpPrivacy,
+                Change = (context, direction) => context.Options with { HideClientIpAddresses = !context.Options.HideClientIpAddresses } }
         };
 
         private static HubOptionView RenderMode(HubOptionContext context)
@@ -75,7 +80,7 @@ namespace TCPTunnel
             HubIpMode[] allowed = context.BluetoothAvailable ? IpCycle : IpCycle.Where(mode => mode != HubIpMode.Off).ToArray();
             HubIpMode next = OptionNavigation.Next(allowed, context.Options.IpMode, direction == 0 ? 1 : direction);
             bool bluetooth = next == HubIpMode.Off || (context.Options.IpMode != HubIpMode.Off && context.Options.Bluetooth);
-            return new HubOptions(next, bluetooth && context.BluetoothAvailable);
+            return context.Options with { IpMode = next, Bluetooth = bluetooth && context.BluetoothAvailable };
         }
 
         private static HubOptionView RenderBluetooth(HubOptionContext context)
@@ -94,6 +99,13 @@ namespace TCPTunnel
             return context.Options with { Bluetooth = !context.Options.Bluetooth };
         }
 
+        private static HubOptionView RenderIpPrivacy(HubOptionContext context)
+        {
+            string mark = context.Options.HideClientIpAddresses ? "[ V ]" : "[   ]";
+            string text = Lang.Get(TextId.HubHideClientIp) + " " + mark;
+            return new HubOptionView(text, context.Options.HideClientIpAddresses ? text.Length - mark.Length : -1, mark.Length, false);
+        }
+
         internal static string Explanation(HubOptions options)
         {
             TextId main = options.IpMode switch
@@ -105,6 +117,8 @@ namespace TCPTunnel
             string text = Lang.Get(main);
             if (options.Bluetooth && options.IpMode != HubIpMode.Off)
                 text += "\n\n" + Lang.Get(TextId.HubExplainBluetooth);
+            if (options.HideClientIpAddresses)
+                text += "\n\n" + Lang.Get(TextId.HubExplainIpPrivacy);
             return text;
         }
 

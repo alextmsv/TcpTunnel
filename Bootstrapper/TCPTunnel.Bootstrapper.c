@@ -14,12 +14,13 @@
 #define RESOURCE_PAYLOAD_ID 105
 #define RESOURCE_WINDOWS_SDK 106
 #define RESOURCE_WINRT_RUNTIME 107
+#define RESOURCE_CRYPTO 108
 
 #define COREHOST_LIB_LOAD_FAILURE ((int32_t)0x80008082)
 #define COREHOST_LIB_MISSING_FAILURE ((int32_t)0x80008083)
 #define FRAMEWORK_MISSING_FAILURE ((int32_t)0x80008096)
 
-#define DOWNLOAD_URL L"https://dotnet.microsoft.com/ru-ru/download/dotnet/thank-you/runtime-8.0.31-windows-x64-installer"
+#define DOWNLOAD_URL L"https://dotnet.microsoft.com/ru-ru/download/dotnet/thank-you/runtime-10.0.12-windows-x64-installer"
 #define MAX_RUNTIME_PATH 32768
 
 typedef void* hostfxr_handle;
@@ -379,7 +380,9 @@ static BOOL extract_managed_payload(
         !combine_path(file_path, _countof(file_path), version_directory, L"Microsoft.Windows.SDK.NET.dll") ||
         !write_resource_file(RESOURCE_WINDOWS_SDK, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"WinRT.Runtime.dll") ||
-        !write_resource_file(RESOURCE_WINRT_RUNTIME, file_path))
+        !write_resource_file(RESOURCE_WINRT_RUNTIME, file_path) ||
+        !combine_path(file_path, _countof(file_path), version_directory, L"tcptunnel_crypto.dll") ||
+        !write_resource_file(RESOURCE_CRYPTO, file_path))
         return FALSE;
 
     return TRUE;
@@ -436,9 +439,9 @@ static void open_runtime_download_page(void)
     HINSTANCE result;
     wchar_t suppress_browser[2];
     write_stderr_text(
-        L"\r\nДля запуска TCPTunnel требуется .NET 8 Runtime (x64).\r\n"
-        L"TCPTunnel requires .NET 8 Runtime (x64).\r\n"
-        L"Скачиваю установщик .NET 8 Runtime через браузер / Downloading the .NET 8 Runtime installer: " DOWNLOAD_URL L"\r\n"
+        L"\r\nДля запуска TCPTunnel требуется .NET 10 Runtime (x64).\r\n"
+        L"TCPTunnel requires .NET 10 Runtime (x64).\r\n"
+        L"Скачиваю установщик .NET 10 Runtime через браузер / Downloading the .NET 10 Runtime installer: " DOWNLOAD_URL L"\r\n"
         L"Запустите скачанный установщик, затем снова откройте TCPTunnel.\r\n"
         L"Run the downloaded installer, then open TCPTunnel again.\r\n\r\n");
     if (GetEnvironmentVariableW(
@@ -476,6 +479,9 @@ int wmain(int argc, wchar_t** argv)
     int32_t result;
     int index;
 
+    if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))
+        return 1;
+
     if (!find_dotnet_root_and_hostfxr(
             dotnet_root,
             _countof(dotnet_root),
@@ -492,7 +498,7 @@ int wmain(int argc, wchar_t** argv)
         return exit_after_key(ERROR_WRITE_FAULT);
     }
 
-    hostfxr = LoadLibraryW(hostfxr_path);
+    hostfxr = LoadLibraryExW(hostfxr_path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (hostfxr == NULL)
     {
         open_runtime_download_page();

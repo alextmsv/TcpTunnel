@@ -129,6 +129,7 @@ namespace TCPTunnel
         private BluetoothLEAdvertisementPublisher publisher;
         private Timer refreshTimer;
         private ulong address;
+        internal ulong Address => address;
         private int advertisedCount = -1;
         private int refreshing;
         private bool disposed;

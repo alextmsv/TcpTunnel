@@ -12,12 +12,15 @@ namespace TCPTunnel
         TooManyMessages,
         InvalidImage,
         TooManyImages,
-        Kicked
+        Kicked,
+        SecurityNotice,
+        EncryptionError
     }
 
     internal static class SystemMessageProtocol
     {
         private const string Prefix = "TCPTUNNEL_SYSTEM_V1|";
+        internal static bool IsControlMessage(string value) => value != null && value.StartsWith(Prefix, StringComparison.Ordinal);
 
         public static string Create(SystemMessageKind kind, string argument = null)
         {
@@ -52,6 +55,10 @@ namespace TCPTunnel
 
             switch (kind)
             {
+                case SystemMessageKind.SecurityNotice:
+                case SystemMessageKind.EncryptionError:
+                    localized = argument;
+                    return true;
                 case SystemMessageKind.UserJoined:
                     localized = Lang.Get(TextId.UserJoined, argument);
                     return true;

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <NativeCryptoProfile Condition="'$(Configuration)' == 'Debug'">debug</NativeCryptoProfile>
+    <NativeCryptoProfile Condition="'$(NativeCryptoProfile)' == ''">release</NativeCryptoProfile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="NativeMlsSession.cs;ProfileIdentityStore.cs;RoomIdentityGate.cs;RoomTrustStore.cs" />
+    <Compile Include="../Cryptography/NativeMlsSession.cs;../Cryptography/ProfileIdentityStore.cs;../Cryptography/RoomIdentityGate.cs;../Cryptography/RoomTrustStore.cs" />
+    <Compile Include="../NicknamePolicy.cs" />
+    <EmbeddedResource Include="../SecurityData/confusables.txt" LogicalName="TCPTunnel.Security.Confusables" />
+    <None Include="../obj/NativeCrypto/x86_64-pc-windows-msvc/$(NativeCryptoProfile)/tcptunnel_crypto.dll" Link="tcptunnel_crypto.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
