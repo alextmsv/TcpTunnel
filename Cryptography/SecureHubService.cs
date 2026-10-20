@@ -16,28 +16,38 @@ namespace TCPTunnel.Cryptography;
 internal sealed class SecureHubService : IDisposable
 {
     private sealed record Peer(Client Client, string Fingerprint);
+    private sealed class HubFullException : UnauthorizedAccessException { }
     private readonly NativeMlsSession owner;
     private readonly RoomIdentityGate identities;
     private readonly X509Certificate2 certificate;
     private readonly byte[] room;
     private readonly SecureBoot boot;
+    private string ownerDisplayName;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<Client, Peer> peers = new();
     private readonly PendingRoomApprovals pending = new();
+    private readonly OneTimeInvitations invitations = new();
     private readonly CancellationTokenSource stop = new();
     private Client? local;
     private long revision = 1;
     private bool failed;
+    private bool filesEnabled;
+    private readonly int participantLimit;
     internal string OwnerFingerprint => owner.Fingerprint;
+    internal byte[] OwnerPublicKey => (byte[])boot.OwnerKey.Clone();
+    internal byte[] SignDiscovery(byte[] proof) => owner.SignIdentityProof(proof);
     internal int ParticipantCount => stop.IsCancellationRequested ? 0 : peers.Count + 1;
     internal event Action<Exception>? SessionError;
     internal string ServiceStatus => failed ? "FAILED" : stop.IsCancellationRequested ? "STOPPED" : "READY (OpenMLS)";
-    internal SecureHubService(string nickname, NativeMlsSession owner)
+    internal SecureHubService(string nickname, NativeMlsSession owner, int participantLimit = 64)
     {
         this.owner = owner;
         try
         {
+            if (participantLimit is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(participantLimit));
+            this.participantLimit = participantLimit;
             if (!NetWorker.IsNicknameValid(nickname)) throw new InvalidDataException("A secure Hub requires an owner nickname.");
+            ownerDisplayName = nickname;
             room = SHA256.HashData(Encoding.ASCII.GetBytes("TCPTunnel/Room/v2/" + owner.Fingerprint));
             identities = new RoomIdentityGate(room, owner, storage: new RoomTrustStore(Path.Combine(ApplicationSettings.DataDirectory, "rooms")));
             identities.Approve(nickname, owner.Fingerprint); owner.CreateGroup(room);
@@ -50,12 +60,14 @@ internal sealed class SecureHubService : IDisposable
             // WARNING: Windows Schannel rejects ephemeral TLS private keys; disposal removes this temporary key container.
             try { certificate = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.UserKeySet); }
             finally { CryptographicOperations.ZeroMemory(pfx); }
-            var unsigned = new SecureBoot(room, owner.PublicKey, SHA256.HashData(certificate.RawData), nickname, Array.Empty<byte>());
+            var unsigned = new SecureBoot(room, owner.PublicKey, SHA256.HashData(certificate.RawData), nickname, Array.Empty<byte>(), 3);
             boot = unsigned with { Signature = owner.SignIdentityProof(SecureWire.BootProof(unsigned)) };
         }
         catch { owner.Dispose(); throw; }
     }
     internal string Invitation => new SecureInvitation(2, Convert.ToHexString(room), owner.Fingerprint, ServerInterface.DisplayAddress, ServerInterface.ListeningPort, ServerInterface.BluetoothAddress).Encode();
+    internal string CreateOneTimeInvitation() => new SecureInvitation(3, Convert.ToHexString(room), owner.Fingerprint, ServerInterface.DisplayAddress, ServerInterface.ListeningPort, ServerInterface.BluetoothAddress, invitations.Create()).Encode();
+    internal void RevokeInvitations() => invitations.RevokeAll();
     internal string PendingRequests
     {
         get => String.Join("\n", pending.Snapshot().SelectMany(item => item.DisplayLines()));
@@ -115,8 +127,15 @@ internal sealed class SecureHubService : IDisposable
                     if (received.Kind != MlsReceivedKind.Application || received.SenderFingerprint != peer.Fingerprint) throw new UnauthorizedAccessException("MLS sender does not own this authenticated connection.");
                     try
                     {
-                        var messages = SecureWire.Unpack(received.Content); var rendered = ValidateContent(client, messages);
-                        client.Diagnostics.CountMessage();
+                        var messages = SecureWire.Unpack(received.Content);
+                        if (messages.Length == 1 && FileTransferProtocol.IsControl(messages[0]) && !filesEnabled)
+                        {
+                            if (!client.TryConsumeControlToken()) throw new InvalidDataException("File service unavailable.");
+                            SendFileCapability(client, false, session.Token);
+                            QueueSecure(client, 10, SHA256.HashData(packet.Payload), session.Token); continue;
+                        }
+                        var rendered = ValidateContent(client, messages);
+                        if (!(messages.Length == 1 && FileTransferProtocol.IsControl(messages[0]))) client.Diagnostics.CountMessage();
                         await BroadcastPacketAsync(5, packet.Payload, client, session.Token).ConfigureAwait(false);
                         if (local != null) QueueLocal(local, rendered, session.Token);
                         QueueSecure(client, 10, SHA256.HashData(packet.Payload), session.Token);
@@ -128,7 +147,13 @@ internal sealed class SecureHubService : IDisposable
         }
         catch (Exception error) when (error is IOException or InvalidDataException or FormatException or OperationCanceledException or ObjectDisposedException or AuthenticationException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException or MlsException or TimeoutException)
         {
-            SessionError?.Invoke(error);
+            if (error is HubFullException && client.SecureWireEnabled)
+            {
+                using var notice = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
+                notice.CancelAfter(TimeSpan.FromSeconds(1));
+                try { await client.SendSecureAsync(1, Encoding.UTF8.GetBytes(SystemMessageProtocol.Create(SystemMessageKind.HubFull)), notice.Token).ConfigureAwait(false); } catch { }
+            }
+            else SessionError?.Invoke(error);
             if (error is MlsException mls && mls.Code is MlsError.InternalFailure or MlsError.PoisonedState) FailClosed();
         }
         finally
@@ -144,14 +169,19 @@ internal sealed class SecureHubService : IDisposable
         await client.SendAsync(NetWorker.DO_AUTH_MESSAGE, token).ConfigureAwait(false);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token); deadline.CancelAfter(TimeSpan.FromSeconds(30));
         string reply = await MessageProtocol.ReadStringAsync(client.Stream, deadline.Token).ConfigureAwait(false);
-        if (reply != "REPLY:" + boot.OwnerName || ApplicationSettings.Current.IdentityFingerprint != owner.Fingerprint) throw new UnauthorizedAccessException("The local profile is not the room owner.");
+        if (!reply.StartsWith("REPLY:", StringComparison.Ordinal) || !NicknamePolicy.IsValid(reply.Substring(6)) || ApplicationSettings.Current.IdentityFingerprint != owner.Fingerprint) throw new UnauthorizedAccessException("The local profile is not the room owner.");
+        string requestedName = reply.Substring(6);
         await gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (local != null || !NetWorker.broadcaster.TryReserveNickname(client, boot.OwnerName)) throw new UnauthorizedAccessException("Owner UI is already connected.");
+            if (local != null || !NetWorker.broadcaster.TryReserveNickname(client, requestedName)) throw new UnauthorizedAccessException("Owner UI is already connected.");
+            identities.Rename(ownerDisplayName, requestedName, owner.Fingerprint); ownerDisplayName = requestedName;
             local = client; client.IpAddress = String.Empty;
+            client.SupportsNicknameSnake = true;
             QueueLocal(client, new[] { NetWorker.AUTH_OK_MESSAGE }, token);
             if (!NetWorker.broadcaster.CompleteAuthentication(client)) throw new IOException("Hub participant limit reached.");
+            ServerInterface.RenameAdministrator(client, client.Nickname);
+            await BroadcastRosterAsync(token).ConfigureAwait(false);
             QueueLocal(client, peers.Values.Select(peer => SystemMessageProtocol.Create(SystemMessageKind.ParticipantPresent, peer.Client.Nickname)).ToArray(), token);
             await NoticeAsync(Lang.Get(TextId.HelpOwnerTip), token).ConfigureAwait(false);
         }
@@ -159,20 +189,29 @@ internal sealed class SecureHubService : IDisposable
     }
     private async Task AuthenticateRemoteAsync(Client client, CancellationToken token)
     {
-        await client.SendAsync("E2E2:" + Convert.ToBase64String(SecureWire.Json(boot)), token).ConfigureAwait(false);
+        await client.SendAsync("E2E3:" + Convert.ToBase64String(SecureWire.Json(boot)), token).ConfigureAwait(false);
         var tls = new SslStream(client.Stream, false);
         client.Stream = tls;
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token); handshake.CancelAfter(TimeSpan.FromSeconds(15));
         await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13, AllowRenegotiation = false }, handshake.Token).ConfigureAwait(false);
         client.SecureWireEnabled = true;
+        client.SupportsNicknameSnake = true;
         using var identityDeadline = CancellationTokenSource.CreateLinkedTokenSource(token); identityDeadline.CancelAfter(TimeSpan.FromMinutes(2));
         var packet = await SecureWire.ReadAsync(tls, identityDeadline.Token, 256 * 1024).ConfigureAwait(false);
         if (packet.Kind != 2) throw new InvalidDataException("Missing identity hello.");
         var hello = SecureWire.Parse<SecureHello>(packet.Payload);
+        if (hello.ProtocolVersion != 3) throw new UnauthorizedAccessException("This Hub requires encrypted chat protocol 3.");
         if (hello.Package == null || hello.Binding == null || hello.Binding.Length != 32 || !NetWorker.IsNicknameValid(hello.Nickname)) throw new InvalidDataException("Invalid identity hello.");
         string fingerprint = NativeMlsSession.FingerprintOf(owner.KeyPackagePublicKey(hello.Package));
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        bool full;
+        try { full = peers.Count >= participantLimit - 1; } finally { gate.Release(); }
+        if (full) throw new HubFullException();
         if (fingerprint == owner.Fingerprint) throw new UnauthorizedAccessException("The owner uses the private local connection.");
-        if (!identities.IsApproved(hello.Nickname, fingerprint))
+        bool invitation = hello.InvitationToken != null;
+        if (invitation && !invitations.Available(hello.InvitationToken!)) throw new UnauthorizedAccessException("Invitation expired, revoked or already used.");
+        bool previouslyApproved = identities.IsApproved(hello.Nickname, fingerprint);
+        if (!previouslyApproved && !invitation)
         {
             var request = pending.Add(hello.Nickname, fingerprint);
             try
@@ -182,19 +221,27 @@ internal sealed class SecureHubService : IDisposable
             }
             finally { pending.Remove(request); }
         }
-        var challenge = identities.Issue(hello.Nickname, hello.Package, hello.Binding);
+        var challenge = invitation ? identities.IssueInvitation(hello.Nickname, hello.Package, hello.Binding) : identities.Issue(hello.Nickname, hello.Package, hello.Binding);
         await client.SendSecureAsync(3, SecureWire.Json(challenge), token).ConfigureAwait(false);
         using var proofDeadline = CancellationTokenSource.CreateLinkedTokenSource(token); proofDeadline.CancelAfter(TimeSpan.FromSeconds(30));
         var proof = await SecureWire.ReadAsync(tls, proofDeadline.Token, 256).ConfigureAwait(false);
-        if (proof.Kind != 3 || !identities.Complete(challenge.Id, proof.Payload, hello.Binding, out var approved)) throw new UnauthorizedAccessException("Identity proof was rejected.");
+        AuthorizedRoomJoin? approved = null;
+        bool proved = proof.Kind == 3 && (invitation
+            ? identities.CompleteInvitation(challenge.Id, proof.Payload, hello.Binding, invitations, hello.InvitationToken!, out approved)
+            : identities.Complete(challenge.Id, proof.Payload, hello.Binding, out approved));
+        if (!proved) throw new UnauthorizedAccessException("Identity proof was rejected.");
         await gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (peers.Count >= 63 || peers.Values.Any(peer => peer.Fingerprint == fingerprint) || !NetWorker.broadcaster.TryReserveNickname(client, hello.Nickname)) throw new UnauthorizedAccessException("Identity or nickname is already connected.");
+            if (peers.Count >= participantLimit - 1 || !client.PromoteAdmission())
+                throw new HubFullException();
+            if (!identities.IsApproved(hello.Nickname, fingerprint)) throw new UnauthorizedAccessException("Identity approval was revoked before admission.");
+            if (peers.Values.Any(peer => peer.Fingerprint == fingerprint) || !NetWorker.broadcaster.TryReserveNickname(client, hello.Nickname)) throw new UnauthorizedAccessException("Identity or nickname is already connected.");
             MembershipChange change;
             try { change = owner.AddMember(approved!.KeyPackage); }
             catch (MlsException error) when (error.Code is MlsError.RejectedMessage or MlsError.InvalidArgument or MlsError.ResourceLimit)
             { NetWorker.broadcaster.RemoveClient(client); throw; }
+            PauseFiles(token);
             owner.MergePendingCommit();
             await BroadcastPacketAsync(6, change.Commit, null, token).ConfigureAwait(false);
             peers.Add(client, new Peer(client, fingerprint)); client.IpAddress = client.ObservedIpAddress;
@@ -208,27 +255,98 @@ internal sealed class SecureHubService : IDisposable
     }
     private string[] ValidateContent(Client client, string[] messages)
     {
+        if (messages.Length == 1 && FileTransferProtocol.IsControl(messages[0]))
+        {
+            if (!filesEnabled || !client.TryConsumeFileToken()) throw new InvalidDataException("File transfer rate limit exceeded or service unavailable.");
+            return SecureWire.Render(messages, client.Nickname);
+        }
         bool image = messages.Length > 1 || ImageProtocol.IsImageControlMessage(messages[0]);
         if (!(image ? client.TryConsumeImageToken() : client.TryConsumeMessageToken())) throw new InvalidDataException("Chat rate limit exceeded.");
         string[] rendered = SecureWire.Render(messages, client.Nickname);
-        if (messages.Length == 1 && SnakeProtocol.TryParseClientProfile(messages[0], out var profile)) client.UpdateSnakeProfile(profile);
+        if (messages.Length == 1 && SnakeProtocol.TryParseClientProfile(messages[0], out var profile))
+        {
+            bool hadProfile = client.TryGetSnakeProfile(out var previous);
+            client.UpdateSnakeProfile(profile);
+            if (hadProfile && !SnakeProtocol.SameConfiguration(previous, profile))
+            {
+                string notice = SystemMessageProtocol.Create(SystemMessageKind.SnakeChanged, client.Nickname);
+                foreach (Client peer in peers.Keys) QueueSecure(peer, 1, Encoding.UTF8.GetBytes(notice), token: stop.Token);
+                if (local != null) QueueLocal(local, new[] { notice }, stop.Token);
+            }
+        }
         return rendered;
     }
     private async Task SendOwnerAsync(Client client, string[] messages, CancellationToken token)
     {
-        ValidateContent(client, messages); byte[] plaintext = SecureWire.Pack(messages);
-        await gate.WaitAsync(token).ConfigureAwait(false);
-        try { await BroadcastPacketAsync(5, owner.Encrypt(plaintext), null, token).ConfigureAwait(false); client.Diagnostics.CountMessage(); }
-        finally { CryptographicOperations.ZeroMemory(plaintext); gate.Release(); }
+        byte[] plaintext = SecureWire.Pack(messages);
+        try
+        {
+            await gate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                bool file = messages.Length == 1 && FileTransferProtocol.IsControl(messages[0]);
+                if (file && !filesEnabled) { SendFileCapability(client, false, token); return; }
+                ValidateContent(client, messages); await BroadcastPacketAsync(5, owner.Encrypt(plaintext), null, token).ConfigureAwait(false);
+                if (!file) client.Diagnostics.CountMessage();
+            }
+            finally { gate.Release(); }
+        }
+        finally { CryptographicOperations.ZeroMemory(plaintext); }
     }
     private async Task<bool> ControlAsync(Client client, string message, CancellationToken token)
     {
+        if (message == FileTransferProtocol.Probe)
+        {
+            if (!client.TryConsumeControlToken()) return true;
+            await gate.WaitAsync(token).ConfigureAwait(false);
+            try { client.SupportsFileTransfer = true; RefreshFileCapabilities(token); }
+            finally { gate.Release(); }
+            return true;
+        }
+        if (NicknameProtocol.IsControl(message))
+        {
+            if (client.IsReady && client.TryConsumeControlToken() && NicknameProtocol.TryRequest(message, out string id, out string name))
+                await RenameAsync(client, id, name, token).ConfigureAwait(false);
+            return true;
+        }
         if (WhoisProtocol.IsControl(message)) { await WhoisServer.HandleAsync(client, message, token).ConfigureAwait(false); return true; }
         if (!HubStatusProtocol.IsControl(message)) return false;
+        if (message == PrivacyProtocol.Ack) { client.IpDisclosureAllowed = true; return true; }
         if (message.Length > 256 || !client.TryConsumeControlToken()) return true;
         if (message == HubStatusProtocol.Hello) { client.SupportsHubStatus = true; await client.SendAsync(HubStatusProtocol.Capabilities, token).ConfigureAwait(false); }
-        else if (client.SupportsHubStatus && HubStatusProtocol.TryParseRequest(message, out string request)) await client.SendAsync(HubStatusProtocol.CreateReply(request, boot.OwnerName, peers.Count + 1), token).ConfigureAwait(false);
+        else if (PrivacyProtocol.TryRequest(message, out string privacyId)) await client.SendAsync(PrivacyProtocol.Reply(privacyId, client.HideClientIpAddresses), token).ConfigureAwait(false);
+        else if (client.SupportsHubStatus && HubStatusProtocol.TryParseRequest(message, out string request, out bool modern)) await client.SendAsync(HubStatusProtocol.CreateReply(request, ownerDisplayName, peers.Count + 1, modern ? local?.OriginalNickname ?? ownerDisplayName : null), token).ConfigureAwait(false);
         return true;
+    }
+    private async Task RenameAsync(Client client, string id, string name, CancellationToken token)
+    {
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (client != local && !peers.ContainsKey(client)) throw new UnauthorizedAccessException("Inactive room member.");
+            string previous = client.Nickname, error = "OK";
+            string fingerprint = client == local ? owner.Fingerprint : peers[client].Fingerprint;
+            if (!NetWorker.broadcaster.CanRename(client, name)) error = "TAKEN";
+            else
+            {
+                try { if (!NetWorker.broadcaster.TryRename(client, name, () => identities.Rename(previous, name, fingerprint))) error = "TAKEN"; }
+                catch (InvalidOperationException) { error = "LIMIT"; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { error = "STORE"; }
+            }
+            var change = new NicknameChange(previous, error == "OK" ? name : previous, client.OriginalNickname);
+            var reply = NicknameProtocol.Reply(id, error, change);
+            if (client == local) QueueLocal(client, new[] { reply }, token); else QueueSecure(client, 1, Encoding.UTF8.GetBytes(reply), token);
+            if (error != "OK" || previous == name) return;
+            if (client == local) { ownerDisplayName = name; ServerInterface.RenameAdministrator(client, name); }
+            await BroadcastRosterAsync(token).ConfigureAwait(false);
+            if (local != null)
+            {
+                var updates = new List<string> { NicknameProtocol.Changed(change), SnakeProtocol.CreateRemove(previous) };
+                if (client != local && client.TryGetSnakeProfile(out var profile) && profile.Enabled) updates.Add(SnakeProtocol.CreateSet(name, profile));
+                QueueLocal(local, updates.ToArray(), token);
+            }
+        }
+        finally { gate.Release(); }
     }
     private Task NoticeAsync(string text, CancellationToken token)
     {
@@ -236,6 +354,28 @@ internal sealed class SecureHubService : IDisposable
         return Task.CompletedTask;
     }
     private void QueueSecure(Client client, byte kind, byte[] data, CancellationToken token) => _ = DeliverAsync(client, SecureWire.EncodeBatch(kind, data), token);
+    private void SendFileCapability(Client client, bool enabled, CancellationToken token)
+    {
+        string message = enabled ? FileTransferProtocol.Capabilities : FileTransferProtocol.Unavailable;
+        if (client == local) QueueLocal(client, new[] { message }, token);
+        else QueueSecure(client, 1, Encoding.UTF8.GetBytes(message), token);
+    }
+    private void PauseFiles(CancellationToken token)
+    {
+        if (!filesEnabled) return;
+        filesEnabled = false;
+        if (local?.SupportsFileTransfer == true) SendFileCapability(local, false, token);
+        foreach (Client client in peers.Keys.Where(p => p.SupportsFileTransfer)) SendFileCapability(client, false, token);
+    }
+    private void RefreshFileCapabilities(CancellationToken token)
+    {
+        bool enabled = local?.SupportsFileTransfer == true && peers.Keys.All(p => p.SupportsFileTransfer);
+        if (enabled == filesEnabled) return;
+        if (!enabled) { PauseFiles(token); return; }
+        filesEnabled = true;
+        SendFileCapability(local!, true, token);
+        foreach (Client client in peers.Keys) SendFileCapability(client, true, token);
+    }
     private void QueueLocal(Client client, string[] messages, CancellationToken token) => _ = DeliverAsync(client, EncodedFrameBatch.Encode(messages), token);
     private Task BroadcastPacketAsync(byte kind, byte[] packet, Client? excluded, CancellationToken token)
     {
@@ -253,7 +393,7 @@ internal sealed class SecureHubService : IDisposable
     private Task BroadcastRosterAsync(CancellationToken token)
     {
         static string? Snake(Client? client) => client != null && client.TryGetSnakeProfile(out var profile) && profile.Enabled ? SnakeProtocol.CreateSet(client.Nickname, profile) : null;
-        var members = new[] { new SecureRosterEntry(boot.OwnerName, owner.Fingerprint, Snake(local)) }.Concat(peers.Values.Select(peer => new SecureRosterEntry(peer.Client.Nickname, peer.Fingerprint, Snake(peer.Client)))).ToArray();
+        var members = new[] { new SecureRosterEntry(ownerDisplayName, owner.Fingerprint, Snake(local), local?.OriginalNickname ?? ownerDisplayName) }.Concat(peers.Values.Select(peer => new SecureRosterEntry(peer.Client.Nickname, peer.Fingerprint, Snake(peer.Client), peer.Client.OriginalNickname))).ToArray();
         var unsigned = new SecureRoster(room, ++revision, members, Array.Empty<byte>());
         var signed = unsigned with { Signature = owner.SignIdentityProof(SecureWire.Proof(3, SecureWire.Json(unsigned))) };
         return BroadcastPacketAsync(7, SecureWire.Json(signed), null, token);
@@ -263,11 +403,12 @@ internal sealed class SecureHubService : IDisposable
         await gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (local == client) { local = null; return; }
+            if (local == client) { PauseFiles(token); local = null; if (!stop.IsCancellationRequested) await BroadcastRosterAsync(token).ConfigureAwait(false); return; }
             if (!peers.Remove(client, out var peer) || stop.IsCancellationRequested) return;
             byte[] commit = owner.RemoveMember(peer.Fingerprint); owner.MergePendingCommit();
             await BroadcastPacketAsync(6, commit, null, token).ConfigureAwait(false);
             await BroadcastRosterAsync(token).ConfigureAwait(false);
+            RefreshFileCapabilities(token);
             if (local != null) QueueLocal(local, new[] { SnakeProtocol.CreateRemove(client.Nickname), SystemMessageProtocol.Create(SystemMessageKind.UserLeft, client.Nickname) }, token);
         }
         finally { gate.Release(); }
@@ -287,7 +428,7 @@ internal sealed class SecureHubService : IDisposable
     private void FailClosed() { failed = true; stop.Cancel(); foreach (var client in NetWorker.broadcaster.GetAuthenticatedClients()) client.Close(); }
     public void Dispose()
     {
-        stop.Cancel(); pending.CancelAll();
+        stop.Cancel(); pending.CancelAll(); invitations.RevokeAll();
         gate.Wait(); try { owner.Dispose(); certificate.Dispose(); } finally { gate.Release(); }
     }
 }

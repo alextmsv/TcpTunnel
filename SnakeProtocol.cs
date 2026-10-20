@@ -11,6 +11,7 @@ namespace TCPTunnel
         public ConsoleColor Color;
         public int Step;
         public char Glyph;
+        public bool Nickname;
     }
 
     internal enum SnakeUpdateKind
@@ -22,8 +23,21 @@ namespace TCPTunnel
 
     internal static class SnakeProtocol
     {
+        internal static bool SameConfiguration(SnakeProfile first, SnakeProfile second) => first.Enabled == second.Enabled && first.Paused == second.Paused &&
+            first.DelayMilliseconds == second.DelayMilliseconds && first.Color == second.Color && first.Glyph == second.Glyph && first.Nickname == second.Nickname;
         public const int ReferencePerimeterLength = 170;
         private const string Prefix = "\u001eTCPTUNNEL|SNAKE|";
+        internal const string Hello = Prefix + "HELLO2";
+        internal const string Capabilities = Prefix + "CAPS2";
+        internal static char[] NicknameBody(string nickname)
+        {
+            if (!NetWorker.IsNicknameValid(nickname)) return Array.Empty<char>();
+            var body = new StringBuilder();
+            foreach (Rune rune in nickname.EnumerateRunes())
+                if (rune.Value <= 0x2E7F) body.Append((char)rune.Value);
+                else body.Append('U').Append(rune.Value.ToString("X", System.Globalization.CultureInfo.InvariantCulture));
+            return body.ToString().ToCharArray();
+        }
         private static readonly Encoding Utf8 = new UTF8Encoding(false, true);
 
         public static bool IsSnakeControlMessage(string message)
@@ -39,7 +53,7 @@ namespace TCPTunnel
                    (int)profile.Color + "|" +
                    profile.Step + "|" +
                    (profile.Paused ? "1" : "0") + "|" +
-                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph);
+                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph) + (profile.Nickname ? "|1" : String.Empty);
         }
 
         public static bool TryParseClientProfile(string message, out SnakeProfile profile)
@@ -50,7 +64,7 @@ namespace TCPTunnel
                 return false;
 
             fields = message.Substring(Prefix.Length).Split('|');
-            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7) || fields[0] != "PROFILE")
+            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7 && fields.Length != 8) || fields[0] != "PROFILE")
                 return false;
 
             int enabled;
@@ -59,12 +73,14 @@ namespace TCPTunnel
             int step;
             int paused = 0;
             int glyph = '-';
+            int nicknameMode = 0;
             if (!Int32.TryParse(fields[1], out enabled) || (enabled != 0 && enabled != 1) ||
                 !Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
                 !Int32.TryParse(fields[4], out step) ||
                 (fields.Length >= 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))) ||
-                (fields.Length == 7 && !Int32.TryParse(fields[6], out glyph)))
+                (fields.Length >= 7 && !Int32.TryParse(fields[6], out glyph)) ||
+                (fields.Length == 8 && (!Int32.TryParse(fields[7], out nicknameMode) || nicknameMode is not (0 or 1))))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
@@ -78,17 +94,18 @@ namespace TCPTunnel
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
             profile.Glyph = (char)glyph;
+            profile.Nickname = nicknameMode == 1;
             return true;
         }
 
-        public static string CreateSet(string nickname, SnakeProfile profile)
+        public static string CreateSet(string nickname, SnakeProfile profile, bool nicknameSupported = true)
         {
             return Prefix + "SET|" + EncodeNickname(nickname) + "|" +
                    profile.DelayMilliseconds + "|" +
                    (int)profile.Color + "|" +
                    NormalizeStep(profile.Step) + "|" +
                    (profile.Paused ? "1" : "0") + "|" +
-                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph);
+                   (int)(profile.Glyph == '\0' ? '-' : profile.Glyph) + (profile.Nickname && nicknameSupported ? "|1" : String.Empty);
         }
 
         public static string CreateRemove(string nickname)
@@ -119,7 +136,7 @@ namespace TCPTunnel
                 return true;
             }
 
-            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7) || fields[0] != "SET" ||
+            if ((fields.Length != 5 && fields.Length != 6 && fields.Length != 7 && fields.Length != 8) || fields[0] != "SET" ||
                 !TryDecodeNickname(fields[1], out nickname))
                 return false;
 
@@ -128,11 +145,13 @@ namespace TCPTunnel
             int step;
             int paused = 0;
             int glyph = '-';
+            int nicknameMode = 0;
             if (!Int32.TryParse(fields[2], out delay) || delay < 20 || delay > 1000 ||
                 !Int32.TryParse(fields[3], out color) ||
                 !Int32.TryParse(fields[4], out step) ||
                 (fields.Length >= 6 && (!Int32.TryParse(fields[5], out paused) || (paused != 0 && paused != 1))) ||
-                (fields.Length == 7 && !Int32.TryParse(fields[6], out glyph)))
+                (fields.Length >= 7 && !Int32.TryParse(fields[6], out glyph)) ||
+                (fields.Length == 8 && (!Int32.TryParse(fields[7], out nicknameMode) || nicknameMode is not (0 or 1))))
                 return false;
 
             ConsoleColor consoleColor = (ConsoleColor)color;
@@ -146,6 +165,7 @@ namespace TCPTunnel
             profile.Color = consoleColor;
             profile.Step = NormalizeStep(step);
             profile.Glyph = (char)glyph;
+            profile.Nickname = nicknameMode == 1;
             kind = SnakeUpdateKind.Set;
             return true;
         }

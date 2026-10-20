@@ -123,7 +123,9 @@ namespace TCPTunnel
         private readonly Action<IChatConnection> admit;
         private readonly Func<int> participantCount;
         private readonly BluetoothHubMode mode;
-        private readonly string nickname;
+        private volatile string nickname;
+        private string advertisedNickname;
+        internal void Rename(string name) { if (NicknamePolicy.IsValid(name)) nickname = name; }
         private readonly uint instance;
         private RfcommServiceProvider provider;
         private BluetoothLEAdvertisementPublisher publisher;
@@ -202,10 +204,11 @@ namespace TCPTunnel
 
         private async Task<BluetoothError> PublishAsync(int count, CancellationToken token)
         {
+            string publishedName = nickname;
             var next = new BluetoothLEAdvertisementPublisher();
             using (var writer = new DataWriter())
             {
-                writer.WriteBytes(HubBeaconCodec.Encode(address, instance, mode, count, nickname));
+                writer.WriteBytes(HubBeaconCodec.Encode(address, instance, mode, count, publishedName));
                 next.Advertisement.ManufacturerData.Add(new BluetoothLEManufacturerData(HubBeaconCodec.CompanyId, writer.DetachBuffer()));
             }
 
@@ -243,7 +246,7 @@ namespace TCPTunnel
                 next.StatusChanged -= Changed;
             }
             if (result == BluetoothError.Success)
-                advertisedCount = count;
+            { advertisedCount = count; advertisedNickname = publishedName; }
             return result;
         }
 
@@ -254,7 +257,7 @@ namespace TCPTunnel
             try
             {
                 int count = participantCount();
-                if (count == advertisedCount)
+                if (count == advertisedCount && nickname == advertisedNickname)
                     return;
                 using var timeout = new CancellationTokenSource(PublisherStartTimeout + TimeSpan.FromSeconds(1));
                 PublishAsync(count, timeout.Token).GetAwaiter().GetResult();

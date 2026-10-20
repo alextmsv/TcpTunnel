@@ -14,7 +14,9 @@ namespace TCPTunnel
         TooManyImages,
         Kicked,
         SecurityNotice,
-        EncryptionError
+        EncryptionError,
+        HubFull,
+        SnakeChanged
     }
 
     internal static class SystemMessageProtocol
@@ -55,6 +57,12 @@ namespace TCPTunnel
 
             switch (kind)
             {
+                case SystemMessageKind.HubFull:
+                    localized = Lang.Get(TextId.HubFull);
+                    return true;
+                case SystemMessageKind.SnakeChanged:
+                    localized = Lang.Get(TextId.SnakeChanged, argument);
+                    return true;
                 case SystemMessageKind.SecurityNotice:
                 case SystemMessageKind.EncryptionError:
                     localized = argument;

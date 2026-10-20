@@ -8,11 +8,11 @@ namespace TCPTunnel
     internal sealed record WhoisInfo(string Nickname, string Address, bool PublicAddressUnavailable,
         int? PingMilliseconds, int WindowWidth, int WindowHeight, bool? SnakeEnabled, bool Paused,
         int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages,
-        string Transport = null, int? SignalDbm = null, bool AddressHidden = false);
+        string Transport = null, int? SignalDbm = null, bool AddressHidden = false, string OriginalNickname = null);
 
     internal sealed record WhoisDiagnosticsSnapshot(string Nickname, int? PingMilliseconds,
         int WindowWidth, int WindowHeight, bool? SnakeEnabled, bool Paused,
-        int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages, string Transport, int? SignalDbm);
+        int SnakeDelay, int SnakeColor, int SnakeGlyph, long Messages, string Transport, int? SignalDbm, string OriginalNickname = null);
 
     internal static class WhoisProtocol
     {
@@ -29,7 +29,7 @@ namespace TCPTunnel
                 info.Nickname, Address = String.Empty, PublicAddressUnavailable = false,
                 info.PingMilliseconds, info.WindowWidth, info.WindowHeight, info.SnakeEnabled,
                 info.Paused, info.SnakeDelay, info.SnakeColor, info.SnakeGlyph, info.Messages,
-                info.Transport, info.SignalDbm, AddressHidden = true
+                info.Transport, info.SignalDbm, AddressHidden = true, info.OriginalNickname
             });
         internal static string Notice(string nick) => Prefix + "NOTICE|" + Encode(nick);
         internal static string Size(int width, int height) => Prefix + "SIZE|" + width + "|" + height;
@@ -86,6 +86,7 @@ namespace TCPTunnel
                 int.TryParse(parts[1], out width) && int.TryParse(parts[2], out height) && ValidSize(width, height);
         }
         private static bool ValidInfo(WhoisInfo info) => NetWorker.IsNicknameValid(info.Nickname) &&
+            (info.OriginalNickname == null || NetWorker.IsNicknameValid(info.OriginalNickname)) &&
             (!info.AddressHidden || (info.Address == String.Empty && !info.PublicAddressUnavailable)) &&
             (info.Transport is null or TransportTcp or TransportBluetooth or TransportLocal) &&
             (info.SignalDbm == null || ValidSignal(info.SignalDbm.Value)) &&

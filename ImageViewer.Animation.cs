@@ -77,9 +77,9 @@ namespace TCPTunnel
                 {
                     try
                     {
-                        if (Console.KeyAvailable)
+                        if (ConsoleInput.TryReadKey(out _))
                         {
-                            Console.ReadKey(true);
+
                             break;
                         }
 

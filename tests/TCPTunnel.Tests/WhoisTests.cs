@@ -73,6 +73,7 @@ internal static class WhoisTests
         {
             await using var first = await TestPeer.Connect(listener, "whoisFirst", timeout.Token);
             await using var second = await TestPeer.Connect(listener, "whoisSecond", timeout.Token);
+            await second.Send(PrivacyProtocol.Ack, timeout.Token);
             await first.Send(WhoisProtocol.Hello, timeout.Token);
             await second.Send(WhoisProtocol.Hello, timeout.Token);
             await second.Send(WhoisProtocol.Size(1024, 768), timeout.Token);
@@ -85,6 +86,28 @@ internal static class WhoisTests
                 info.Address != "127.0.0.1" || caller != "whoisFirst") return false;
             var self = await second.Session.QueryAsync("whoisSecond", second.Send, timeout.Token);
             return self?.Info?.Messages == 2 && second.Notices == 1;
+        }
+        finally { listener.Stop(); }
+    }
+
+    public static async Task<bool> WhoisConsentGateSelfTest()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        try
+        {
+            await using var first = await TestPeer.Connect(listener, "whoisFirst", timeout.Token);
+            await using var second = await TestPeer.Connect(listener, "whoisSecond", timeout.Token);
+            await first.Send(WhoisProtocol.Hello, timeout.Token);
+            await second.Send(WhoisProtocol.Hello, timeout.Token);
+            await first.Send(PrivacyProtocol.Ack, timeout.Token);
+            var before = await first.Session.QueryAsync("whoisSecond", first.Send, timeout.Token);
+            if (before?.Info is not WhoisInfo hidden || !hidden.AddressHidden || hidden.Address != "") return false;
+            await second.Send(PrivacyProtocol.Ack, timeout.Token);
+            await second.Send("media marker", timeout.Token);
+            await first.MediaMarker.Task.WaitAsync(timeout.Token);
+            var after = await first.Session.QueryAsync("whoisSecond", first.Send, timeout.Token);
+            return after?.Info is WhoisInfo disclosed && !disclosed.AddressHidden && disclosed.Address == "127.0.0.1";
         }
         finally { listener.Stop(); }
     }

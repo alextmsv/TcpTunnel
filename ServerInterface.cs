@@ -14,6 +14,12 @@ namespace TCPTunnel
         internal const int MaxConnectedClients = 64;
         private static TcpListener server;
         private static BluetoothHubHost bluetoothHost;
+        private static LanHubHost lanHost;
+        private static string lanHubId;
+        private static string lanDiscoveryFailure;
+        internal static bool LanDiscoveryAvailable => lanHost?.Available == true;
+        internal static string LanDiscoveryFailure => lanHost?.Failure ?? lanDiscoveryFailure;
+        internal static string LanHubId => lanHubId;
         private static CancellationTokenSource serverCancellation;
         private static Task acceptTask = Task.CompletedTask;
         private static readonly HashSet<Task> clientTasks = new HashSet<Task>();
@@ -30,6 +36,17 @@ namespace TCPTunnel
         public static string DisplayAddress => displayAddress;
         public static bool DisplayAddressIsPublic => displayAddressIsPublic;
         public static string AdministratorNickname { get; private set; } = String.Empty;
+        internal static string AdministratorOriginalNickname { get; private set; } = String.Empty;
+        internal static void RenameAdministrator(Client client, string name)
+        {
+            if (client.Transport != ChatTransport.Local || !client.IsReady || !NicknamePolicy.IsValid(name)) return;
+            lock (serverLock)
+            {
+                if (!isRunning) return;
+                AdministratorNickname = name; AdministratorOriginalNickname = client.OriginalNickname;
+                bluetoothHost?.Rename(name);
+            }
+        }
         public static int ConnectedClientCount => SecureHub?.ParticipantCount ?? broadcaster.AuthenticatedClientCount;
         internal static ulong BluetoothAddress => bluetoothHost?.Address ?? 0;
 
@@ -81,7 +98,7 @@ namespace TCPTunnel
                 Program.matrix(Lang.Get(TextId.EnterServerPort));
             }
 
-            string rawPort = Console.ReadLine();
+            string rawPort = ConsoleInput.ReadLine();
             int port;
             if (String.IsNullOrWhiteSpace(rawPort))
                 port = 9091;
@@ -252,7 +269,7 @@ namespace TCPTunnel
                 try
                 {
                     if (options.EndToEndEncryption)
-                        SecureHub = new TCPTunnel.Cryptography.SecureHubService(administratorNickname, ApplicationSettings.OpenIdentity());
+                        SecureHub = new TCPTunnel.Cryptography.SecureHubService(administratorNickname, ApplicationSettings.OpenIdentity(), options.ParticipantLimit);
                     if (options.UsesTcp)
                     {
                         listener = new TcpListener(IPAddress.Any, port);
@@ -266,9 +283,29 @@ namespace TCPTunnel
                     displayAddressIsPublic = false;
                     ListeningPort = options.UsesTcp ? port : 0;
                     Options = options;
-                    admission = new ConnectionAdmission();
+                    admission = new ConnectionAdmission(options.ParticipantLimit, IsNicknameValid(administratorNickname));
                     AdministratorNickname = IsNicknameValid(administratorNickname) ? administratorNickname : String.Empty;
+                    AdministratorOriginalNickname = AdministratorNickname;
                     isRunning = true;
+                    lanDiscoveryFailure = null;
+                    if (options.IpMode == HubIpMode.LanOnly && IsNicknameValid(AdministratorNickname))
+                    {
+                        string hubId = Guid.NewGuid().ToString("N"); lanHubId = hubId;
+                        var crypto = SecureHub;
+                        try
+                        {
+                            lanHost = new LanHubHost(nonce => {
+                                lock (serverLock)
+                                {
+                                    if (!isRunning || serverCancellation == null || serverCancellation.Token != token) return null;
+                                    int count = Math.Clamp(ConnectedClientCount, 1, options.ParticipantLimit);
+                                    return new LanAdvertisement(1, nonce, hubId, AdministratorNickname, port, count, options.ParticipantLimit,
+                                        crypto != null, crypto != null ? 3 : 0, crypto?.OwnerPublicKey ?? Array.Empty<byte>(), Array.Empty<byte>());
+                                }
+                            }, crypto != null ? new Func<byte[], byte[]>(crypto.SignDiscovery) : null);
+                        }
+                        catch (SocketException ex) { lanHost = null; lanDiscoveryFailure = ex.Message; }
+                    }
                     acceptTask = listener == null
                         ? Task.CompletedTask
                         : AcceptLoopAsync(listener, options.IpMode == HubIpMode.LanOnly, token);
@@ -334,6 +371,7 @@ namespace TCPTunnel
             Task accepting;
             Task[] clientsToDrain;
             TCPTunnel.Cryptography.SecureHubService crypto;
+            LanHubHost lan;
 
             lock (serverLock)
             {
@@ -346,6 +384,7 @@ namespace TCPTunnel
                 cancellation = serverCancellation;
                 listener = server;
                 bluetooth = bluetoothHost;
+                lan = lanHost; lanHost = null; lanHubId = null;
                 accepting = acceptTask;
                 clientsToDrain = new Task[clientTasks.Count];
                 clientTasks.CopyTo(clientsToDrain);
@@ -358,6 +397,7 @@ namespace TCPTunnel
             }
 
             try { bluetooth?.Dispose(); } catch { }
+            try { lan?.Dispose(); } catch { }
             try { cancellation.Cancel(); } catch { }
             try { listener?.Stop(); } catch { }
             broadcaster.DisconnectAll();

@@ -6,6 +6,15 @@ namespace TCPTunnel
     public partial class UserInterface
     {
         private static SecureInvitation expectedInvitation;
+        private static bool VerifySecureHubTrust(SecureBoot boot, string[] endpoints)
+        {
+            var pins = new EndpointTrustStore(System.IO.Path.Combine(ApplicationSettings.DataDirectory, "trusted-endpoints"));
+            string fingerprint = NativeMlsSession.FingerprintOf(boot.OwnerKey);
+            foreach (string endpoint in endpoints) pins.Check(endpoint, fingerprint);
+            bool trusted = expectedInvitation == null ? SecureClientBridge.VerifyTrust(boot, endpoints[0]) : SecureClientBridge.TrustVerifiedInvitation(boot, expectedInvitation, endpoints[0]);
+            if (trusted) foreach (string endpoint in endpoints) pins.Save(endpoint, fingerprint);
+            return trusted;
+        }
         internal static bool ConnectInvitation(string text)
         {
             try
@@ -28,7 +37,7 @@ namespace TCPTunnel
             if (parts.Length == 0) return false;
             string command = parts[0].ToLowerInvariant();
             if (command is not ("/invite" or "/pending" or "/approve" or "/identity")) return false;
-            bool validArguments = command == "/approve" ? parts.Length is 2 or 3 : command == "/pending" ? parts.Length is 1 or 2 : parts.Length == 1;
+            bool validArguments = command == "/approve" ? parts.Length is 2 or 3 : command == "/pending" ? parts.Length is 1 or 2 : command == "/invite" ? parts.Length == 1 || parts.Length == 2 && parts[1] is "once" or "revoke" : parts.Length == 1;
             if (!validArguments)
             {
                 CommandHelp.Show(command, (text, _) => WriteSystemChatLine(text));
@@ -40,11 +49,20 @@ namespace TCPTunnel
                 { using var identity = ApplicationSettings.OpenIdentity(); WriteSystemChatLine(identity.Fingerprint); CopyPublicText(identity.Fingerprint, TextId.PublicFingerprintCopied); return true; }
                 SecureHubService hub = ServerInterface.SecureHub;
                 if (!isLocalHubSession || hub == null) throw new InvalidOperationException(Lang.Current == AppLanguage.Russian ? "Команда доступна владельцу своего E2E Hub." : "This command requires your own E2E Hub.");
-                if (command == "/invite" && parts.Length == 1)
+                if (command == "/invite")
                 {
-                    string invitation = hub.Invitation;
-                    if (!CopyPublicText(invitation, TextId.InvitationCopied)) WriteSystemChatLine(invitation);
-                    WriteSystemChatLine(hub.OwnerFingerprint);
+                    if (parts.Length == 2 && parts[1] == "revoke")
+                    {
+                        hub.RevokeInvitations();
+                        WriteSystemChatLine(Lang.Current == AppLanguage.Russian ? "Одноразовые приглашения отозваны." : "One-time invitations revoked.");
+                        return true;
+                    }
+                    string invitation = parts.Length == 2 ? hub.CreateOneTimeInvitation() : hub.Invitation;
+                    WriteSystemChatLine(Lang.Get(TextId.InvitationValue));
+                    WriteSystemChatLine(invitation);
+                    CopyPublicText(invitation, TextId.InvitationCopied);
+                    WriteSystemChatLine(Lang.Get(TextId.InvitationFingerprintLabel, hub.OwnerFingerprint));
+                    if (parts.Length == 2) WriteSystemChatLine(Lang.Current == AppLanguage.Russian ? "Одно использование, 10 минут. Любой владелец ссылки сможет войти. Не публикуйте её; /invite revoke отзывает все такие ссылки." : "One use, ten minutes. Anyone holding this link can join. Keep it private; /invite revoke revokes all such links.");
                 }
                 else if (command == "/pending")
                 {

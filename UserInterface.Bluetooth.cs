@@ -90,7 +90,7 @@ namespace TCPTunnel
             return RunPreparedConnection(connection, ServerInterface.Options.UsesTcp ? ServerInterface.DisplayAddress + ":" + ServerInterface.ListeningPort : Lang.Get(TextId.BluetoothEndpoint), true);
         }
 
-        private static bool RunPreparedConnection(IChatConnection connection, string host, bool localHub)
+        private static bool RunPreparedConnection(IChatConnection connection, string host, bool localHub, ConnectionSecurityMode securityMode = ConnectionSecurityMode.RequireE2E, Func<IChatConnection> reconnect = null)
         {
             if (Interlocked.CompareExchange(ref isBusy, 1, 0) != 0)
             {
@@ -98,34 +98,35 @@ namespace TCPTunnel
                 ConsoleGraphic.WriteContentLine(Lang.Get(TextId.ConnectionInProgress));
                 return false;
             }
+            IChatConnection active = connection;
+            PlaintextConsent consent = null;
             try
             {
-                RunClientSession(connection, null, host, localHub);
-                return true;
+                while (true)
+                {
+                    try { RunClientSession(active, null, host, localHub, securityMode, consent); return true; }
+                    catch (PlaintextConsentRequiredException request) when (consent == null && securityMode == ConnectionSecurityMode.AllowPlaintext && reconnect != null)
+                    {
+                        active.Dispose();
+                        if (!ConfirmPlaintextOnce()) return false;
+                        consent = request.Proposal; active = reconnect();
+                    }
+                    catch (Exception ex) { ShowConnectionFailure(Lang.Get(TextId.SessionStartFailed, ex.Message)); return false; }
+                }
             }
-            catch (Exception ex)
-            {
-                if (ConsoleGraphic.Enabled)
-                    ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.SessionStartFailed, ex.Message), ConsoleTheme.SystemText);
-                else
-                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.SessionStartFailed, ex.Message));
-                return false;
-            }
+            catch (Exception ex) { ShowConnectionFailure(Lang.Get(TextId.SessionStartFailed, ex.Message)); return false; }
             finally
             {
-                connection.Dispose();
-                connected = false;
-                Interlocked.Exchange(ref isBusy, 0);
+                active.Dispose(); connected = false; Interlocked.Exchange(ref isBusy, 0);
             }
         }
-
-        private static BluetoothConnectOutcome TryConnectBluetooth()
+        private static BluetoothConnectOutcome TryConnectBluetooth(bool skipQuestion = false, ConnectionSecurityMode securityMode = ConnectionSecurityMode.RequireE2E)
         {
             if (BluetoothSupport.Check(false) != BluetoothAvailability.Available)
                 return BluetoothConnectOutcome.UseIp;
 
             BeginPanel();
-            int answer = ReadInlineChoice(0, Lang.Get(TextId.BluetoothAskConnect), new[] { Lang.Get(TextId.Yes), Lang.Get(TextId.No) });
+            int answer = skipQuestion ? 0 : ReadInlineChoice(0, Lang.Get(TextId.BluetoothAskConnect), new[] { Lang.Get(TextId.Yes), Lang.Get(TextId.No) });
             if (answer < 0)
                 return BluetoothConnectOutcome.Cancelled;
             if (answer == 1)
@@ -146,7 +147,7 @@ namespace TCPTunnel
                     return BluetoothConnectOutcome.Cancelled;
                 if (outcome == DiscoveryOutcome.Selected)
                 {
-                    ConnectToDiscoveredHub(hub);
+                    ConnectToDiscoveredHub(hub, securityMode);
                     return BluetoothConnectOutcome.Handled;
                 }
 
@@ -200,6 +201,7 @@ namespace TCPTunnel
 
                 while (true)
                 {
+                    if (ReflowPanel()) { renderedVersion = -1; renderedLines = 0; WritePanelLine(panelRows - 1, Lang.Get(TextId.BluetoothDiscoveryHint), ConsoleTheme.SystemText); }
                     if (scanner.Failure is BluetoothError failure)
                     {
                         error = failure.ToString();
@@ -232,9 +234,21 @@ namespace TCPTunnel
                     if (redraw)
                         renderedLines = RenderHubList(hubs, selectedIndex, renderedLines);
 
-                    if (Console.KeyAvailable)
+                    if (ConsoleInput.TryRead(out var inputEvent))
                     {
-                        ConsoleKeyInfo key = Console.ReadKey(true);
+                        ConsoleKeyInfo key = inputEvent.Kind == ConsoleInputKind.Key ? inputEvent.Key : default;
+                        if (inputEvent.Kind is ConsoleInputKind.Move or ConsoleInputKind.Click)
+                        {
+                            int capacity = Math.Max(0, panelRows - HubListFirstLine - 1);
+                            int first = Math.Max(0, selectedIndex - capacity + 1);
+                            int hovered = first + inputEvent.Y - panelTop - HubListFirstLine;
+                            if (inputEvent.X >= panelLeft && inputEvent.X < panelLeft + panelWidth && hovered >= first && hovered < Math.Min(hubs.Count, first + capacity))
+                            {
+                                selectedIndex = hovered; selectedKey = (hubs[hovered].Address, hubs[hovered].Instance);
+                                renderedLines = RenderHubList(hubs, selectedIndex, renderedLines);
+                                if (inputEvent.Kind == ConsoleInputKind.Click) key = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
+                            }
+                        }
                         if (key.Key == ConsoleKey.Escape)
                             return DiscoveryOutcome.Cancelled;
                         if (hubs.Count > 0 && key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow)
@@ -290,10 +304,11 @@ namespace TCPTunnel
 
             int capacity = Math.Max(0, panelRows - HubListFirstLine - 1);
             int shown = Math.Min(hubs.Count, capacity);
+            int first = Math.Max(0, selectedIndex - capacity + 1);
             for (int index = 0; index < shown; index++)
             {
-                DiscoveredHub hub = hubs[index];
-                bool selected = index == selectedIndex;
+                DiscoveredHub hub = hubs[first + index];
+                bool selected = first + index == selectedIndex;
                 int signal = hub.SignalDbm;
                 ConsoleColor signalColor = signal >= SignalGood ? ConsoleColor.Green : signal >= SignalWeak ? ConsoleColor.Yellow : ConsoleColor.Red;
                 TextId quality = signal >= SignalGood ? TextId.BluetoothSignalGood : signal >= SignalWeak ? TextId.BluetoothSignalMedium : TextId.BluetoothSignalWeak;
@@ -312,7 +327,7 @@ namespace TCPTunnel
             return shown;
         }
 
-        private static void ConnectToDiscoveredHub(DiscoveredHub hub)
+        private static void ConnectToDiscoveredHub(DiscoveredHub hub, ConnectionSecurityMode securityMode)
         {
             string name = "@" + hub.Beacon.Nickname + (hub.Beacon.NicknameTruncated ? "…" : String.Empty);
             ClearPanel();
@@ -339,7 +354,7 @@ namespace TCPTunnel
             nextSignalSend = 0;
             try
             {
-                RunPreparedConnection(connection, name + " (Bluetooth)", false);
+                RunPreparedConnection(connection, name + " (Bluetooth)", false, securityMode, () => BluetoothConnector.Connect(hub.Address, out string reconnectError) ?? throw new System.IO.IOException(reconnectError));
             }
             finally
             {
@@ -351,8 +366,12 @@ namespace TCPTunnel
         private static int ReadInlineChoice(int line, string question, string[] options, int selected = 0)
         {
             WritePanelLine(line, question, ConsoleTheme.MenuText);
+            int rendered = -1;
             while (true)
             {
+                if (ReflowPanel()) { rendered = -1; WritePanelLine(line, question, ConsoleTheme.MenuText); }
+                if (rendered != selected)
+                {
                 var segments = new List<(string, ConsoleColor)>();
                 for (int index = 0; index < options.Length; index++)
                 {
@@ -361,8 +380,27 @@ namespace TCPTunnel
                     segments.Add(("[ " + options[index] + " ]", index == selected ? ConsoleTheme.SelectionBackground : ConsoleTheme.MenuText));
                 }
                 WritePanelSegments(line + 2, segments);
+                rendered = selected;
+                }
 
-                ConsoleKeyInfo key = ReadPanelKey();
+                if (!ConsoleInput.TryRead(out var inputEvent)) { Thread.Sleep(20); continue; }
+                ConsoleKeyInfo key = inputEvent.Kind == ConsoleInputKind.Key ? inputEvent.Key : default;
+                if (inputEvent.Kind is ConsoleInputKind.Move or ConsoleInputKind.Click or ConsoleInputKind.Wheel && inputEvent.Y == panelTop + line + 2)
+                {
+                    int offset = panelLeft;
+                    for (int i = 0; i < options.Length; i++)
+                    {
+                        int length = options[i].Length + 4;
+                        if (inputEvent.X >= offset && inputEvent.X < Math.Min(panelLeft + panelWidth, offset + length))
+                        {
+                            selected = i;
+                            if (inputEvent.Kind == ConsoleInputKind.Click) return selected;
+                            if (inputEvent.Kind == ConsoleInputKind.Wheel) selected = (selected + inputEvent.Direction + options.Length) % options.Length;
+                            break;
+                        }
+                        offset += length + 2;
+                    }
+                }
                 switch (key.Key)
                 {
                     case ConsoleKey.LeftArrow:
@@ -385,12 +423,12 @@ namespace TCPTunnel
 
         private static ConsoleKeyInfo ReadPanelKey()
         {
-            while (!Console.KeyAvailable)
+            while (true)
             {
+                if (ConsoleInput.TryReadKey(out var key)) return key;
                 ConsoleGraphic.EnsureBorderAnimationRunning();
                 Thread.Sleep(20);
             }
-            return Console.ReadKey(true);
         }
 
         private static void BeginPanel()
@@ -414,6 +452,21 @@ namespace TCPTunnel
                     panelRows = Math.Max(1, Math.Min(20, Console.BufferHeight - panelTop));
                 }
             }
+        }
+
+        private static bool ReflowPanel()
+        {
+            try
+            {
+                int left = ConsoleGraphic.Enabled ? ConsoleGraphic.ContentLeft + 1 : 0;
+                int top = ConsoleGraphic.Enabled ? ConsoleGraphic.ContentTop + 1 : Math.Clamp(panelTop, 0, Math.Max(0, Console.WindowHeight - 1));
+                int width = Math.Max(1, ConsoleGraphic.Enabled ? ConsoleGraphic.ContentWidth - 2 : Console.WindowWidth - 1);
+                int rows = Math.Max(1, ConsoleGraphic.Enabled ? ConsoleGraphic.ContentBottom - top + 1 : Math.Min(20, Console.WindowHeight - top));
+                if (panelLeft == left && panelTop == top && panelWidth == width && panelRows == rows) return false;
+                lock (consoleLock) { graphic.Clear(0, 0); panelLeft = left; panelTop = top; panelWidth = width; panelRows = rows; }
+                return true;
+            }
+            catch (Exception ex) when (ex is ArgumentOutOfRangeException or System.IO.IOException) { return false; }
         }
 
         private static void RestorePanelCursor()

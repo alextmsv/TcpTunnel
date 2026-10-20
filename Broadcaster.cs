@@ -50,12 +50,13 @@ namespace TCPTunnel
                 bool nicknameTaken = clients.Any(existing =>
                     existing.IsAuthenticated &&
                     !Object.ReferenceEquals(existing, client) &&
-                    NicknamePolicy.Same(existing.Nickname, nickname));
+                    (NicknamePolicy.Same(existing.Nickname, nickname) || NicknamePolicy.Same(existing.OriginalNickname, nickname)));
 
                 if (nicknameTaken)
                     return false;
 
                 client.Nickname = nickname;
+                client.OriginalNickname = nickname;
                 client.IsAuthenticated = true;
                 client.IsReady = false;
                 return true;
@@ -72,6 +73,53 @@ namespace TCPTunnel
                 client.IsReady = true;
                 return true;
             }
+        }
+
+        internal bool CanRename(Client client, string name)
+        {
+            lock (clientsLock)
+                return clients.Contains(client) && client.IsReady && NicknamePolicy.IsValid(name) &&
+                    !clients.Any(other => other != client && other.IsAuthenticated && (NicknamePolicy.Same(other.Nickname, name) || NicknamePolicy.Same(other.OriginalNickname, name))) &&
+                    !(client.Transport != ChatTransport.Local && (NicknamePolicy.Same(ServerInterface.AdministratorNickname, name) || NicknamePolicy.Same(ServerInterface.AdministratorOriginalNickname, name)));
+        }
+
+        internal bool TryRename(Client client, string name, Action beforeCommit = null)
+        {
+            lock (clientsLock)
+            {
+                if (!CanRename(client, name)) return false;
+                beforeCommit?.Invoke();
+                client.Nickname = name; return true;
+            }
+        }
+
+        internal async Task RenameAsync(Client client, string id, string name, CancellationToken token)
+        {
+            await broadcastLock.WaitAsync(token).ConfigureAwait(false);
+            Task[] deliveries;
+            try
+            {
+                string previous = client.Nickname;
+                bool changed = TryRename(client, name);
+                var change = new NicknameChange(previous, changed ? name : previous, client.OriginalNickname);
+                var queued = new List<Task> { client.SendAsync(NicknameProtocol.Reply(id, changed ? "OK" : "TAKEN", change), token) };
+                if (changed && previous != name)
+                {
+                    if (client.Transport == ChatTransport.Local) ServerInterface.RenameAdministrator(client, name);
+                    foreach (Client recipient in GetAuthenticatedClients())
+                    {
+                        var messages = new List<string>();
+                        if (recipient.SupportsNicknameSnake) messages.Add(NicknameProtocol.Changed(change));
+                        else { messages.Add(SystemMessageProtocol.Create(SystemMessageKind.UserLeft, previous)); messages.Add(SystemMessageProtocol.Create(SystemMessageKind.UserJoined, name)); }
+                        messages.Add(SnakeProtocol.CreateRemove(previous));
+                        if (client.TryGetSnakeProfile(out var profile) && profile.Enabled) messages.Add(SnakeProtocol.CreateSet(name, profile, recipient.SupportsNicknameSnake));
+                        queued.Add(recipient.SendBatchAsync(messages, token));
+                    }
+                }
+                deliveries = queued.ToArray();
+            }
+            finally { broadcastLock.Release(); }
+            await Task.WhenAll(deliveries).ConfigureAwait(false);
         }
 
         internal bool CompleteAuthenticationWithRoster(Client client, CancellationToken token, out Task delivery)
@@ -147,6 +195,22 @@ namespace TCPTunnel
         public Task BroadcastSnakeAsync(Client sender, string message, CancellationToken cancellationToken)
         {
             return BroadcastCoreAsync(sender, message, true, cancellationToken);
+        }
+
+        internal async Task BroadcastSnakeProfileAsync(Client sender, SnakeProfile profile, CancellationToken token)
+        {
+            await broadcastLock.WaitAsync(token).ConfigureAwait(false);
+            Task[] deliveries;
+            try
+            {
+                Client[] recipients = GetAuthenticatedClients(sender).Where(HasSnakeProfile).ToArray();
+                string modernText = profile.Enabled ? SnakeProtocol.CreateSet(sender.Nickname, profile) : SnakeProtocol.CreateRemove(sender.Nickname);
+                var modern = EncodedFrameBatch.Encode(new[] { modernText });
+                var legacy = profile.Nickname && profile.Enabled ? EncodedFrameBatch.Encode(new[] { SnakeProtocol.CreateSet(sender.Nickname, profile, false) }) : modern;
+                deliveries = recipients.Select(recipient => SendSafelyAsync(recipient, recipient.SupportsNicknameSnake ? modern : legacy, token)).ToArray();
+            }
+            finally { broadcastLock.Release(); }
+            await Task.WhenAll(deliveries).ConfigureAwait(false);
         }
 
         internal Task SendSystemMessageToAsync(

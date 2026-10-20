@@ -25,7 +25,7 @@ namespace TCPTunnel
             {
                 if (name != name.Normalize(NormalizationForm.FormKC)) return false;
                 foreach (Rune rune in name.EnumerateRunes())
-                    if (!Rune.IsLetterOrDigit(rune) && rune.Value is not ('_' or '-' or '.')) return false;
+                    if (rune.Value is 0x115F or 0x1160 || (!Rune.IsLetterOrDigit(rune) && rune.Value is not ('_' or '-' or '.'))) return false;
                 return true;
             }
             catch (ArgumentException) { return false; }
@@ -37,7 +37,7 @@ namespace TCPTunnel
                 result.Append(confusables.Value.TryGetValue(rune.Value, out var mapped) ? mapped : rune.ToString());
             return result.ToString().ToLowerInvariant().Normalize(NormalizationForm.FormD);
         }
-        internal static bool Same(string first, string second) => String.Equals(Skeleton(first), Skeleton(second), StringComparison.Ordinal);
+        internal static bool Same(string first, string second) => !String.IsNullOrEmpty(first) && !String.IsNullOrEmpty(second) && String.Equals(Skeleton(first), Skeleton(second), StringComparison.Ordinal);
         private static Dictionary<int, string> LoadConfusables()
         {
             using Stream resource = typeof(NicknamePolicy).Assembly.GetManifestResourceStream("TCPTunnel.Security.Confusables") ?? throw new InvalidDataException("Unicode security data is unavailable.");

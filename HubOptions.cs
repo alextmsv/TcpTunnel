@@ -9,11 +9,11 @@ namespace TCPTunnel
 {
     internal enum HubIpMode { Public = 0, LanOnly = 1, Off = 2 }
 
-    internal sealed record HubOptions(HubIpMode IpMode, bool Bluetooth, bool HideClientIpAddresses = false, bool EndToEndEncryption = true)
+    internal sealed record HubOptions(HubIpMode IpMode, bool Bluetooth, bool HideClientIpAddresses = false, bool EndToEndEncryption = true, int ParticipantLimit = 64)
     {
         internal static HubOptions Default { get; } = new HubOptions(HubIpMode.Public, false);
 
-        internal bool IsValid => Enum.IsDefined(IpMode) && (IpMode != HubIpMode.Off || Bluetooth);
+        internal bool IsValid => Enum.IsDefined(IpMode) && (IpMode != HubIpMode.Off || Bluetooth) && ParticipantLimit is >= 1 and <= 64;
         internal bool UsesTcp => IpMode != HubIpMode.Off;
         internal bool UsesPortMapping => IpMode == HubIpMode.Public;
 
@@ -49,11 +49,13 @@ namespace TCPTunnel
         {
             new HubOptionDescriptor { Id = "mode", Render = RenderMode, Change = ChangeMode },
             new HubOptionDescriptor { Id = "bluetooth", Render = RenderBluetooth, Change = ChangeBluetooth },
-            new HubOptionDescriptor { Id = "e2e", Render = context =>
-                new HubOptionView("End-to-End encryption " + (context.Options.EndToEndEncryption ? "[ V ]" : "[   ]"), -1, 0, false),
+            new HubOptionDescriptor { Id = "e2e", Render = RenderEncryption,
                 Change = (context, direction) => context.Options with { EndToEndEncryption = !context.Options.EndToEndEncryption } },
             new HubOptionDescriptor { Id = "hide-client-ip", Render = RenderIpPrivacy,
-                Change = (context, direction) => context.Options with { HideClientIpAddresses = !context.Options.HideClientIpAddresses } }
+                Change = (context, direction) => context.Options with { HideClientIpAddresses = !context.Options.HideClientIpAddresses } },
+            new HubOptionDescriptor { Id = "participant-limit", Render = context =>
+                new HubOptionView(Lang.Get(TextId.HubParticipantLimit, context.Options.ParticipantLimit), -1, 0, false),
+                Change = (context, direction) => context.Options with { ParticipantLimit = Math.Clamp(context.Options.ParticipantLimit + (direction < 0 ? -1 : 1), 1, 64) } }
         };
 
         private static HubOptionView RenderMode(HubOptionContext context)
@@ -90,6 +92,13 @@ namespace TCPTunnel
             string mark = context.Options.Bluetooth ? "[ V ]" : "[   ]";
             string text = Lang.Get(TextId.HubBluetoothRow) + " " + mark;
             return new HubOptionView(text, context.Options.Bluetooth ? text.Length - mark.Length : -1, mark.Length, false);
+        }
+
+        private static HubOptionView RenderEncryption(HubOptionContext context)
+        {
+            string mark = context.Options.EndToEndEncryption ? "[ V ]" : "[   ]";
+            string text = "End-to-End encryption " + mark;
+            return new HubOptionView(text, context.Options.EndToEndEncryption ? text.Length - mark.Length : -1, mark.Length, false);
         }
 
         private static HubOptions ChangeBluetooth(HubOptionContext context, int direction)

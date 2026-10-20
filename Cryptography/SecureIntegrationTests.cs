@@ -69,7 +69,7 @@ internal static class SecureIntegrationTests
         string directory = Path.Combine(Path.GetTempPath(), "TCPTunnel-secure-test-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("TCPTUNNEL_DATA_HOME", directory);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        using var owner = new NativeMlsSession(); using var hub = new SecureHubService("testOwner", owner);
+        using var owner = new NativeMlsSession(); using var hub = new SecureHubService("testOwner", owner, 3);
         hub.SessionError += error => { if (error is not (IOException or OperationCanceledException or UnauthorizedAccessException)) Console.WriteLine("Secure server: " + error); };
         NativeMlsSession? aliceIdentity = new(); string aliceFingerprint = aliceIdentity.Fingerprint;
         byte[] aliceKey = aliceIdentity.ExportIdentityMaterial();
@@ -110,7 +110,7 @@ internal static class SecureIntegrationTests
             while (true)
             {
                 string frame = await MessageProtocol.ReadStringAsync(stream, deadline.Token);
-                if (!SystemMessageProtocol.IsControlMessage(frame) && !SnakeProtocol.IsSnakeControlMessage(frame)) return frame;
+                if (!SystemMessageProtocol.IsControlMessage(frame) && !SnakeProtocol.IsSnakeControlMessage(frame) && !NicknameProtocol.IsControl(frame)) return frame;
             }
         }
         try
@@ -143,6 +143,29 @@ internal static class SecureIntegrationTests
             if (await ReadChatAsync(bob.Stream) != "[testAlice]: Проверка TCP/Bluetooth E2E") return false;
             await MessageProtocol.WriteStringAsync(bob.Stream, "answer", deadline.Token);
             if (await ReadChatAsync(alice.Stream) != "[testBob]: answer") return false;
+            var nicknameProfile = new SnakeProfile { Enabled = true, DelayMilliseconds = 87, Color = ConsoleColor.Cyan, Glyph = '-', Nickname = true };
+            await MessageProtocol.WriteStringAsync(alice.Stream, SnakeProtocol.CreateClientProfile(nicknameProfile), deadline.Token);
+            bool nicknameReceived = false;
+            while (!nicknameReceived)
+            {
+                string frame = await MessageProtocol.ReadStringAsync(bob.Stream, deadline.Token);
+                if (SnakeProtocol.TryParseServerUpdate(frame, out var kind, out string sender, out var receivedProfile) && sender == "testAlice")
+                    nicknameReceived = kind == SnakeUpdateKind.Set && receivedProfile.Nickname && receivedProfile.DelayMilliseconds == 87;
+            }
+            using (var extraIdentity = new NativeMlsSession())
+            {
+                var excess = await ConnectionAsync();
+                string greeting = await MessageProtocol.ReadStringAsync(excess.Network, deadline.Token);
+                try
+                {
+                    using var unexpected = await SecureClientBridge.ConnectAsync(excess.Network, greeting, "extraUser", extraIdentity,
+                        boot => NativeMlsSession.FingerprintOf(boot.OwnerKey) == owner.Fingerprint, deadline.Token);
+                    return false;
+                }
+                catch (UnauthorizedAccessException error) when (error.Message == Lang.Get(TextId.HubFull)) { }
+                await excess.Server.WaitAsync(TimeSpan.FromSeconds(3), deadline.Token);
+                if (hub.ParticipantCount != 3 || hub.PendingRequestsSnapshot().Length != 0) return false;
+            }
             var image = new ImagePacket { Width = 3, Height = 2, PackedPixels = new byte[ImageProtocol.GetPackedLength(3, 2)] };
             await MessageProtocol.WriteStringAsync(alice.Stream, ImageProtocol.CreateClientFrame(image), deadline.Token);
             string imageFrame = await ReadChatAsync(bob.Stream);
@@ -177,6 +200,29 @@ internal static class SecureIntegrationTests
             alice = await JoinAsync(returning.Network, new NativeMlsSession(aliceKey), "testAlice", aliceFingerprint);
             await MessageProtocol.WriteStringAsync(alice.Stream, "returned", deadline.Token);
             if (await ReadChatAsync(bob.Stream) != "[testAlice]: returned") return false;
+            byte[] membershipBeforeRename = owner.GroupIdentities();
+            foreach (string next in new[] { "testAliceNew", "testAliceNext", "testAlice" })
+            {
+                string id = Guid.NewGuid().ToString("N");
+                await MessageProtocol.WriteStringAsync(alice.Stream, NicknameProtocol.Request(id, next), deadline.Token);
+                NicknameReply? reply = null;
+                while (reply?.Id != id)
+                {
+                    string frame = await MessageProtocol.ReadStringAsync(alice.Stream, deadline.Token);
+                    if (NicknameProtocol.TryReply(frame, out var parsed)) reply = parsed;
+                }
+                if (reply.Error != "OK" || reply.Change.Current != next || reply.Change.Original != "testAlice") return false;
+                NicknameChange? notice = null;
+                while (notice?.Current != next)
+                {
+                    string frame = await MessageProtocol.ReadStringAsync(bob.Stream, deadline.Token);
+                    if (NicknameProtocol.TryChanged(frame, out var parsed)) notice = parsed;
+                }
+                if (notice.Original != "testAlice" || !owner.GroupIdentities().SequenceEqual(membershipBeforeRename) || returning.Peer.OriginalNickname != "testAlice") return false;
+                await MessageProtocol.WriteStringAsync(alice.Stream, "renamed identity", deadline.Token);
+                if (await ReadChatAsync(bob.Stream) != "[" + next + "]: renamed identity") return false;
+            }
+            await Task.Delay(600, deadline.Token);
             Stream originalSender = returning.Peer.Stream;
             var pausedSender = new PausingStream(originalSender) { PauseNext = 1 };
             returning.Peer.Stream = pausedSender;

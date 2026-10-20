@@ -149,7 +149,7 @@ namespace TCPTunnel
                         return;
                     bool removed = chatHistory.Remove(entry);
                     entry = null;
-                    if (removed && ConsoleGraphic.Enabled && !RedrawChatLayoutLocked())
+                    if (removed && (ConsoleGraphic.Enabled || ScrollbackActive) && !RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
                 }
             }
@@ -205,7 +205,12 @@ namespace TCPTunnel
                 }
                 finally
                 {
-                    Interlocked.Exchange(ref animationMonitorActive, 0);
+                    lock (consoleLock)
+                    {
+                        Interlocked.Exchange(ref animationMonitorActive, 0);
+                        if (connected && (chatHistory.Exists(entry => entry.Matrix?.Active == true) || activeMentionBlinkFragments?.Count > 0 || HasVisibleAnimationTargetLocked()))
+                            ScheduleAnimationMonitor();
+                    }
                 }
             });
         }
@@ -213,10 +218,11 @@ namespace TCPTunnel
         private static bool RenderVisibleAnimationFramesLocked(out int nextDelayMilliseconds)
         {
             nextDelayMilliseconds = 100;
+            if (chatUiSuspended) return true;
             if (consoleResizePending)
             {
                 FinishMentionBlinkLocked();
-                return HasVisibleAnimationTargetLocked();
+                return HasVisibleAnimationTargetLocked() || chatHistory.Exists(entry => entry.Matrix?.Active == true);
             }
 
             ConsoleGraphic.ConsoleGeometry geometry;
@@ -225,10 +231,12 @@ namespace TCPTunnel
             {
                 FinishMentionBlinkLocked();
                 MarkConsoleResizePendingLocked();
-                return HasVisibleAnimationTargetLocked();
+                return HasVisibleAnimationTargetLocked() || chatHistory.Exists(entry => entry.Matrix?.Active == true);
             }
 
+            TickMatrixEffectsLocked(out bool matrixActive);
             bool blinkActive = TickMentionBlinkLocked(ref nextDelayMilliseconds);
+            if (matrixActive) nextDelayMilliseconds = Math.Min(nextDelayMilliseconds, Math.Clamp(ApplicationSettings.Current.MatrixCharacterDelay, 10, 40));
 
             int previousLeft;
             int previousTop;
@@ -291,7 +299,7 @@ namespace TCPTunnel
                 MarkConsoleResizePendingLocked();
             }
             nextDelayMilliseconds = Math.Max(5, Math.Min(100, nextDelayMilliseconds));
-            return found || blinkActive;
+            return found || blinkActive || matrixActive;
         }
 
         private static bool HasVisibleAnimationTargetLocked()

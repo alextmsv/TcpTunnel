@@ -2,9 +2,9 @@ using System;
 
 namespace TCPTunnel
 {
-    internal static class CommandHelp
+    internal static class CommandCatalog
     {
-        private sealed record Entry(string Name, LocalizedText Summary, LocalizedText Details);
+        private sealed record Entry(string Name, LocalizedText Summary, LocalizedText Details, char Prefix = '/');
 
         private static readonly Entry[] entries =
         {
@@ -26,21 +26,25 @@ namespace TCPTunnel
             new Entry("invite", new LocalizedText("Создать приглашение в свой E2E Hub; для владельца.", "Create an invitation to your E2E Hub; owner only."), new LocalizedText(
                 """
                 /invite — приглашение в защищённый чат
-                Использование: /invite
-                Аргументы не нужны. Команда доступна владельцу из чата своего Hub с включённым E2E.
+                Использование: /invite [once|revoke]
+                Команда доступна владельцу из чата своего Hub с включённым E2E.
                 Копирует приглашение tct2: в буфер обмена и показывает публичный отпечаток владельца. Приглашение содержит адрес подключения и сведения для проверки личности владельца.
                 Передай приглашение через доверенный канал. Получатель вставляет его в поле адреса сервера при подключении. Для Bluetooth-only Hub приглашение указывает Bluetooth-подключение.
                 Приглашение не содержит личных ключей и само по себе не даёт доступ к переписке: нового участника ещё нужно подтвердить через /approve.
                 Пример: /invite. Затем проверь запрос через /pending и прочитай /help approve.
+                /invite once — секретная ссылка tct3: для одного входа за 10 минут без ручного /approve. Ссылка передаёт право входа любому её владельцу; пересылай только лично. Ключ личности всё равно проверяется, занятые и отозванные имена не обходятся. Ссылка требует новую версию клиента и сервера.
+                /invite revoke — отозвать все неиспользованные одноразовые ссылки. Уже допущенные участники остаются; для них используй /kick.
                 """,
                 """
                 /invite — invite someone to encrypted chat
-                Usage: /invite
-                No arguments. Available to the owner while connected to their own Hub with E2E enabled.
+                Usage: /invite [once|revoke]
+                Available to the owner while connected to their own Hub with E2E enabled.
                 Copies a tct2: invitation to clipboard and shows the owner's public fingerprint. The invitation contains connection details and information for verifying the owner's identity.
                 Share it through a trusted channel. The recipient pastes it into the server-address prompt. Bluetooth-only invitations specify a Bluetooth connection.
                 An invitation contains no private keys and does not grant permission to read the chat: a new participant still needs approval through /approve.
                 Example: /invite. Then check /pending and read /help approve.
+                /invite once — secret tct3: link for one join within ten minutes without manual /approve. Anyone holding it can join; share it privately. Identity-key proof remains mandatory; reserved or revoked names cannot be bypassed. Requires current client and server versions.
+                /invite revoke — revoke all unused one-time links. Existing admitted identities remain; use /kick for those participants.
                 """)),
             new Entry("pending", new LocalizedText("Показать запросы на вход в E2E Hub; для владельца.", "Show pending E2E Hub join requests; owner only."), new LocalizedText(
                 """
@@ -246,18 +250,114 @@ namespace TCPTunnel
                 Available to everyone. Your own Hub, if running, continues in the background; use /stop in your own Hub chat to shut it down.
                 In an E2E room, the approved nickname-to-key binding remains for your next visit. Messages sent while you are away are not automatically delivered.
                 Example: /exit.
+                """)),
+            new Entry("send", new LocalizedText("Предложить участнику передачу файла.", "Offer a file to another participant."), new LocalizedText(
+                """
+                /send — передать файл
+                Использование: /send @ник 'C:\путь\файл.ext'
+                Перед @ник можно не ставить @. Путь с пробелами заключите в одинарные или двойные кавычки.
+                Передаёт любой формат файла до 256 МиБ через Hub, без прямого соединения с получателем. Передача начнётся только после /receive у получателя; запрос действует 5 минут.
+                Содержимое дополнительно шифруется для получателя. В E2E ключи передачи проверяются через защищённую комнату; в обычном Hub защита от подмены сервером не гарантируется. Имя и размер файла видны комнате E2E.
+                Нужны новые клиенты и Hub. Если в E2E комнате есть старый клиент, передача файлов временно недоступна.
+                Пример: /send alex 'C:\Users\Me\Desktop\photo.gif'. Ничего не запускается автоматически.
+                """,
+                """
+                /send — transfer a file
+                Usage: /send @nickname 'C:\path\file.ext'
+                The leading @ is optional. Quote paths containing spaces with single or double quotes.
+                Offers any file format up to 256 MiB through the Hub, without connecting directly to the recipient. Transfer starts only after the recipient uses /receive; offers expire after five minutes.
+                Content is additionally encrypted for the recipient. E2E authenticates the transfer keys; ordinary Hubs do not guarantee protection against a malicious server. The E2E room can see the filename and size.
+                Requires updated clients and Hub. Files are temporarily unavailable if an E2E room contains an older client.
+                Example: /send alex 'C:\Users\Me\Desktop\photo.gif'. Files never run automatically.
+                """)),
+            new Entry("receive", new LocalizedText("Принять выбранный файл на рабочий стол.", "Accept an offered file onto your Desktop."), new LocalizedText(
+                """
+                /receive — принять файл
+                Использование: /receive номер или /receive 1,2,3
+                Номер указан в запросе «1. @участник хочет отправить…». Например: /receive 1.
+                Только эта команда разрешает создать временный файл на рабочем столе. После проверки целостности он получает предложенное безопасное имя; существующие файлы не перезаписываются.
+                Неполная или повреждённая загрузка удаляется. Файл не открывается и не запускается автоматически; расширение не доказывает безопасность содержимого.
+                Запросы действуют 5 минут; допускается до 16 передач и запросов. Одновременно принимаются два файла, остальные номера можно принять после их завершения. Отказаться можно, не принимая запрос.
+                """,
+                """
+                /receive — accept a file
+                Usage: /receive number or /receive 1,2,3
+                Use the number shown in an offer, such as '1. @participant offers…'. Example: /receive 1.
+                Only this command permits creating a temporary file on your Desktop. Once integrity is verified, it receives a safe filename; existing files are never overwritten.
+                Incomplete or corrupt downloads are removed. Files are never opened or executed automatically; an extension does not prove the content is safe.
+                Offers expire after five minutes; up to 16 transfers and offers may be pending. Two files may be received concurrently; accept remaining numbers after these finish. Ignore an offer to decline it.
+                """)),
+            new Entry("nickname", new LocalizedText("Сменить ник в текущем чате, сохранив свою личность.", "Change your chat nickname while retaining your identity."), new LocalizedText(
+                "/nickname — сменить ник в текущем чате\nИспользование: /nickname\nОткрывает ввод нового ника. Аргументы не нужны. Сервер проверяет имя и сообщает об изменении.\n/whois и /status сохраняют первый ник текущего подключения как a.k.a. Ключ личности не меняется. В E2E старые имена остаются закреплены за вашим ключом; допускается до 8 имён на ключ. Старые хабы не поддерживают команду.",
+                "/nickname — change your current chat nickname\nUsage: /nickname\nOpens the new nickname prompt. No arguments. The Hub validates the name and announces the change.\n/whois and /status retain the first nickname of this connection as a.k.a. The identity key stays unchanged. E2E reserves previous names for your key, with up to 8 names per key. Older hubs do not support this command.")),
+            new Entry("lang", new LocalizedText("Сменить язык только своего клиента.", "Change your own client's language."), new LocalizedText(
+                """
+                \lang — локальная смена языка
+                Использование: \lang ru или \lang en
+                Меняет язык меню, справки и новых системных сообщений без переподключения.
+                Текст участников не переводится. Настройка сохраняется только в вашем профиле.
+                Команда и её аргументы не отправляются Hub или другим участникам.
+                """,
+                """
+                \lang — local language change
+                Usage: \lang ru or \lang en
+                Changes menus, help and new system messages without reconnecting.
+                Participants' text is not translated. The setting is saved only in your profile.
+                The command and its arguments are never sent to the Hub or other participants.
+                """), '\\'),
+            new Entry("interface", new LocalizedText("Открыть локальные настройки интерфейса.", "Open local interface settings."), new LocalizedText(
+                """
+                \interface — локальная персонализация
+                Использование: \interface
+                Открывает цвета, фон и настройки диалога во время чата.
+                Змейка, ник и параметры Hub в этом меню недоступны. После настройки возвращает в чат.
+                Команда не отправляется серверу или другим участникам.
+                """,
+                """
+                \interface — local customization
+                Usage: \interface
+                Opens colors, background and chat layout settings during your chat.
+                Snake, nickname and Hub settings are excluded. Returns to the chat after configuration.
+                The command is never sent to the server or other participants.
+                """), '\\'),
+            new Entry("snake", new LocalizedText("Настроить свою змейку во время чата.", "Configure your own snake during chat."), new LocalizedText(
+                """
+                /snake — настройки змейки
+                Использование: /snake
+                Открывает кастомизацию своей змейки без выхода из чата. Нужны графические границы.
+                После изменения параметров участникам показывается одно системное сообщение.
+                Без изменений сообщение не отправляется. Змейка другого участника не меняется.
+                """,
+                """
+                /snake — snake settings
+                Usage: /snake
+                Opens your snake customization without leaving the chat. Requires graphical borders.
+                After settings change, participants receive one system notice.
+                No change means no notice. It does not change someone else's snake.
                 """))
         };
+
+        internal static System.Collections.Generic.IReadOnlyList<string> Names { get; } =
+            Array.AsReadOnly(Array.ConvertAll(Array.FindAll(entries, entry => entry.Prefix == '/'), entry => entry.Name));
+        internal static System.Collections.Generic.IReadOnlyList<string> LocalNames { get; } =
+            Array.AsReadOnly(Array.ConvertAll(Array.FindAll(entries, entry => entry.Prefix == '\\'), entry => entry.Name));
+
+        internal static string Summary(string name)
+        {
+            foreach (var entry in entries)
+                if (entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return Select(entry.Summary);
+            return String.Empty;
+        }
 
         internal static void Show(string command, Action<string, ConsoleColor?> write)
         {
             if (command == null)
             {
                 write(Lang.Get(TextId.CommandHelp), ConsoleColor.DarkGreen);
-                foreach (var entry in entries) write("/" + entry.Name + " — " + Select(entry.Summary), null);
+                foreach (var entry in entries) write(entry.Prefix + entry.Name + " — " + Select(entry.Summary), null);
                 return;
             }
-            string name = command.TrimStart('/');
+            string name = command.TrimStart('/', '\\');
             foreach (var entry in entries)
             {
                 if (!entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
@@ -268,5 +368,10 @@ namespace TCPTunnel
         }
 
         private static string Select(LocalizedText text) => Lang.Current == AppLanguage.Russian ? text.Russian : text.English;
+    }
+
+    internal static class CommandHelp
+    {
+        internal static void Show(string command, Action<string, ConsoleColor?> write) => CommandCatalog.Show(command, write);
     }
 }

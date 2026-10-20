@@ -59,5 +59,11 @@ namespace TCPTunnel
             catch (ArgumentOutOfRangeException) { return false; }
             catch (System.IO.IOException) { return false; }
         }
+        internal static int HeaderLeft(ConsoleGraphic.ConsoleGeometry geometry, string[] header, int index)
+        {
+            int block = header[index].Length;
+            if (header.Length == logo.Length + 1 && index < logo.Length) foreach (string line in logo) block = Math.Max(block, line.Length);
+            return 1 + Math.Max(0, (geometry.DrawableWidth - 2 - block) / 2);
+        }
     }
 }

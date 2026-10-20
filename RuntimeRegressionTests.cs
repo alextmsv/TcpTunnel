@@ -303,6 +303,13 @@ namespace TCPTunnel
                         victim.IpAddress = "203.0.113.53";
                         await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Hello, stop.Token).ConfigureAwait(false);
                         await Until(message => message == WhoisProtocol.Capabilities).ConfigureAwait(false);
+                        string beforeId = Guid.NewGuid().ToString("N");
+                        await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Request(beforeId, "privateOwner"), stop.Token).ConfigureAwait(false);
+                        string before = await Until(message => WhoisProtocol.TryReply(message, out string replyId, out _) && replyId == beforeId).ConfigureAwait(false);
+                        if (!WhoisProtocol.TryReply(before, out _, out WhoisInfo unconsented) || !unconsented.AddressHidden || unconsented.Address != String.Empty || before.Contains("203.0.113.53", StringComparison.Ordinal)) return false;
+                        await MessageProtocol.WriteStringAsync(target.GetStream(), PrivacyProtocol.Ack, stop.Token).ConfigureAwait(false);
+                        await MessageProtocol.WriteStringAsync(requester.GetStream(), PrivacyProtocol.Ack, stop.Token).ConfigureAwait(false);
+                        await Task.Delay(550, stop.Token).ConfigureAwait(false);
                         string id = Guid.NewGuid().ToString("N");
                         if (hidden)
                             await MessageProtocol.WriteStringAsync(requester.GetStream(), WhoisProtocol.Request(id, "privateOwner") + "|includeIp=true", stop.Token).ConfigureAwait(false);

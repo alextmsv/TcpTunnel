@@ -53,7 +53,12 @@ internal sealed class RoomIdentityGate
         {
             if (bindings.TryGetValue(nickname, out Binding? existing) && !String.Equals(existing.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("This nickname is already bound to another identity.");
-            if (!bindings.ContainsKey(nickname) && bindings.Count >= 64) throw new InvalidOperationException("Room identity limit reached.");
+            if (!bindings.ContainsKey(nickname))
+            {
+                if (bindings.Count >= 512 || bindings.Values.Select(binding => binding.Fingerprint).Distinct(StringComparer.OrdinalIgnoreCase).Count() >= 64 &&
+                    !bindings.Values.Any(binding => binding.Fingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("Room identity limit reached.");
+                if (bindings.Values.Count(binding => binding.Fingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase)) >= 8) throw new InvalidOperationException("Identity alias limit reached.");
+            }
             if (bindings.Any(item => !String.Equals(item.Key, nickname, StringComparison.OrdinalIgnoreCase) && NicknamePolicy.Same(item.Key, nickname) &&
                 (NicknamePolicy.IsValid(item.Key) || !item.Value.Fingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase))))
                 throw new InvalidOperationException("This nickname is visually confusable with a reserved identity.");
@@ -83,8 +88,10 @@ internal sealed class RoomIdentityGate
         {
             if (bindings.TryGetValue(nickname, out Binding? existing))
             {
-                bindings[nickname] = existing with { Allowed = false };
-                try { Save(); } catch { bindings[nickname] = existing; throw; }
+                var aliases = bindings.Where(item => item.Value.Fingerprint.Equals(existing.Fingerprint, StringComparison.OrdinalIgnoreCase)).ToArray();
+                foreach (var alias in aliases) bindings[alias.Key] = alias.Value with { Allowed = false };
+                try { Save(); } catch { foreach (var alias in aliases) bindings[alias.Key] = alias.Value; throw; }
+                foreach (Guid id in pending.Where(item => item.Value.Fingerprint.Equals(existing.Fingerprint, StringComparison.OrdinalIgnoreCase)).Select(item => item.Key).ToArray()) pending.Remove(id);
             }
             foreach (Guid id in pending.Where(item => String.Equals(item.Value.Nickname, nickname, StringComparison.OrdinalIgnoreCase)).Select(item => item.Key).ToArray()) pending.Remove(id);
         }
@@ -93,7 +100,20 @@ internal sealed class RoomIdentityGate
     private void Save() => storage?.Save(room, verifier.Fingerprint, bindings.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
         .Select(item => new RoomIdentityBinding(item.Key, item.Value.Fingerprint, item.Value.Allowed)).ToArray());
 
+    internal void Rename(string previous, string next, string fingerprint)
+    {
+        lock (gate)
+        {
+            if (!IsApproved(previous, fingerprint)) throw new UnauthorizedAccessException("Unapproved identity cannot rename.");
+            Approve(next, fingerprint);
+        }
+    }
+
     internal IdentityChallenge Issue(string nickname, byte[] keyPackage, byte[] channelBinding)
+        => IssueCore(nickname, keyPackage, channelBinding, false);
+    internal IdentityChallenge IssueInvitation(string nickname, byte[] keyPackage, byte[] channelBinding)
+        => IssueCore(nickname, keyPackage, channelBinding, true);
+    private IdentityChallenge IssueCore(string nickname, byte[] keyPackage, byte[] channelBinding, bool invitation)
     {
         nickname = ValidNickname(nickname);
         if (channelBinding.Length != 32) throw new ArgumentException("A connection binding is required.", nameof(channelBinding));
@@ -101,10 +121,12 @@ internal sealed class RoomIdentityGate
         {
             foreach (Guid expiredId in pending.Where(item => time.GetElapsedTime(item.Value.Issued) >= Lifetime).Select(item => item.Key).ToArray()) pending.Remove(expiredId);
             if (pending.Count >= 64) throw new InvalidOperationException("Too many pending identity proofs.");
-            if (!bindings.TryGetValue(nickname, out Binding? binding) || !binding.Allowed) throw new UnauthorizedAccessException("This identity is not approved for the room.");
+            bool exists = bindings.TryGetValue(nickname, out Binding? binding);
+            if ((!exists && !invitation) || (exists && !binding!.Allowed)) throw new UnauthorizedAccessException("This identity is not approved for the room.");
             byte[] publicKey = verifier.KeyPackagePublicKey(keyPackage);
             string fingerprint = NativeMlsSession.FingerprintOf(publicKey);
-            if (!String.Equals(binding.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase)) throw new UnauthorizedAccessException("The nickname's pinned identity changed.");
+            if (invitation && bindings.Values.Any(item => !item.Allowed && item.Fingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase))) throw new UnauthorizedAccessException("This identity was revoked.");
+            if (exists && !String.Equals(binding!.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase)) throw new UnauthorizedAccessException("The nickname's pinned identity changed.");
             byte[] nonce = RandomNumberGenerator.GetBytes(32);
             byte[] payload = Payload(room, verifier.Fingerprint, nickname, nonce, channelBinding, keyPackage);
             Guid id = Guid.NewGuid();
@@ -114,14 +136,25 @@ internal sealed class RoomIdentityGate
     }
 
     internal bool Complete(Guid challengeId, byte[] signature, byte[] channelBinding, out AuthorizedRoomJoin? accepted)
+        => CompleteCore(challengeId, signature, channelBinding, null, out accepted);
+    internal bool CompleteInvitation(Guid challengeId, byte[] signature, byte[] channelBinding, OneTimeInvitations invitations, string token, out AuthorizedRoomJoin? accepted)
+        => CompleteCore(challengeId, signature, channelBinding, approve => invitations.Redeem(token, approve), out accepted);
+    private bool CompleteCore(Guid challengeId, byte[] signature, byte[] channelBinding, Func<Action, bool>? redeem, out AuthorizedRoomJoin? accepted)
     {
         lock (gate)
         {
             accepted = null;
             if (!pending.Remove(challengeId, out Pending? challenge) || time.GetElapsedTime(challenge.Issued) >= Lifetime) return false;
             if (channelBinding.Length != 32 || !CryptographicOperations.FixedTimeEquals(challenge.ChannelBinding, channelBinding)) return false;
-            if (!bindings.TryGetValue(challenge.Nickname, out Binding? binding) || !binding.Allowed || !String.Equals(binding.Fingerprint, challenge.Fingerprint, StringComparison.OrdinalIgnoreCase)) return false;
+            bool exists = bindings.TryGetValue(challenge.Nickname, out Binding? binding);
+            if ((!exists && redeem == null) || (exists && (!binding!.Allowed || !String.Equals(binding.Fingerprint, challenge.Fingerprint, StringComparison.OrdinalIgnoreCase)))) return false;
+            if (redeem != null && bindings.Values.Any(item => !item.Allowed && item.Fingerprint.Equals(challenge.Fingerprint, StringComparison.OrdinalIgnoreCase))) return false;
             if (!verifier.VerifyIdentityProof(challenge.PublicKey, challenge.Payload, signature)) return false;
+            try
+            {
+                if (redeem != null && !redeem(() => Approve(challenge.Nickname, challenge.Fingerprint))) return false;
+            }
+            catch (InvalidOperationException error) { throw new UnauthorizedAccessException("Invitation identity cannot be admitted.", error); }
             accepted = new AuthorizedRoomJoin(challenge.Nickname, challenge.Fingerprint, challenge.KeyPackage);
             return true;
         }

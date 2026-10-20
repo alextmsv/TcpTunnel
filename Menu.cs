@@ -7,7 +7,7 @@ using System.Text;
 
 namespace TCPTunnel
 {
-    public class Menu
+    public partial class Menu
     {
         ConsoleGraphic graphic = new ConsoleGraphic();
         public static int top;
@@ -18,6 +18,15 @@ namespace TCPTunnel
         const int selectionMarkerBlinkMilliseconds = 450;
         const int resizePollMilliseconds = 30;
         const int resizeSettleMilliseconds = 180;
+        internal static Func<bool> ChatMenuAlive;
+        private bool snakeCustomizationActive;
+        private long snakeWarningStarted;
+        private bool? snakeWarningVisible;
+        private int snakeOptionCount = 4;
+        private ConsoleKeyInfo lastMenuKey;
+        private Func<int, ConsoleKeyInfo, bool> optionKeyHandler;
+        private int pointerSelection = -1;
+        private Func<int, bool> valueOptions;
         static readonly int[] snakeSpeeds = { 35, 75, 125, 200 };
         static readonly ConsoleColor[] snakeColors = {
             ConsoleColor.DarkBlue, ConsoleColor.DarkGreen, ConsoleColor.DarkCyan,
@@ -168,7 +177,7 @@ namespace TCPTunnel
                         Program.matrix(pingResult.Reachable
                             ? Lang.Get(TextId.ServerPing, ip, port, pingResult.Milliseconds)
                             : Lang.Get(TextId.ServerDead, ip, port));
-                        Console.ReadKey();
+                        ConsoleInput.ReadKey();
                         graphic.Clear();
                     }
                 }
@@ -216,9 +225,10 @@ namespace TCPTunnel
             int exitIndex = choiceList.Count;
             choiceList.Add(Lang.Get(TextId.Exit));
             string[] choice = choiceList.ToArray();
+            valueOptions = index => index == languageIndex;
             int arrow = 0;
             bool isMenu = true;
-            mainMenuFrame = true;
+            mainMenuFrame = true; animateNextMenuFrame = true;
             DrawMenuFrame(choice, arrow);
 
             if (!String.IsNullOrEmpty(nicknameFeedback))
@@ -236,6 +246,9 @@ namespace TCPTunnel
             while (isMenu)
             {
                 ConsoleKey key = ReadMenuKey(choice, arrow);
+                if (pointerSelection >= 0) { arrow = pointerSelection; pointerSelection = -1; }
+                if (key == (ConsoleKey)0) continue;
+                if (key is not (ConsoleKey.Enter or ConsoleKey.Spacebar or ConsoleKey.Escape or ConsoleKey.RightArrow or ConsoleKey.DownArrow or ConsoleKey.LeftArrow or ConsoleKey.UpArrow)) continue;
                 int previousArrow = arrow;
 
                 switch (key)
@@ -327,7 +340,7 @@ namespace TCPTunnel
                 Console.WriteLine();
                 Console.Write("> ");
                 Stopwatch stopwatch = Stopwatch.StartNew();
-                string testname = Console.ReadLine();
+                string testname = ConsoleInput.ReadLine();
                 stopwatch.Stop();
                 if (testname == null) return;
                 if (!NetWorker.IsNicknameValid(testname))
@@ -372,7 +385,7 @@ namespace TCPTunnel
                     hintRow + 2,
                     ConsoleColor.Red);
                 ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.AuthInvalidNickname), ConsoleColor.Red);
-                Console.ReadKey(true);
+                ConsoleInput.ReadKey();
                 return;
             }
 
@@ -433,7 +446,7 @@ namespace TCPTunnel
                     previousLeft = start;
                     previousLength = visibleLength;
 
-                    ConsoleKeyInfo key = Console.ReadKey(true);
+                    ConsoleKeyInfo key = ConsoleInput.ReadKey();
                     if (key.Key == ConsoleKey.Enter)
                         return value.ToString();
                     if (key.Key == ConsoleKey.LeftArrow && cursor > 0)
@@ -470,6 +483,7 @@ namespace TCPTunnel
 
         private ConsoleKey ReadMenuKey(string[] choices, int selectedIndex)
         {
+            lastMenuKey = default;
             ConsoleGraphic.ConsoleGeometry knownGeometry = renderedMenuGeometry;
             bool hasKnownGeometry = hasRenderedMenuGeometry;
             ConsoleGraphic.ConsoleGeometry pendingGeometry = new ConsoleGraphic.ConsoleGeometry();
@@ -482,6 +496,9 @@ namespace TCPTunnel
 
             while (true)
             {
+                if (ChatMenuAlive != null && !ChatMenuAlive()) return ConsoleKey.Escape;
+                DrawSnakeWarning();
+                lock (ConsoleGraphic.borderAnimationLock) TickMenuReveal(selectedIndex);
                 if (WindowsTerminalTheme.RefreshAfterActivation())
                 {
                     ConsoleGraphic.InvalidateVisualTheme();
@@ -492,8 +509,22 @@ namespace TCPTunnel
                 ConsoleGraphic.EnsureBorderAnimationRunning();
                 try
                 {
-                    if (Console.KeyAvailable)
-                        return Console.ReadKey(true).Key;
+                    if (ConsoleInput.TryRead(out var inputEvent))
+                    {
+                        lock (ConsoleGraphic.borderAnimationLock) TickMenuReveal(selectedIndex, true);
+                        if (inputEvent.Kind == ConsoleInputKind.Key) { lastMenuKey = inputEvent.Key; return inputEvent.Key.Key; }
+                        int hit = HitMenuChoice(choices, inputEvent.X, inputEvent.Y);
+                        if (ConsoleInput.MouseMode && hit >= 0)
+                        {
+                            hasRenderedMenuGeometry &= AnimateSelection(choices, selectedIndex, hit);
+                            pointerSelection = hit;
+                            if (inputEvent.Kind == ConsoleInputKind.Click) return ConsoleKey.Enter;
+                            if (inputEvent.Kind == ConsoleInputKind.Wheel && valueOptions?.Invoke(hit) == true)
+                                return mainMenuFrame ? ConsoleKey.Enter : inputEvent.Direction < 0 ? ConsoleKey.LeftArrow : ConsoleKey.RightArrow;
+                            return (ConsoleKey)0;
+                        }
+                        if (inputEvent.Kind == ConsoleInputKind.ModeChanged) return (ConsoleKey)0;
+                    }
                 }
                 catch (ArgumentOutOfRangeException)
                 {
@@ -560,6 +591,9 @@ namespace TCPTunnel
 
         private bool DrawMenuFrame(string[] choices, int selectedIndex)
         {
+            if (snakeCustomizationActive) snakeOptionCount = choices.Length;
+            menuReveals.Clear();
+            bool revealText = animateNextMenuFrame && ApplicationSettings.Current.MenuMatrixText;
             hasRenderedMenuGeometry = false;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out var frameGeometry)) return false;
             left = 5;
@@ -584,18 +618,32 @@ namespace TCPTunnel
                 top = layout.Top;
                 menuRowSpacing = layout.Spacing;
                 lock (ConsoleGraphic.borderAnimationLock)
-                    completed = MenuPresentation.DrawHeader(geometry, layout.Header);
+                    completed = MenuPresentation.DrawHeader(geometry, revealText ? Array.ConvertAll(layout.Header, text => new string(' ', text.Length)) : layout.Header);
             }
             for (int index = 0; index < choices.Length; index++)
-                completed &= DrawChoice(choices[index], index, index == selectedIndex, false);
+                completed &= DrawChoice(revealText && MatrixTextEffect.CanAnimate(choices[index]) ? new string(' ', choices[index].Length) : choices[index], index, index == selectedIndex, false);
+            DrawSnakeWarning(true);
             if (!String.IsNullOrEmpty(optionsFooter))
                 completed &= DrawOptionsFooter(top + choices.Length * menuRowSpacing + 1);
             if (completed && ConsoleGraphic.IsConsoleGeometryCurrent(frameGeometry))
             {
                 renderedMenuGeometry = frameGeometry;
                 hasRenderedMenuGeometry = true;
+                lock (ConsoleGraphic.borderAnimationLock) StartMenuReveal(choices, selectedIndex, frameGeometry);
             }
             return hasRenderedMenuGeometry;
+        }
+
+        private int HitMenuChoice(string[] choices, int x, int y)
+        {
+            if (!hasRenderedMenuGeometry || !ConsoleGraphic.IsConsoleGeometryCurrent(renderedMenuGeometry)) return -1;
+            for (int i = 0; i < choices.Length; i++)
+            {
+                int row = top + i * menuRowSpacing;
+                int width = Math.Min(choices[i].Length + 2, Math.Max(0, Console.WindowWidth - left));
+                if (y == row && x >= Math.Max(ConsoleGraphic.ContentLeft, left - 2) && x < left + width) return i;
+            }
+            return -1;
         }
 
         private bool DrawOptionsFooter(int firstRow)
@@ -653,6 +701,13 @@ namespace TCPTunnel
             var context = new HubOptionContext { Bluetooth = BluetoothSupport.Check(true) };
             IReadOnlyList<HubOptionDescriptor> descriptors = HubOptionRegistry.All;
             int selectedOption = 0;
+            var limitInput = new NumericOptionInput();
+            optionKeyHandler = (index, key) =>
+            {
+                if (index >= descriptors.Count || descriptors[index].Id != "participant-limit") { limitInput.Reset(); return false; }
+                if (!limitInput.TryEdit(key, context.Options.ParticipantLimit, out int value)) return false;
+                context.Options = context.Options with { ParticipantLimit = value }; return true;
+            };
             try
             {
                 while (true)
@@ -668,6 +723,7 @@ namespace TCPTunnel
                     {
                         HubOptionView view = descriptors[index].Render(context);
                         choices[index] = view.Text;
+                        if (descriptors[index].Id == "participant-limit" && limitInput.Editing) choices[index] = Lang.Get(TextId.HubParticipantLimit, limitInput.Text);
                         starts[index] = view.HighlightStart;
                         lengths[index] = view.HighlightLength;
                         colors[index] = view.HighlightStart >= 0 ? ConsoleColor.Green : null;
@@ -681,7 +737,8 @@ namespace TCPTunnel
                     optionsHeader = context.BluetoothAvailable
                         ? Lang.Get(TextId.BluetoothModuleFound)
                         : Lang.Get(TextId.BluetoothModuleMissing, Lang.Get(BluetoothSupport.Describe(context.Bluetooth)));
-                    optionsFooter = HubOptionRegistry.Explanation(context.Options);
+                    optionsFooter = HubOptionRegistry.Explanation(context.Options) + "\n" + Lang.Get(context.Options.EndToEndEncryption ? TextId.HubExplainE2E : TextId.HubExplainPlaintext);
+                    if (context.Options.ParticipantLimit is < 1 or > 64) optionsFooter += "\n" + Lang.Get(TextId.HubParticipantLimitInvalid);
 
                     var choice = ReadOptionsChoice(Lang.Get(TextId.HubOptionsTitle), choices, selectedOption, starts, colors,
                         index => index < descriptors.Count, lengths);
@@ -689,7 +746,11 @@ namespace TCPTunnel
                         return null;
                     selectedOption = choice.Index;
                     if (choice.Index == createIndex)
-                        return context.Options.IsValid ? context.Options : null;
+                    {
+                        if (!context.Options.IsValid) { selectedOption = descriptors.Count - 1; continue; }
+                        return context.Options;
+                    }
+                    if (choice.Direction == 0) continue;
                     context.Options = descriptors[choice.Index].Change(context, choice.Direction);
                 }
             }
@@ -698,6 +759,7 @@ namespace TCPTunnel
                 optionsHeader = null;
                 optionsFooter = null;
                 activeHighlightOnly = null;
+                optionKeyHandler = null;
             }
         }
 
@@ -806,7 +868,9 @@ namespace TCPTunnel
             Console.ResetColor();
             ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
             Console.Write("> #");
-            string input = (Console.ReadLine() ?? String.Empty).Trim().TrimStart('#');
+            string rawInput = ReadPromptLine();
+            if (rawInput == null) return;
+            string input = rawInput.Trim().TrimStart('#');
 
             if (input.Length == 0)
                 return;
@@ -817,7 +881,7 @@ namespace TCPTunnel
                 ConsoleGraphic.ApplyContentColors(ConsoleColor.Red);
                 Console.Write(Lang.Get(TextId.CustomColorInvalid));
                 Console.ResetColor();
-                Console.ReadKey(true);
+                WaitPromptAcknowledgement();
                 return;
             }
 
@@ -831,7 +895,7 @@ namespace TCPTunnel
                 ConsoleTheme.BackgroundCustomRgb = previousBackground;
                 Console.Write(Lang.Get(TextId.BackgroundApplyFailed, applyError));
                 Console.ResetColor();
-                Console.ReadKey(true);
+                WaitPromptAcknowledgement();
             }
 
             ConsoleGraphic.InvalidateVisualTheme();
@@ -851,7 +915,9 @@ namespace TCPTunnel
             Console.ResetColor();
             ConsoleGraphic.ApplyContentColors(ConsoleTheme.InputText);
             Console.Write("> #");
-            string input = (Console.ReadLine() ?? String.Empty).Trim().TrimStart('#');
+            string rawInput = ReadPromptLine();
+            if (rawInput == null) return;
+            string input = rawInput.Trim().TrimStart('#');
 
             if (input.Length == 0)
             {
@@ -867,7 +933,7 @@ namespace TCPTunnel
                 ConsoleGraphic.ApplyContentColors(ConsoleColor.Red);
                 Console.Write(Lang.Get(TextId.CustomColorInvalid));
                 Console.ResetColor();
-                Console.ReadKey(true);
+                WaitPromptAcknowledgement();
                 return;
             }
 
@@ -884,6 +950,7 @@ namespace TCPTunnel
                 string[] choices = {
                     Lang.Get(TextId.Snake),
                     Lang.Get(TextId.InterfaceColors),
+                    Lang.Get(TextId.InterfaceOptions),
                     Lang.Get(TextId.ResetSettings),
                     Lang.Get(TextId.Back)
                 };
@@ -892,7 +959,7 @@ namespace TCPTunnel
                 if (visibleSelection < 0)
                     return;
                 int selection = visibleSelection + firstOption;
-                if (selection == 3)
+                if (selection == 4)
                     return;
 
                 selectedOption = visibleSelection;
@@ -900,6 +967,8 @@ namespace TCPTunnel
                     ShowSnakeOptions();
                 else if (selection == 1)
                     ShowInterfaceColorOptions();
+                else if (selection == 2)
+                    ShowInterfaceOptions();
                 else
                 {
                     ApplicationSettings.ResetCustomizations();
@@ -911,6 +980,9 @@ namespace TCPTunnel
 
         private void ShowSnakeOptions()
         {
+            snakeCustomizationActive = true; snakeWarningStarted = Stopwatch.GetTimestamp(); snakeWarningVisible = null;
+            try
+            {
             int selectedOption = 0;
             while (true)
             {
@@ -918,11 +990,12 @@ namespace TCPTunnel
                     Lang.Get(TextId.Speed, GetSnakeSpeedName(ConsoleGraphic.BorderAnimationDelayMilliseconds)),
                     Lang.Get(TextId.Color, GetSnakeColorName(ConsoleGraphic.BorderSnakeColor)),
                     Lang.Get(TextId.GlyphValue, ConsoleGraphic.BorderSnakeGlyph),
+                    "Nickname snake " + (ApplicationSettings.Current.NicknameSnake ? "[ V ]" : "[   ]"),
                     Lang.Get(TextId.Back)
                 };
-                var choice = ReadOptionsChoice(Lang.Get(TextId.SnakeCustomization), choices, selectedOption, isValueOption: index => index < 3);
+                var choice = ReadOptionsChoice(Lang.Get(TextId.SnakeCustomization), choices, selectedOption, isValueOption: index => index < 4);
                 int selection = choice.Index;
-                if (selection < 0 || selection == 3)
+                if (selection < 0 || selection == 4)
                     return;
 
                 selectedOption = selection;
@@ -931,8 +1004,117 @@ namespace TCPTunnel
                     ConsoleGraphic.BorderAnimationDelayMilliseconds = OptionNavigation.Next(snakeSpeeds, ConsoleGraphic.BorderAnimationDelayMilliseconds, choice.Direction);
                 else if (selection == 1)
                     ConsoleGraphic.BorderSnakeColor = OptionNavigation.Next(snakeColors, ConsoleGraphic.BorderSnakeColor, choice.Direction);
-                else
+                else if (selection == 2)
                     ConsoleGraphic.BorderSnakeGlyph = OptionNavigation.Next(snakeGlyphs, ConsoleGraphic.BorderSnakeGlyph, choice.Direction);
+                else if (UserInterface.NicknameSnakeAvailable) ApplicationSettings.Current.NicknameSnake = !ApplicationSettings.Current.NicknameSnake;
+                else ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.NicknameSnakeUnavailable), ConsoleColor.DarkRed);
+                ApplicationSettings.CaptureAndSave();
+            }
+            }
+            finally { snakeCustomizationActive = false; snakeWarningVisible = null; }
+        }
+
+        internal static bool HasCustomSnakeSettings() => Array.IndexOf(snakeSpeeds, ConsoleGraphic.BorderAnimationDelayMilliseconds) < 0 ||
+            Array.IndexOf(snakeColors, ConsoleGraphic.BorderSnakeColor) < 0 || Array.IndexOf(snakeGlyphs, ConsoleGraphic.BorderSnakeGlyph) < 0;
+
+        private void DrawSnakeWarning(bool force = false)
+        {
+            try
+            {
+            if (!snakeCustomizationActive || !HasCustomSnakeSettings()) return;
+            bool visible = (long)Stopwatch.GetElapsedTime(snakeWarningStarted).TotalMilliseconds % 1000 < 500;
+            if (!force && snakeWarningVisible == visible) return;
+            int row = Math.Max(ConsoleGraphic.ContentTop, (ConsoleGraphic.ContentTop + ConsoleGraphic.ContentBottom) / 2);
+            int lastOption = top + (snakeOptionCount - 1) * menuRowSpacing;
+            if (row <= lastOption) row = Math.Min(ConsoleGraphic.ContentBottom, lastOption + 2);
+            if (row <= lastOption) return;
+            int cursorLeft = Console.CursorLeft, cursorTop = Console.CursorTop;
+            string text = Lang.Get(TextId.SnakeCustomWarning);
+            ConsoleGraphic.WriteCenteredLine(visible ? text : new string(' ', text.Length), row, ConsoleColor.DarkRed);
+            Console.SetCursorPosition(Math.Clamp(cursorLeft, 0, Math.Max(0, Math.Min(Console.BufferWidth, Console.WindowWidth) - 1)),
+                Math.Clamp(cursorTop, 0, Math.Max(0, Math.Min(Console.BufferHeight, Console.WindowHeight) - 1))); snakeWarningVisible = visible;
+            }
+            catch (ArgumentOutOfRangeException) { snakeWarningVisible = null; }
+            catch (System.IO.IOException) { snakeWarningVisible = null; }
+        }
+
+        internal void ShowChatCustomization(bool snakeOnly)
+        {
+            if (snakeOnly)
+            {
+                if (ConsoleGraphic.Enabled) ShowSnakeOptions();
+                return;
+            }
+            int selected = 0;
+            while (true)
+            {
+                string[] choices = {
+                    Lang.Get(ConsoleGraphic.Enabled ? TextId.GraphicsEnabled : TextId.GraphicsDisabled),
+                    Lang.Get(TextId.InterfaceColors), Lang.Get(TextId.InterfaceOptions),
+                    Lang.Get(TextId.BackgroundColorRow) + ": " + GetBackgroundModeName(ConsoleTheme.BackgroundMode),
+                    Lang.Get(TextId.CustomBackgroundColor), Lang.Get(TextId.ResetSettings), Lang.Get(TextId.Back)
+                };
+                var choice = ReadOptionsChoice(Lang.Get(TextId.Customization), choices, selected, isValueOption: index => index == 0 || index == 3);
+                if (choice.Index < 0 || choice.Index == 6) return;
+                selected = choice.Index;
+                switch (selected)
+                {
+                    case 0: ConsoleGraphic.Enabled = !ConsoleGraphic.Enabled; break;
+                    case 1: ShowInterfaceColorOptions(); break;
+                    case 2: ShowInterfaceOptions(); break;
+                    case 3: ApplyBackgroundModeChange(OptionNavigation.Next(new[] { BackgroundColorMode.Off, BackgroundColorMode.WindowsTerminal }, ConsoleTheme.BackgroundMode, choice.Direction)); break;
+                    case 4: ShowCustomBackgroundColorPrompt(); break;
+                    case 5: ApplicationSettings.ResetCustomizations(false); break;
+                }
+                ApplicationSettings.CaptureAndSave();
+            }
+        }
+
+        internal int ChooseConnectionMode(bool bluetooth)
+        {
+            ConnectionSecurity = ConnectionSecurityMode.RequireE2E;
+            int selected = 0;
+            try
+            {
+                while (true)
+                {
+                    string security = Lang.Get(TextId.ConnectionEncryptionRequired) + (ConnectionSecurity == ConnectionSecurityMode.RequireE2E ? " [ V ]" : " [   ]");
+                    string[] choices = bluetooth ? new[] { Lang.Get(TextId.LanSearch), Lang.Get(TextId.BluetoothSearching), Lang.Get(TextId.ConnectManual), security, Lang.Get(TextId.Back) } :
+                        new[] { Lang.Get(TextId.LanSearch), Lang.Get(TextId.ConnectManual), security, Lang.Get(TextId.Back) };
+                    optionsFooter = Lang.Get(ConnectionSecurity == ConnectionSecurityMode.RequireE2E ? TextId.ConnectionE2EHint : TextId.ConnectionPlaintextHint);
+                    int securityIndex = choices.Length - 2;
+                    var starts = new int[choices.Length]; Array.Fill(starts, -1);
+                    var lengths = new int[choices.Length]; var colors = new ConsoleColor?[choices.Length];
+                    if (ConnectionSecurity == ConnectionSecurityMode.RequireE2E) { starts[securityIndex] = security.IndexOf("[ V ]", StringComparison.Ordinal); lengths[securityIndex] = 5; colors[securityIndex] = ConsoleColor.Green; }
+                    var choice = ReadOptionsChoice(Lang.Get(TextId.ConnectToHub), choices, selected, starts, colors, index => index == securityIndex, lengths);
+                    if (choice.Index < 0 || choice.Index == choices.Length - 1) return -1;
+                    selected = choice.Index;
+                    if (selected != choices.Length - 2) return selected == 0 ? 0 : bluetooth && selected == 1 ? 1 : 2;
+                    ConnectionSecurity = ConnectionSecurity == ConnectionSecurityMode.RequireE2E ? ConnectionSecurityMode.AllowPlaintext : ConnectionSecurityMode.RequireE2E;
+                }
+            }
+            finally { optionsFooter = null; }
+        }
+        internal ConnectionSecurityMode ConnectionSecurity { get; private set; }
+
+        private void ShowDialogueOptions()
+        {
+            int[] matrixSpeeds = { 1, 5, 10, 20, 35, 50, 100, 200, 500 };
+            int selected = 0;
+            while (true)
+            {
+                string[] choices = {
+                    Lang.Get(TextId.InputPinnedBottom) + (ApplicationSettings.Current.InputPinnedBottom ? " [ V ]" : " [   ]"),
+                    Lang.Get(TextId.MatrixText) + (ApplicationSettings.Current.MatrixText ? " [ V ]" : " [   ]"),
+                    Lang.Get(TextId.MatrixSpeed, ApplicationSettings.Current.MatrixCharacterDelay),
+                    Lang.Get(TextId.Back)
+                };
+                var choice = ReadOptionsChoice(Lang.Get(TextId.DialogueInterface), choices, selected, isValueOption: index => index < 3);
+                if (choice.Index < 0 || choice.Index == 3) return;
+                selected = choice.Index;
+                if (selected == 0) ApplicationSettings.Current.InputPinnedBottom = !ApplicationSettings.Current.InputPinnedBottom;
+                else if (selected == 1) ApplicationSettings.Current.MatrixText = !ApplicationSettings.Current.MatrixText;
+                else ApplicationSettings.Current.MatrixCharacterDelay = OptionNavigation.Next(matrixSpeeds, ApplicationSettings.Current.MatrixCharacterDelay, choice.Direction);
                 ApplicationSettings.CaptureAndSave();
             }
         }
@@ -1155,20 +1337,26 @@ namespace TCPTunnel
             Func<int, bool> isValueOption = null,
             int[] previewLengths = null)
         {
+            valueOptions = isValueOption; pointerSelection = -1;
             activePreviewStarts = previewStarts;
             activePreviewColors = previewColors;
             activePreviewLengths = previewLengths;
             ConsoleGraphic.SetMenuScreen(true);
             ConsoleTitleAnimator.SetCaption(title, ConsoleGraphic.Enabled);
-            graphic.Clear(0, 0);
-            mainMenuFrame = false;
             int arrow = Math.Max(0, Math.Min(selectedOption, choices.Length - 1));
-            DrawMenuFrame(choices, arrow);
+            PrepareOptionsFrame(title, choices, arrow);
 
             while (true)
             {
                 ConsoleKey key = ReadMenuKey(choices, arrow);
+                if (pointerSelection >= 0) { arrow = pointerSelection; pointerSelection = -1; }
                 int previousArrow = arrow;
+                if (lastMenuKey != default && optionKeyHandler?.Invoke(arrow, lastMenuKey) == true)
+                {
+                    ContinueOptionsFrame(arrow);
+                    activePreviewStarts = null; activePreviewColors = null; activePreviewLengths = null;
+                    return (arrow, 0);
+                }
                 if (key == ConsoleKey.DownArrow)
                 {
                     arrow = (arrow + 1) % choices.Length;
@@ -1182,6 +1370,7 @@ namespace TCPTunnel
                 else if (key == ConsoleKey.Enter || key == ConsoleKey.Spacebar ||
                     (OptionNavigation.ValueDirection(key) != 0 && isValueOption?.Invoke(arrow) == true))
                 {
+                    if (isValueOption?.Invoke(arrow) == true) ContinueOptionsFrame(arrow);
                     activePreviewStarts = null;
                     activePreviewColors = null;
                     activePreviewLengths = null;

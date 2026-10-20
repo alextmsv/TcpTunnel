@@ -12,6 +12,7 @@
 [Rr]elease/
 x64/
 x86/
+docs/
 
 # NuGet packages and generated restore files
 packages/

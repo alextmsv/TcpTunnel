@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 namespace TCPTunnel
@@ -87,6 +87,7 @@ namespace TCPTunnel
             AppDomain.CurrentDomain.ProcessExit += delegate
             {
                 ConsoleTitleAnimator.Stop();
+                ConsoleInput.Restore();
                 WindowsTerminalTheme.TryClearBackground(out _);
                 ConsoleWindowState.StopTracking();
                 ApplicationSettings.CaptureAndSave();
@@ -106,7 +107,7 @@ namespace TCPTunnel
         {
             ConsoleGraphic.WriteContentLine(String.Empty);
             Program.matrix(Lang.Get(TextId.Goodbye));
-            Console.ReadKey();
+            ConsoleInput.ReadKey();
             ServerInterface.StopServer();
             Environment.Exit(0);
         }

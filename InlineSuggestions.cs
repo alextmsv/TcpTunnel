@@ -5,6 +5,16 @@ namespace TCPTunnel
 {
     internal static class InlineSuggestions
     {
+        internal static bool TryGetCommandToken(string text, int cursorIndex, out int tokenEnd, out string prefix)
+        {
+            tokenEnd = 0; prefix = String.Empty;
+            if (String.IsNullOrEmpty(text) || (text[0] != '/' && text[0] != '\\') || text.StartsWith("\\\\", StringComparison.Ordinal) || cursorIndex < 1 || cursorIndex > text.Length) return false;
+            while (tokenEnd < text.Length && !Char.IsWhiteSpace(text[tokenEnd])) tokenEnd++;
+            if (cursorIndex > tokenEnd) return false;
+            prefix = text.Substring(1, cursorIndex - 1);
+            return true;
+        }
+
         public static bool TryGetToken(string text, int cursorIndex, char trigger, out int tokenStart, out string prefix)
         {
             tokenStart = -1;

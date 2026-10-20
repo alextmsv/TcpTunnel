@@ -14,9 +14,13 @@ using System.Threading.Tasks;
 namespace TCPTunnel.Cryptography;
 
 internal sealed record SecurePacket(byte Kind, byte[] Payload);
-internal sealed record SecureBoot(byte[] Room, byte[] OwnerKey, byte[] CertificateHash, string OwnerName, byte[] Signature);
-internal sealed record SecureHello(string Nickname, byte[] Package, byte[] Binding);
-internal sealed record SecureRosterEntry(string Nickname, string Fingerprint, string? Snake = null);
+internal sealed record SecureBoot(byte[] Room, byte[] OwnerKey, byte[] CertificateHash, string OwnerName, byte[] Signature,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ProtocolVersion = 0);
+internal sealed record SecureHello(string Nickname, byte[] Package, byte[] Binding,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int ProtocolVersion = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? InvitationToken = null);
+internal sealed record SecureRosterEntry(string Nickname, string Fingerprint, string? Snake = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? OriginalNickname = null);
 internal sealed record SecureRoster(byte[] Room, long Revision, SecureRosterEntry[] Members, byte[] Signature);
 
 internal static class SecureWire
@@ -68,6 +72,15 @@ internal static class SecureWire
         await stream.ReadExactlyAsync(header.AsMemory(1, 4), timeout.Token).ConfigureAwait(false);
         int length = BinaryPrimitives.ReadInt32BigEndian(header) - 1;
         if (length < 0 || length > maximum) throw new InvalidDataException("Invalid secure packet length.");
+        int kindLimit = header[4] switch
+        {
+            1 => MessageProtocol.MaxFrameBytes,
+            2 or 3 or 4 or 7 => 256 * 1024,
+            5 or 6 => MaximumPayload,
+            10 or 11 => 32,
+            _ => throw new InvalidDataException("Unknown secure packet kind.")
+        };
+        if (length > kindLimit || (header[4] is 10 or 11 && length != 32)) throw new InvalidDataException("Secure packet exceeds its kind limit.");
         var payload = new byte[length];
         using var total = CancellationTokenSource.CreateLinkedTokenSource(token); total.CancelAfter(TimeSpan.FromMinutes(3));
         for (int offset = 0; offset < length; offset += 16 * 1024)
@@ -79,6 +92,7 @@ internal static class SecureWire
     }
     internal static byte[] BootProof(SecureBoot boot)
     {
+        if (boot.ProtocolVersion is not (0 or 2 or 3)) throw new InvalidDataException("Unsupported encrypted chat protocol.");
         if (boot.Room.Length != 32 || boot.OwnerKey.Length != 32 || boot.CertificateHash.Length != 32 || !NetWorker.IsNicknameValid(boot.OwnerName)) throw new InvalidDataException("Invalid secure Hub announcement.");
         return Proof(2, Json(boot with { Signature = Array.Empty<byte>() }));
     }
@@ -128,6 +142,11 @@ internal static class SecureWire
             return ImageAnimationProtocol.CreateServerTransfer(packet!, nickname);
         }
         string message = messages[0];
+        if (FileTransferProtocol.IsControl(message))
+        {
+            if (!FileTransferProtocol.TryBind(message, nickname, out string file)) throw new InvalidDataException("Invalid encrypted file transfer.");
+            return new[] { file };
+        }
         if (ImageProtocol.IsImageControlMessage(message))
         {
             if (!ImageProtocol.TryParseClientFrame(message, out var image)) throw new InvalidDataException("Invalid encrypted image.");

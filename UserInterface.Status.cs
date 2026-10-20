@@ -26,50 +26,51 @@ namespace TCPTunnel
             var pingTask = endpoint == null ? null : PingAsync(endpoint.Address.ToString(), endpoint.Port);
             RemoteHubStatus remote = query.GetAwaiter().GetResult();
             var ping = pingTask?.GetAwaiter().GetResult() ?? (false, (string)null);
-            string unavailable = Lang.Get(TextId.StatusUnavailable);
-            string link = currentTransport switch
+            string displayed = endpoint == null ? host : host.Contains(':') ? "[" + host.Trim('[', ']') + "]:" + endpoint.Port : host + ":" + endpoint.Port;
+            bool encrypted = currentE2E, wasConnected = connected;
+            ChatTransport transport = currentTransport; int? signal = CurrentBluetoothSignal;
+            Func<string> unavailable = () => Lang.Get(TextId.StatusUnavailable);
+            Func<string> link = () => transport switch
             {
-                ChatTransport.Bluetooth => CurrentBluetoothSignal is int dbm
-                    ? Lang.Get(TextId.StatusSignal, dbm)
-                    : Lang.Get(TextId.StatusSignalUnavailable),
+                ChatTransport.Bluetooth => signal is int dbm ? Lang.Get(TextId.StatusSignal, dbm) : Lang.Get(TextId.StatusSignalUnavailable),
                 ChatTransport.Local => Lang.Get(TextId.StatusLocalLink),
                 _ => ping.Item1 ? Lang.Get(TextId.StatusPing, ping.Item2) : Lang.Get(TextId.StatusPingUnavailable)
             };
-            var current = new List<string>
+            var current = new List<Func<string>>
             {
-                Lang.Get(TextId.StatusCurrent, endpoint == null ? host : host.Contains(':') ? "[" + host.Trim('[', ']') + "]:" + endpoint.Port : host + ":" + endpoint.Port),
-                "E2E: " + (currentE2E ? "TRUE" : "FALSE"),
-                Lang.Get(TextId.StatusAdministrator, String.IsNullOrEmpty(remote?.Owner) ? unavailable : "@" + remote.Owner),
-                Lang.Get(connected ? TextId.StatusConnected : TextId.StatusDisconnected),
+                () => Lang.Get(TextId.StatusCurrent, displayed),
+                () => "E2E: " + (encrypted ? "TRUE" : "FALSE"),
+                () => Lang.Get(TextId.StatusAdministrator, String.IsNullOrEmpty(remote?.Owner) ? unavailable() : NicknameProtocol.DisplayName(remote.Owner, remote.OriginalNickname)),
+                () => Lang.Get(wasConnected ? TextId.StatusConnected : TextId.StatusDisconnected),
                 link,
-                Lang.Get(TextId.StatusParticipants, remote?.Participants.ToString() ?? unavailable)
+                () => Lang.Get(TextId.StatusParticipants, remote?.Participants.ToString() ?? unavailable())
             };
-            List<string> own = null;
+            List<Func<string>> own = null;
             LocalHubSnapshot ownStatus = ServerInterface.CaptureStatus();
             if (ownStatus.Running)
             {
                 HubOptions ownOptions = ServerInterface.Options;
-                string access = Lang.Get(TextId.StatusAccess, DescribeHubAccess(ownOptions));
-                if (isLocalHubSession)
-                {
-                    current.Add("E2E service: " + (ServerInterface.SecureHub?.ServiceStatus ?? "DISABLED"));
-                    current.Add(access);
-                    if (ownOptions.UsesPortMapping)
-                        current.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
-                }
+                Func<string> access = () => Lang.Get(TextId.StatusAccess, DescribeHubAccess(ownOptions));
+                string service = ServerInterface.SecureHub?.ServiceStatus ?? "DISABLED";
+                Func<string> nat = NetWorker.CapturePortMappingStatus();
+                bool lanAvailable = ServerInterface.LanDiscoveryAvailable;
+                string lanFailure = ServerInterface.LanDiscoveryFailure;
+                Func<string> lan = () => Lang.Get(TextId.StatusLanDiscovery, lanAvailable ? Lang.Get(TextId.StatusRunning) : lanFailure ?? unavailable());
+                List<Func<string>> target;
+                if (isLocalHubSession) { target = current; target.Add(access); }
                 else
                 {
-                    own = new List<string>
+                    own = new List<Func<string>>
                     {
-                        ownOptions.UsesTcp ? Lang.Get(TextId.StatusOwn, ownStatus.Port) : Lang.Get(TextId.StatusOwnBluetooth),
-                        Lang.Get(TextId.StatusRunning),
-                        access
+                        () => ownOptions.UsesTcp ? Lang.Get(TextId.StatusOwn, ownStatus.Port) : Lang.Get(TextId.StatusOwnBluetooth),
+                        () => Lang.Get(TextId.StatusRunning), access,
+                        () => Lang.Get(TextId.StatusParticipants, ownStatus.Participants)
                     };
-                    if (ownOptions.UsesPortMapping)
-                        own.Add(Lang.Get(TextId.StatusNat, ownStatus.Nat));
-                    own.Add(Lang.Get(TextId.StatusParticipants, ownStatus.Participants));
-                    own.Add("E2E service: " + (ServerInterface.SecureHub?.ServiceStatus ?? "DISABLED"));
+                    target = own;
                 }
+                target.Add(() => "E2E service: " + service);
+                if (ownOptions.UsesPortMapping) target.Add(() => Lang.Get(TextId.StatusNat, nat()));
+                if (ownOptions.IpMode == HubIpMode.LanOnly) target.Add(lan);
             }
             if (token.IsCancellationRequested || !connected) return;
             lock (consoleLock)
@@ -77,7 +78,8 @@ namespace TCPTunnel
                 var entry = new ChatHistoryEntry(new StatusCard(current, own));
                 chatHistory.Add(entry);
                 TrimChatHistoryLocked();
-                if (ConsoleGraphic.Enabled) RedrawChatLayoutLocked();
+                if (chatUiSuspended) return;
+                if (ConsoleGraphic.Enabled || ScrollbackActive) RedrawChatLayoutLocked();
                 else WritePlainHistoryEntry(entry);
             }
         }

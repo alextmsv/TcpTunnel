@@ -22,6 +22,14 @@ namespace TCPTunnel
         private readonly object gate = new object();
         private readonly Dictionary<string, Origin> origins = new Dictionary<string, Origin>(StringComparer.Ordinal);
         private int pending, active;
+        private readonly int maximum;
+        private readonly bool reserveOwner;
+        private int localActive;
+        internal ConnectionAdmission(int maximum = ServerInterface.MaxConnectedClients, bool reserveOwner = false)
+        {
+            if (maximum is < 1 or > ServerInterface.MaxConnectedClients) throw new ArgumentOutOfRangeException(nameof(maximum));
+            this.maximum = maximum; this.reserveOwner = reserveOwner;
+        }
         internal Lease TryAcquire(string origin, bool local)
         {
             lock (gate)
@@ -45,7 +53,14 @@ namespace TCPTunnel
         {
             lock (gate)
             {
-                if (lease.state != 0 || active >= ServerInterface.MaxConnectedClients) return false;
+                if (lease.state == 1) return true;
+                if (lease.state != 0) return false;
+                if (reserveOwner && lease.origin == null)
+                {
+                    if (localActive != 0) return false;
+                    localActive++; lease.state = 1; return true;
+                }
+                if (active >= maximum - (reserveOwner ? 1 : 0)) return false;
                 if (lease.origin != null) { origins[lease.origin].Pending--; pending--; }
                 active++; lease.state = 1; return true;
             }
@@ -55,7 +70,7 @@ namespace TCPTunnel
             lock (gate)
             {
                 if (lease.state == 2) return;
-                if (lease.state == 1) active--;
+                if (lease.state == 1) { if (reserveOwner && lease.origin == null) localActive--; else active--; }
                 else if (lease.origin != null) { origins[lease.origin].Pending--; pending--; }
                 lease.state = 2;
             }

@@ -65,6 +65,26 @@ namespace TCPTunnel
         }
 
         private static readonly ConsoleCell[] borderCellBuffer = new ConsoleCell[1];
+        private static ConsoleCell[] textCellBuffer = Array.Empty<ConsoleCell>();
+        internal static bool WriteTextRun(int left, int top, string text, int offset, int length, ConsoleColor foreground, ConsoleColor background, bool defaultBackground = true)
+        {
+            if (length <= 0) return true;
+            lock (borderAnimationLock)
+            {
+                if (!TryCaptureConsoleGeometry(out var geometry) || left < 0 || top < 0 || top >= geometry.DrawableHeight || left + length > geometry.DrawableWidth || Console.IsOutputRedirected) return false;
+                if (ConsoleTheme.HasContentBackground)
+                {
+                    int backgroundSgr = ConsoleTheme.ForegroundSgr(background) + 10;
+                    Console.Write("\u001b7\u001b[" + (top + 1) + ";" + (left + 1) + "H\u001b[" + ConsoleTheme.ForegroundSgr(foreground) + ";" + (defaultBackground ? "49" : backgroundSgr.ToString()) + "m" + text.Substring(offset, length) + "\u001b8");
+                    return true;
+                }
+                if (textCellBuffer.Length < length) textCellBuffer = new ConsoleCell[length];
+                ushort attributes = (ushort)((int)foreground | ((int)background << 4));
+                for (int i = 0; i < length; i++) textCellBuffer[i] = new ConsoleCell { Character = text[offset + i], Attributes = attributes };
+                var region = new SmallRectangle { Left = (short)left, Top = (short)top, Right = (short)(left + length - 1), Bottom = (short)top };
+                return WriteConsoleOutput(consoleOutputHandle, textCellBuffer, new ConsoleCoordinate(length, 1), new ConsoleCoordinate(0, 0), ref region);
+            }
+        }
 
         [DllImport("kernel32.dll", EntryPoint = "WriteConsoleOutputW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool WriteConsoleOutput(IntPtr output, ConsoleCell[] cells,
@@ -94,12 +114,14 @@ namespace TCPTunnel
 
         private sealed class SnakeState
         {
+            public char[] NicknameBody;
             public ConsoleColor Color;
             public char Glyph;
-            public int DelayMilliseconds;
             public int Step;
-            public long LastMoveTimestamp;
             public bool Paused;
+            public int ReferenceStep;
+            public int ReferenceDelay;
+            public long Anchored;
         }
 
         private const int StandardOutputHandle = -11;
@@ -118,6 +140,8 @@ namespace TCPTunnel
         private static int borderAnimationDelayMilliseconds = 75;
         private static ConsoleColor borderSnakeColor = ConsoleColor.Green;
         private static char borderSnakeGlyph = '-';
+        private static string cachedSnakeNickname;
+        private static char[] cachedSnakeNicknameBody;
         private static int borderAnimationStep;
         private static bool borderSnakePaused;
         private static long localSnakeLastMoveTimestamp = Stopwatch.GetTimestamp();
@@ -131,6 +155,9 @@ namespace TCPTunnel
         private static char[] desiredBorderCharacters;
         private static char[] renderedBorderCharacters;
         private static bool forceFullBorderResync;
+        private static bool[] nicknameBorderCells;
+        private static int surfaceRevision;
+        internal static int SurfaceRevision => Volatile.Read(ref surfaceRevision);
         private static int signatureLeft;
         private static int signatureTop;
         private static int signatureLength;
@@ -356,6 +383,12 @@ namespace TCPTunnel
                 ConsoleColor? previewColor,
                 int previewLength,
                 bool highlightOnly)
+                => DrawRange(text, index, baseLeft, baseTop, selected, animate, animationDelay,
+                    previewStart, previewColor, previewLength, highlightOnly, 0, Int32.MaxValue, 0);
+
+            internal bool DrawRange(string text, int index, int baseLeft, int baseTop, bool selected,
+                bool animate, int animationDelay, int previewStart, ConsoleColor? previewColor,
+                int previewLength, bool highlightOnly, int rangeStart, int rangeLength, int previousLength)
             {
                 try
                 {
@@ -385,12 +418,13 @@ namespace TCPTunnel
                         int labelWidth = Math.Max(0, availableWidth - 4);
                         label = text.Substring(0, Math.Min(text.Length, labelWidth));
                         option = brackets ? "[ " + label + " ]" : "  " + label + "  ";
-                        characterCount = Math.Min(option.Length, availableWidth);
+                        characterCount = Math.Min(Math.Max(option.Length, previousLength + 4), availableWidth);
                         if (characterCount == 0)
                             return true;
                     }
 
-                    for (int characterIndex = 0; characterIndex < characterCount; characterIndex++)
+                    int rangeEnd = (int)Math.Min(characterCount, (long)rangeStart + rangeLength);
+                    for (int characterIndex = Math.Max(0, rangeStart); characterIndex < rangeEnd; characterIndex++)
                     {
                         lock (borderAnimationLock)
                         {
@@ -399,7 +433,9 @@ namespace TCPTunnel
                             Console.SetCursorPosition(left + characterIndex, row);
                             bool inPreview = previewStart >= 0 && characterIndex < label.Length + 2 && characterIndex >= previewStart + 2 &&
                                 (previewLength <= 0 || characterIndex < previewStart + 2 + previewLength);
-                            if (highlightOnly && selected)
+                            if (characterIndex >= option.Length)
+                                ApplyContentColors(ConsoleTheme.MenuText);
+                            else if (highlightOnly && selected)
                             {
                                 bool bracket = ConsoleTheme.SelectionStyle == MenuSelectionStyle.Brackets &&
                                     (characterIndex < 2 || characterIndex >= label.Length + 2);
@@ -414,7 +450,7 @@ namespace TCPTunnel
                                     ApplyPreviewColor(previewColor.Value);
                                 }
                             }
-                            Console.Write(option[characterIndex]);
+                            Console.Write(characterIndex < option.Length ? option[characterIndex] : ' ');
                             Console.ResetColor();
                         }
                         if (animate && ConsoleTheme.SelectionStyle == MenuSelectionStyle.Arrow && !IsInputWaiting())
@@ -465,7 +501,7 @@ namespace TCPTunnel
 
         private static bool IsInputWaiting()
         {
-            try { return Console.KeyAvailable; }
+            try { return ConsoleInput.HasPending; }
             catch { return false; }
         }
 
@@ -603,6 +639,16 @@ namespace TCPTunnel
 
         private static readonly IMenuOptionRenderer graphicalMenuRenderer = new GraphicalMenuOptionRenderer();
         private static readonly IMenuOptionRenderer plainMenuRenderer = new PlainMenuOptionRenderer();
+
+        internal static bool DrawMenuOptionRange(string text, int index, int baseLeft, int baseTop,
+            bool selected, int start, int length, int previewStart, ConsoleColor? previewColor,
+            int previewLength, bool highlightOnly, int previousLength = 0)
+            => Enabled
+                ? ((GraphicalMenuOptionRenderer)graphicalMenuRenderer).DrawRange(text, index, baseLeft, baseTop,
+                    selected, false, 0, previewStart, previewColor, previewLength, highlightOnly,
+                    start, length, previousLength)
+                : plainMenuRenderer.Draw(text, index, baseLeft, baseTop, selected, false, 0,
+                    previewStart, previewColor, previewLength, highlightOnly);
 
         public static bool Enabled
         {
@@ -1248,27 +1294,34 @@ namespace TCPTunnel
 
         private static void StartBorderAnimation()
         {
-            try
+            lock (borderAnimationLock)
             {
-                ConsoleGeometry geometry;
-                if (!Enabled || Console.IsOutputRedirected ||
-                    !TryCaptureConsoleGeometry(out geometry) ||
-                    geometry.DrawableWidth < 4 || geometry.DrawableHeight < 4)
+                try
+                {
+                    ConsoleGeometry geometry;
+                    if (!Enabled || Console.IsOutputRedirected ||
+                        !TryCaptureConsoleGeometry(out geometry) ||
+                        geometry.DrawableWidth < 4 || geometry.DrawableHeight < 4)
+                        return;
+                }
+                catch (IOException)
+                {
                     return;
-            }
-            catch (IOException)
-            {
-                return;
-            }
+                }
 
-            int version = Interlocked.Increment(ref borderAnimationVersion);
-            Volatile.Write(ref borderAnimationRunning, 1);
-            Task.Run(() => AnimateBorderAsync(version));
+                int version = Interlocked.Increment(ref borderAnimationVersion);
+                Volatile.Write(ref borderAnimationRunning, 1);
+                Task.Run(() => AnimateBorderAsync(version));
+            }
         }
 
         private static void StopBorderAnimation()
         {
-            Interlocked.Increment(ref borderAnimationVersion);
+            lock (borderAnimationLock)
+            {
+                Interlocked.Increment(ref borderAnimationVersion);
+                Volatile.Write(ref borderAnimationRunning, 0);
+            }
         }
 
         internal static void EnsureBorderAnimationRunning()
@@ -1304,8 +1357,11 @@ namespace TCPTunnel
             }
             finally
             {
-                if (Volatile.Read(ref borderAnimationVersion) == version)
-                    Volatile.Write(ref borderAnimationRunning, 0);
+                lock (borderAnimationLock)
+                {
+                    if (Volatile.Read(ref borderAnimationVersion) == version)
+                        Volatile.Write(ref borderAnimationRunning, 0);
+                }
             }
         }
 
@@ -1335,15 +1391,8 @@ namespace TCPTunnel
 
             foreach (SnakeState snake in remoteSnakes.Values)
             {
-                if (!snake.Paused)
-                {
-                    changed |= AdvanceSnake(
-                        ref snake.Step,
-                        ref snake.LastMoveTimestamp,
-                        snake.DelayMilliseconds,
-                        perimeterLength,
-                        now);
-                }
+                int next = snake.Paused ? ToLocalStep(snake.ReferenceStep, perimeterLength) : SnakeTiming.LocalStep(snake.ReferenceStep, snake.Anchored, snake.ReferenceDelay, now, perimeterLength);
+                changed |= next != snake.Step; snake.Step = next;
             }
 
             if (changed)
@@ -1367,7 +1416,7 @@ namespace TCPTunnel
                 {
                     remainingTicks = Math.Min(
                         remainingTicks,
-                        GetRemainingMoveTicks(snake.LastMoveTimestamp, snake.DelayMilliseconds, now));
+                        SnakeTiming.RemainingTicks(snake.Anchored, snake.ReferenceDelay, now, 2 * drawnBorderWidth + 2 * (drawnBorderHeight - 2)));
                 }
             }
 
@@ -1431,7 +1480,7 @@ namespace TCPTunnel
             ConsoleColor color,
             int step,
             bool paused = false,
-            char glyph = '-')
+            char glyph = '-', bool nickname = false)
         {
             if (!NetWorker.IsNicknameValid(participant) || !IsVisibleSnakeColor(color) ||
                 !IsValidSnakeGlyph(glyph.ToString()))
@@ -1447,26 +1496,15 @@ namespace TCPTunnel
 
                 int localPerimeterLength = 2 * drawnBorderWidth + 2 * (drawnBorderHeight - 2);
                 int clampedDelay = Math.Max(20, Math.Min(1000, delayMilliseconds));
-                int localStep;
-                int localDelay;
-                if (localPerimeterLength > 0)
-                {
-                    localStep = ToLocalStep(step, localPerimeterLength);
-                    localDelay = Math.Max(1, (int)((long)clampedDelay * SnakeProtocol.ReferencePerimeterLength / localPerimeterLength));
-                }
-                else
-                {
-                    localStep = step;
-                    localDelay = clampedDelay;
-                }
+                int localStep = localPerimeterLength > 0 ? ToLocalStep(step, localPerimeterLength) : step;
                 remoteSnakes[participant] = new SnakeState
                 {
                     Color = color,
                     Glyph = glyph,
-                    DelayMilliseconds = localDelay,
+                    NicknameBody = nickname ? SnakeProtocol.NicknameBody(participant) : null,
                     Step = localStep,
-                    LastMoveTimestamp = Stopwatch.GetTimestamp(),
-                    Paused = paused
+                    Paused = paused,
+                    ReferenceStep = step, ReferenceDelay = clampedDelay, Anchored = Stopwatch.GetTimestamp()
                 };
                 TryRenderSnakeLayerLocked();
             }
@@ -1529,6 +1567,7 @@ namespace TCPTunnel
             baseBorderCharacters = new char[perimeterLength];
             desiredBorderCharacters = new char[perimeterLength];
             renderedBorderCharacters = new char[perimeterLength];
+            nicknameBorderCells = new bool[perimeterLength];
 
             for (int index = 0; index < perimeterLength; index++)
             {
@@ -1647,11 +1686,23 @@ namespace TCPTunnel
 
             Array.Copy(baseBorderAttributes, desiredBorderAttributes, perimeterLength);
             Array.Copy(baseBorderCharacters, desiredBorderCharacters, perimeterLength);
+            Array.Clear(nicknameBorderCells);
 
+            long now = Stopwatch.GetTimestamp();
             foreach (SnakeState snake in remoteSnakes.Values)
-                OverlaySnakeLocked(snake.Step, snake.Color, snake.Glyph, perimeterLength);
+            {
+                snake.Step = snake.Paused ? ToLocalStep(snake.ReferenceStep, perimeterLength) : SnakeTiming.LocalStep(snake.ReferenceStep, snake.Anchored, snake.ReferenceDelay, now, perimeterLength);
+                OverlaySnakeLocked(snake.Step, snake.Color, snake.Glyph, perimeterLength, snake.NicknameBody);
+            }
 
-            OverlaySnakeLocked(borderAnimationStep, borderSnakeColor, borderSnakeGlyph, perimeterLength);
+            char[] ownBody = null;
+            if (UserInterface.NicknameSnakeEffective)
+            {
+                if (!String.Equals(cachedSnakeNickname, NetWorker.nickname, StringComparison.Ordinal))
+                { cachedSnakeNickname = NetWorker.nickname; cachedSnakeNicknameBody = SnakeProtocol.NicknameBody(NetWorker.nickname); }
+                ownBody = cachedSnakeNicknameBody;
+            }
+            OverlaySnakeLocked(borderAnimationStep, borderSnakeColor, borderSnakeGlyph, perimeterLength, ownBody);
 
             bool resyncAll = forceFullBorderResync;
             bool terminalTheme = ConsoleTheme.HasContentBackground;
@@ -1707,15 +1758,18 @@ namespace TCPTunnel
             }
         }
 
-        private static void OverlaySnakeLocked(int step, ConsoleColor color, char glyph, int perimeterLength)
+        private static void OverlaySnakeLocked(int step, ConsoleColor color, char glyph, int perimeterLength, char[] body = null)
         {
             int normalizedStep = NormalizeBorderStep(step, perimeterLength);
-            int visibleLength = Math.Min(BorderSnakeLength, perimeterLength);
+            int visibleLength = Math.Min(body != null && body.Length > 0 ? body.Length : BorderSnakeLength, perimeterLength);
             for (int offset = 0; offset < visibleLength; offset++)
             {
                 int index = NormalizeBorderStep(normalizedStep - offset, perimeterLength);
+                bool nickname = body != null && body.Length > 0;
+                if (!nickname && nicknameBorderCells[index]) continue;
+                nicknameBorderCells[index] = nickname;
                 desiredBorderAttributes[index] = (ushort)color;
-                desiredBorderCharacters[index] = glyph;
+                desiredBorderCharacters[index] = body != null && body.Length > 0 ? body[body.Length - 1 - offset] : glyph;
             }
         }
 
@@ -1823,6 +1877,7 @@ namespace TCPTunnel
 
         public bool TryClear(int lineTime = 2, int cornerTime = 5)
         {
+            Interlocked.Increment(ref surfaceRevision);
             StopBorderAnimation();
             bool frameCompleted = false;
             AlignViewport();
@@ -1873,7 +1928,7 @@ namespace TCPTunnel
                             string signature = String.IsNullOrEmpty(NetWorker.nickname)
                                 ? "By alextmsv"
                                 : NetWorker.nickname;
-                            if (width >= signature.Length + 3 && height >= 4)
+                            if (!UserInterface.NicknameSnakeEffective && width >= signature.Length + 3 && height >= 4)
                             {
                                 int newSignatureLeft = Math.Max(1, width - signature.Length - 2);
                                 int newSignatureTop = height - 1;

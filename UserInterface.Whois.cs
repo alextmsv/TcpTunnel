@@ -26,7 +26,7 @@ namespace TCPTunnel
             WhoisInfo info = result.Info;
             if (info == null) { WriteSystemChatLine(Lang.Get(TextId.WhoisNotFound)); return; }
             string unavailable = Lang.Get(TextId.StatusUnavailable);
-            WriteSystemChatLine("@" + info.Nickname);
+            WriteSystemChatLine(NicknameProtocol.DisplayName(info.Nickname, info.OriginalNickname));
             if (info.Transport == WhoisProtocol.TransportBluetooth)
             {
                 WriteSystemChatLine(Lang.Get(TextId.WhoisViaBluetooth));

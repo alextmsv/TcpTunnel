@@ -5,7 +5,7 @@ internal static class CommandHelpTests
     public static bool LocalizedCommandHelpSelfTest()
     {
         AppLanguage original = Lang.Current;
-        string[] commands = { "help", "invite", "pending", "approve", "identity", "kick", "status", "whois", "ping", "clear", "look", "stop", "exit" };
+        string[] commands = { "help", "invite", "pending", "approve", "identity", "kick", "status", "whois", "ping", "clear", "look", "stop", "exit", "lang", "interface", "snake", "nickname", "send", "receive" };
         var lines = new List<string>();
         var context = new CommandContext
         {
@@ -27,13 +27,13 @@ internal static class CommandHelpTests
                 {
                     lines.Clear();
                     if (Commands.InitCommand("/help " + command, context) != CommandDisposition.Handled || lines.Count < 4 ||
-                        !lines[0].StartsWith("/" + command + " — ") || !lines.Any(line => line.StartsWith(usage))) return false;
+                        !lines[0].StartsWith((command is "lang" or "interface" ? "\\" : "/") + command + " — ") || !lines.Any(line => line.StartsWith(usage))) return false;
                     string[] expected = lines.ToArray(); lines.Clear();
                     if (Commands.InitCommand("/HELP /" + command.ToUpperInvariant(), context) != CommandDisposition.Handled || !lines.SequenceEqual(expected)) return false;
                 }
                 lines.Clear();
                 Commands.InitCommand("/help", context);
-                if (lines.Count != commands.Length + 1 || commands.Any(command => !lines.Any(line => line.StartsWith("/" + command + " — ")))) return false;
+                if (lines.Count != commands.Length + 1 || commands.Any(command => !lines.Any(line => line.StartsWith((command is "lang" or "interface" ? "\\" : "/") + command + " — ")))) return false;
                 lines.Clear(); Commands.InitCommand("/help unknown", context);
                 if (lines.Count != 1 || lines[0] != Lang.Get(TextId.HelpUnknown, "unknown")) return false;
                 lines.Clear(); Commands.InitCommand("/help invite extra", context);

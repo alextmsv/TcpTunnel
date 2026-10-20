@@ -39,6 +39,15 @@ internal static class PseudoConsoleTests
     public static Task<bool> PseudoConsoleStartupGeometrySelfTest() => RunChild("--geometry-probe", "100,30,100,30");
 
     public static Task<bool> PseudoConsoleOptionsNavigationSelfTest() => RunChild("--menu-probe", "PASS");
+    public static Task<bool> PseudoConsoleChatLayoutSelfTest() => RunChild("--chat-layout-probe", "PASS");
+    public static Task<bool> PseudoConsoleSnakeWarningSelfTest() => RunChild("--snake-warning-probe", "PASS");
+    public static Task<bool> PseudoConsoleMouseMenuSelfTest() => RunChild("--mouse-menu-probe", "PASS");
+    public static Task<bool> PseudoConsoleMatrixChatSelfTest() => RunChild("--matrix-chat-probe", "PASS");
+    public static Task<bool> PseudoConsoleHubLimitTypingSelfTest() => RunChild("--hub-limit-typing-probe", "PASS");
+    public static Task<bool> PseudoConsolePlaintextSnakeSessionSelfTest() => RunChild("--plaintext-snake-session-probe", "PASS");
+    public static Task<bool> PseudoConsoleIndependentMatrixSelfTest() => RunChild("--independent-matrix-probe", "PASS");
+    public static Task<bool> PseudoConsoleMenuMatrixSelfTest() => RunChild("--menu-matrix-probe", "PASS");
+    public static Task<bool> PseudoConsoleScrollbackSelfTest() => RunChild("--scrollback-probe", "PASS");
     public static Task<bool> PseudoConsoleMenuResizeSelfTest() => RunChild("--resize-menu-probe", "PASS");
     public static Task<bool> PseudoConsoleMainMenuResizeSelfTest() => RunChild("--resize-main-menu-probe", "PASS");
     public static Task<bool> PseudoConsoleMenuExitSelfTest() => RunChild("--exit-menu-probe", "PASS");
@@ -106,6 +115,7 @@ internal static class PseudoConsoleTests
             if (attributes != IntPtr.Zero) { DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }
             if (File.Exists(resultPath)) File.Delete(resultPath);
             if (File.Exists(resultPath + ".ready")) File.Delete(resultPath + ".ready");
+            if (File.Exists(resultPath + ".stage")) File.Delete(resultPath + ".stage");
         }
     }
 }

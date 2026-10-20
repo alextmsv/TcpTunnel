@@ -28,6 +28,8 @@ namespace TCPTunnel
     {
         public Action ClearChat { get; set; }
         public Action LookImage { get; set; }
+        public Action CustomizeSnake { get; set; }
+        public Action ChangeNickname { get; set; }
         public Action StopLocalHub { get; set; }
         public Action<string, ConsoleColor?> WriteLine { get; set; }
         public Func<string> GetStatus { get; set; }
@@ -69,6 +71,15 @@ namespace TCPTunnel
             string command = tokens[0].Value.ToLowerInvariant();
             switch (command)
             {
+                case "/nickname":
+                    if (!HasExactArgumentCount(tokens, 0)) return WriteUsage(context, TextId.NicknameUsage);
+                    context.ChangeNickname?.Invoke();
+                    return CommandDisposition.Handled;
+                case "/snake":
+                    if (!HasExactArgumentCount(tokens, 0)) return WriteUsage(context, TextId.CommandHelp);
+                    if (context.CustomizeSnake != null) context.CustomizeSnake();
+                    else context.WriteLine(Lang.Get(TextId.NoActiveSnake), null);
+                    return CommandDisposition.Handled;
                 case "/help":
                     if (tokens.Count > 2)
                         return WriteUsage(context, TextId.HelpUsage);

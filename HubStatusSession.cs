@@ -5,11 +5,14 @@ using System.Threading.Tasks;
 
 namespace TCPTunnel
 {
-    internal sealed record RemoteHubStatus(string Owner, int Participants);
+    internal sealed record RemoteHubStatus(string Owner, int Participants, string OriginalNickname = null);
 
     internal sealed class HubStatusSession
     {
+        internal PrivacySession Privacy { get; } = new();
         internal WhoisSession Whois { get; } = new WhoisSession();
+        internal NicknameSession Nicknames { get; } = new NicknameSession(ApplicationSettings.ApplySessionNickname);
+        internal bool Modern { get; set; }
         private readonly object gate = new object();
         private readonly TaskCompletionSource capabilities = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource<RemoteHubStatus> pending;
@@ -18,11 +21,12 @@ namespace TCPTunnel
         internal bool Receive(string message)
         {
             if (!HubStatusProtocol.IsControl(message)) return false;
+            Privacy.Receive(message);
             if (message == HubStatusProtocol.Capabilities) capabilities.TrySetResult();
-            if (HubStatusProtocol.TryParseReply(message, out string id, out string owner, out int count))
+            if (HubStatusProtocol.TryParseReply(message, out string id, out string owner, out int count, out string original))
             {
                 lock (gate)
-                    if (id == pendingId) pending?.TrySetResult(new RemoteHubStatus(owner, count));
+                    if (id == pendingId) pending?.TrySetResult(new RemoteHubStatus(owner, count, original));
             }
             return true;
         }
@@ -45,7 +49,7 @@ namespace TCPTunnel
                 }
                 try
                 {
-                    await send(HubStatusProtocol.CreateRequest(id), deadline.Token).ConfigureAwait(false);
+                    await send(HubStatusProtocol.CreateRequest(id, Modern), deadline.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException error)
                 {

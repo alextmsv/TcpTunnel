@@ -49,7 +49,7 @@ namespace TCPTunnel
                 Program.matrix(Lang.Get(TextId.AuthInvalidNickname), 20, ConsoleColor.DarkRed);
                 graphic.Clear();
                 Program.matrix(Lang.Get(TextId.EnterYourNickname), 20, ConsoleColor.DarkYellow);
-                name = Console.ReadLine();
+                name = ConsoleInput.ReadLine();
                 if (name == null)
                     return null;
             }
@@ -60,6 +60,15 @@ namespace TCPTunnel
         {
             lock (natStatusLock)
                 return Lang.Get(natStatusTextId, natStatusArguments);
+        }
+
+        internal static Func<string> CapturePortMappingStatus()
+        {
+            lock (natStatusLock)
+            {
+                TextId id = natStatusTextId; object[] args = (object[])natStatusArguments.Clone();
+                return () => Lang.Get(id, args);
+            }
         }
 
         internal static string SetPortMappingStatus(TextId textId, params object[] arguments)
@@ -321,7 +330,12 @@ namespace TCPTunnel
                         return;
                     }
 
-                    if ((ServerInterface.IsRunning && client.Transport != ChatTransport.Local && NicknamePolicy.Same(requestedNickname, ServerInterface.AdministratorNickname)) ||
+                    if (!client.PromoteAdmission())
+                    {
+                        await client.SendAsync(AUTH_ERROR_MESSAGE + ":HUB_FULL", serverCancellationToken).ConfigureAwait(false);
+                        return;
+                    }
+                    if ((ServerInterface.IsRunning && client.Transport != ChatTransport.Local && (NicknamePolicy.Same(requestedNickname, ServerInterface.AdministratorNickname) || NicknamePolicy.Same(requestedNickname, ServerInterface.AdministratorOriginalNickname))) ||
                         !broadcaster.TryReserveNickname(client, requestedNickname))
                     {
                         await client.SendAsync(AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN", serverCancellationToken).ConfigureAwait(false);
@@ -337,6 +351,7 @@ namespace TCPTunnel
                 if (!broadcaster.CompleteAuthenticationWithRoster(client, serverCancellationToken, out Task rosterDelivery))
                     return;
                 await rosterDelivery.ConfigureAwait(false);
+                if (client.Transport == ChatTransport.Local) ServerInterface.RenameAdministrator(client, client.Nickname);
 
                 await broadcaster.BroadcastAsync(
                     null,
@@ -349,6 +364,24 @@ namespace TCPTunnel
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
+                    if (FileTransferProtocol.IsControl(message))
+                    {
+                        await FileTransferRouter.RouteAsync(client, message, serverCancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (message == SnakeProtocol.Hello)
+                    {
+                        if (!client.TryConsumeControlToken() || client.SupportsNicknameSnake) continue;
+                        client.InitialNicknameSnakeSync = client.TryGetSnakeProfile(out _);
+                        client.SupportsNicknameSnake = true;
+                        await client.SendAsync(SnakeProtocol.Capabilities, serverCancellationToken).ConfigureAwait(false);
+                        foreach (Client participant in broadcaster.GetAuthenticatedClients(client))
+                            if (participant.TryGetSnakeProfile(out var existing) && existing.Enabled)
+                                await client.SendAsync(SnakeProtocol.CreateSet(participant.Nickname, existing), serverCancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
                     if (WhoisProtocol.IsControl(message))
                     {
                         await WhoisServer.HandleAsync(client, message, serverCancellationToken).ConfigureAwait(false);
@@ -356,18 +389,40 @@ namespace TCPTunnel
                             diagnosticsHeartbeat = WhoisServer.HeartbeatAsync(client, diagnosticsCancellation.Token);
                         continue;
                     }
+                    if (NicknameProtocol.IsControl(message))
+                    {
+                        if (client.SupportsNicknameSnake && client.TryConsumeControlToken() && !animationAssembler.IsActive &&
+                            NicknameProtocol.TryRequest(message, out string renameId, out string renameName))
+                        {
+                            await broadcaster.RenameAsync(client, renameId, renameName, serverCancellationToken).ConfigureAwait(false);
+                            authenticatedNickname = client.Nickname;
+                        }
+                        continue;
+                    }
                     if (HubStatusProtocol.IsControl(message))
                     {
+                        if (message == FileTransferProtocol.Probe)
+                        {
+                            if (!client.SupportsFileTransfer)
+                            {
+                                client.SupportsFileTransfer = true;
+                                await client.SendAsync(FileTransferProtocol.Capabilities, serverCancellationToken).ConfigureAwait(false);
+                            }
+                            continue;
+                        }
+                        if (message == PrivacyProtocol.Ack) { client.IpDisclosureAllowed = true; continue; }
                         if (message.Length > 256 || !client.TryConsumeControlToken()) continue;
-                        if (message == HubStatusProtocol.Hello)
+                        if (PrivacyProtocol.TryRequest(message, out string privacyId))
+                            await client.SendAsync(PrivacyProtocol.Reply(privacyId, client.HideClientIpAddresses), serverCancellationToken).ConfigureAwait(false);
+                        else if (message == HubStatusProtocol.Hello)
                         {
                             client.SupportsHubStatus = true;
                             await client.SendAsync(HubStatusProtocol.Capabilities, serverCancellationToken).ConfigureAwait(false);
                         }
-                        else if (client.SupportsHubStatus && HubStatusProtocol.TryParseRequest(message, out string requestId))
+                        else if (client.SupportsHubStatus && HubStatusProtocol.TryParseRequest(message, out string requestId, out bool modernStatus))
                         {
                             await client.SendAsync(HubStatusProtocol.CreateReply(requestId,
-                                ServerInterface.AdministratorNickname, broadcaster.AuthenticatedClientCount), serverCancellationToken).ConfigureAwait(false);
+                                ServerInterface.AdministratorNickname, broadcaster.AuthenticatedClientCount, modernStatus && client.SupportsNicknameSnake && IsNicknameValid(ServerInterface.AdministratorOriginalNickname) ? ServerInterface.AdministratorOriginalNickname : null), serverCancellationToken).ConfigureAwait(false);
                         }
                         continue;
                     }
@@ -476,6 +531,7 @@ namespace TCPTunnel
                     SnakeProfile snakeProfile;
                     if (SnakeProtocol.TryParseClientProfile(message, out snakeProfile))
                     {
+                        if (snakeProfile.Nickname && !client.SupportsNicknameSnake) continue;
                         await SynchronizeSnakeProfileAsync(client, snakeProfile, serverCancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -540,6 +596,9 @@ namespace TCPTunnel
         {
             SnakeProfile previousProfile;
             bool isFirstProfile = !client.TryGetSnakeProfile(out previousProfile);
+            SnakeProfile oldBase = previousProfile; oldBase.Nickname = profile.Nickname;
+            bool initialCapabilitySync = client.InitialNicknameSnakeSync && SnakeProtocol.SameConfiguration(oldBase, profile);
+            client.InitialNicknameSnakeSync = false;
             client.UpdateSnakeProfile(profile);
 
             if (isFirstProfile)
@@ -552,15 +611,14 @@ namespace TCPTunnel
                         continue;
 
                     await client.SendAsync(
-                        SnakeProtocol.CreateSet(participant.Nickname, participantProfile),
+                        SnakeProtocol.CreateSet(participant.Nickname, participantProfile, client.SupportsNicknameSnake),
                         cancellationToken).ConfigureAwait(false);
                 }
             }
 
-            string update = profile.Enabled
-                ? SnakeProtocol.CreateSet(client.Nickname, profile)
-                : SnakeProtocol.CreateRemove(client.Nickname);
-            await broadcaster.BroadcastSnakeAsync(client, update, cancellationToken).ConfigureAwait(false);
+            await broadcaster.BroadcastSnakeProfileAsync(client, profile, cancellationToken).ConfigureAwait(false);
+            if (!isFirstProfile && !initialCapabilitySync && !SnakeProtocol.SameConfiguration(previousProfile, profile))
+                await broadcaster.BroadcastAsync(null, SystemMessageProtocol.Create(SystemMessageKind.SnakeChanged, client.Nickname), cancellationToken).ConfigureAwait(false);
         }
 
         private static async Task<string> ReadStringWithTimeoutAsync(Client client, int timeoutMilliseconds, CancellationToken cancellationToken)

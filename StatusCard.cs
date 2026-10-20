@@ -8,8 +8,10 @@ namespace TCPTunnel
 {
     internal sealed class StatusCard
     {
-        private readonly string[] left;
-        private readonly string[] right;
+        private string[] left;
+        private string[] right;
+        private readonly Func<string>[] leftLabels, rightLabels;
+        private AppLanguage cachedLanguage;
         private int cachedWidth;
         private string cached;
         internal StatusCard(IEnumerable<string> left, IEnumerable<string> right = null)
@@ -17,10 +19,20 @@ namespace TCPTunnel
             this.left = left.Select(Safe).ToArray();
             this.right = right?.Select(Safe).ToArray() ?? Array.Empty<string>();
         }
+        internal StatusCard(IEnumerable<Func<string>> left, IEnumerable<Func<string>> right = null)
+        {
+            leftLabels = left.ToArray(); rightLabels = right?.ToArray() ?? Array.Empty<Func<string>>();
+            this.left = Array.Empty<string>(); this.right = Array.Empty<string>();
+        }
         internal string Render(int width)
         {
             width = Math.Max(1, width);
-            if (cached != null && cachedWidth == width) return cached;
+            if (cached != null && cachedWidth == width && (leftLabels == null || cachedLanguage == Lang.Current)) return cached;
+            if (leftLabels != null)
+            {
+                left = leftLabels.Select(label => Safe(label())).ToArray(); right = rightLabels.Select(label => Safe(label())).ToArray();
+                cachedLanguage = Lang.Current;
+            }
             var rows = new List<string>();
             if (right.Length > 0 && width >= 64)
             {

@@ -17,15 +17,15 @@ namespace TCPTunnel
 
             while ((GetAsyncKeyState(0x0D) & 0x8000) != 0)
             {
-                while (Console.KeyAvailable) Console.ReadKey(true);
+                while (ConsoleInput.TryReadKey(out _)) { }
                 CheckForConsoleResize();
                 Thread.Sleep(20);
             }
-            while (Console.KeyAvailable) Console.ReadKey(true);
+            while (ConsoleInput.TryReadKey(out _)) { }
             while (true)
             {
                 CheckForConsoleResize();
-                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Enter)
+                if (ConsoleInput.TryReadKey(out var key) && key.Key == ConsoleKey.Enter)
                     return;
                 Thread.Sleep(20);
             }

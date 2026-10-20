@@ -14,6 +14,26 @@ namespace TCPTunnel.Cryptography;
 
 internal static class SecureBoundaryTests
 {
+    internal static async Task<bool> SignedProtocolVersionSelfTest()
+    {
+        using var owner = new NativeMlsSession();
+        var legacy = new SecureBoot(RandomNumberGenerator.GetBytes(32), owner.PublicKey, RandomNumberGenerator.GetBytes(32), "ownerTest", Array.Empty<byte>());
+        byte[] oldFormat = SecureWire.Json(new { legacy.Room, legacy.OwnerKey, legacy.CertificateHash, legacy.OwnerName, legacy.Signature });
+        if (!oldFormat.SequenceEqual(SecureWire.Json(legacy))) return false;
+        var current = legacy with { ProtocolVersion = 3 };
+        byte[] signature = owner.SignIdentityProof(SecureWire.BootProof(current));
+        if (!owner.VerifyIdentityProof(owner.PublicKey, SecureWire.BootProof(current), signature) ||
+            owner.VerifyIdentityProof(owner.PublicKey, SecureWire.BootProof(legacy), signature)) return false;
+        using var client = new NativeMlsSession(); bool trustCalled = false;
+        try
+        {
+            using var bridge = await SecureClientBridge.ConnectAsync(new MemoryStream(), "E2E2:" + Convert.ToBase64String(SecureWire.Json(current with { Signature = signature })),
+                "clientTest", client, _ => { trustCalled = true; return true; }, CancellationToken.None);
+            return false;
+        }
+        catch (UnauthorizedAccessException) { return !trustCalled; }
+    }
+
     internal static async Task<bool> SecureWireBoundsSelfTest()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));

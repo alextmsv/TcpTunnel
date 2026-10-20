@@ -81,7 +81,7 @@ namespace TCPTunnel
                 }
                 Console.ResetColor();
                 WriteViewerPrompt(layout);
-                Console.ReadKey(true);
+                ConsoleInput.ReadKey();
             }
             catch (Exception ex) when (
                 ex is ArgumentException ||

@@ -5,6 +5,13 @@ static class Program
 {
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--test")
+        {
+            var method = Assembly.GetExecutingAssembly().GetTypes().SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)).Single(method => method.Name == args[1]);
+            object? result = method.Invoke(null, null);
+            bool passed = result is Task<bool> task ? await task : result is true;
+            Console.WriteLine((passed ? "PASS " : "FAIL ") + args[1]); return passed ? 0 : 1;
+        }
         if (args.Length == 1 && args[0] == "--bt-hub-smoke")
             return BluetoothHardwareSmoke.Run();
         if (args.Length == 1 && args[0] == "--e2e-test")
@@ -48,6 +55,33 @@ static class Program
                     File.WriteAllText(resultPath,
                         $"{Console.WindowWidth},{Console.WindowHeight},{Console.BufferWidth},{Console.BufferHeight}");
                     break;
+                case "--chat-layout-probe":
+                    File.WriteAllText(resultPath, ChatLayoutProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--snake-warning-probe":
+                    File.WriteAllText(resultPath, SnakeWarningProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--mouse-menu-probe":
+                    File.WriteAllText(resultPath, MouseMenuProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--matrix-chat-probe":
+                    File.WriteAllText(resultPath, MatrixChatProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--hub-limit-typing-probe":
+                    File.WriteAllText(resultPath, HubLimitTypingProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--plaintext-snake-session-probe":
+                    File.WriteAllText(resultPath, PlaintextSnakeSessionProbe.Run(resultPath) ? "PASS" : "FAIL");
+                    break;
+                case "--independent-matrix-probe":
+                    File.WriteAllText(resultPath, IndependentMatrixProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--menu-matrix-probe":
+                    File.WriteAllText(resultPath, MenuMatrixProbe.Run() ? "PASS" : "FAIL");
+                    break;
+                case "--scrollback-probe":
+                    File.WriteAllText(resultPath, ScrollbackProbe.Run() ? "PASS" : "FAIL");
+                    break;
                 case "--menu-probe":
                     File.WriteAllText(resultPath, ConsoleMenuProbe.Run() ? "PASS" : "FAIL");
                     break;
@@ -70,7 +104,7 @@ static class Program
         }
         catch (Exception ex)
         {
-            File.WriteAllText(resultPath, "FAIL " + ex.Message);
+            File.WriteAllText(resultPath, "FAIL " + ex.GetBaseException());
         }
     }
 }

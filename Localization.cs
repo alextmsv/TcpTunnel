@@ -40,6 +40,17 @@ namespace TCPTunnel
         ChangeNicknameWelcome, ChangeIdentity, EnterNewNickname, CheckingName,
         NicknameRules, TryAgain, IdentityUpdated, GoodName, MyName, TookYourTime,
         GraphicsEnabled, GraphicsDisabled, Customization, Back, Snake,
+        DialogueInterface, InputPinnedBottom, MatrixText, MatrixSpeed, LanguageChanged, LocalCommandUnknown, LocalLangUsage,
+        HubExplainE2E, HubExplainPlaintext, HubParticipantLimitInvalid, ConnectionEncryptionRequired, ConnectionE2EHint, ConnectionPlaintextHint, ConnectionE2ERequiredError, ConnectionPinnedPlaintextError,
+        InvitationValue, InvitationFingerprintLabel,
+        ConnectionFailureTitle, ConnectionPlaintextOnce, ConnectionPinnedWarning, ConnectionConsentChanged,
+        InterfaceOptions, MenuMatrixText,
+        ConnectionPinUnavailable,
+        HubParticipantLimit, HubFull,
+        SnakeCustomWarning, SnakeChanged,
+        NicknameSnakeUnavailable,
+        LanSearch, ConnectManual, LanSearching, LanSearchHint, LanNoHubs, LanDiscoveryUnavailable, StatusLanDiscovery,
+        NicknameUsage, NicknameChanged, NicknameChangeUnavailable, NicknameChangeFailed, NicknameSaveFailed,
         SnakeCustomization, Speed, Color, SpeedFast, SpeedNormal, SpeedCalm,
         SpeedSlow, ColorGreen, ColorCyan, ColorYellow, ColorRed, ColorWhite, ColorBlue,
         ColorBlack, ColorDarkBlue, ColorDarkGreen, ColorDarkCyan, ColorDarkRed,
@@ -249,6 +260,47 @@ namespace TCPTunnel
                 { TextId.MyName, T("Это моё имя >:(", "This is MY name >:(") },
                 { TextId.TookYourTime, T("Долго придумывал лол ", "That took a while lol ") },
                 { TextId.GraphicsEnabled, T("ConsoleGraphics: включена", "ConsoleGraphics: enabled") },
+                { TextId.DialogueInterface, T("Интерфейс диалога", "Chat interface") },
+                { TextId.InputPinnedBottom, T("Поле ввода снизу", "Keep input at the bottom") },
+                { TextId.MatrixText, T("Я избранный (Матричный текст)", "I am the chosen one (Matrix text)") },
+                { TextId.MenuMatrixText, T("Я реально избранный", "I am truly the chosen one") },
+                { TextId.InterfaceOptions, T("Интерфейс", "Interface") },
+                { TextId.MatrixSpeed, T("Скорость матрицы: {0} мс/символ", "Matrix speed: {0} ms/character") },
+                { TextId.HubExplainE2E, T("E2E: сообщения шифруются на устройствах участников; ключи проверяются при входе.", "E2E: messages are encrypted on participants' devices; keys are verified when joining.") },
+                { TextId.HubExplainPlaintext, T("E2E выключено: сообщения передаются без сквозного шифрования.", "E2E is off: messages are sent without end-to-end encryption.") },
+                { TextId.HubParticipantLimitInvalid, T("Введи лимит от 1 до 64. Первая цифра заменяет прежнее число.", "Enter a limit from 1 to 64. The first digit replaces the previous number.") },
+                { TextId.ConnectionEncryptionRequired, T("Требовать E2E", "Require E2E") },
+                { TextId.ConnectionE2EHint, T("Для открытого хаба выключи «Требовать E2E». Приглашения и ранее проверенные E2E-адреса всегда требуют шифрование.", "For a plaintext hub, disable Require E2E. Invitations and previously verified E2E endpoints always require encryption.") },
+                { TextId.ConnectionPlaintextHint, T("Открытый чат разрешён только для этого подключения: без E2E сообщения и ник доступны сети и хабу. Если хаб поддерживает E2E, используется шифрование.", "Plaintext is allowed for this connection only: without E2E, the network and hub can read messages and your nickname. Encryption is used when the hub supports E2E.") },
+                { TextId.ConnectionE2ERequiredError, T("Этот хаб работает без E2E. В меню подключения выключи «Требовать E2E», если намерен присоединиться к открытому чату.", "This hub does not use E2E. Disable Require E2E in the connection menu if you intend to join plaintext chat.") },
+                { TextId.ConnectionPinnedPlaintextError, T("Адрес ранее подтверждён как E2E-хаб. Подключение без шифрования отклонено.", "This endpoint was previously verified as an E2E hub. An unencrypted connection was rejected.") },
+                { TextId.InvitationValue, T("Приглашение для подключения (tct2):", "Connection invitation (tct2):") },
+                { TextId.ConnectionFailureTitle, T("Не удалось подключиться", "Connection failed") },
+                { TextId.ConnectionPlaintextOnce, T("Подключиться без E2E один раз", "Connect without E2E once") },
+                { TextId.ConnectionPinnedWarning, T("Ранее по этому адресу был проверен E2E-хаб. Сейчас хаб предлагает открытый чат: его личность проверить невозможно, сообщения и ник будут доступны сети и хабу. Подключиться один раз? Прежний ключ останется сохранён.", "An E2E hub was previously verified at this endpoint. The hub now offers plaintext chat: its identity cannot be verified, and the network and hub can read your messages and nickname. Connect once? The previous key remains pinned.") },
+                { TextId.ConnectionConsentChanged, T("Адрес или сохранённый ключ изменился после подтверждения. Подключение отменено.", "The endpoint or saved key changed after confirmation. Connection cancelled.") },
+                { TextId.ConnectionPinUnavailable, T("Сохранённые данные проверки хаба повреждены или недоступны. Подключение отменено; прежний ключ не заменён.", "Saved hub verification data is damaged or unavailable. Connection cancelled; the previous key was not replaced.") },
+                { TextId.InvitationFingerprintLabel, T("Отпечаток владельца: {0}. Для его копирования: /identity", "Owner fingerprint: {0}. Copy it with /identity") },
+                { TextId.LanguageChanged, T("Язык интерфейса: русский", "Interface language: English") },
+                { TextId.LocalCommandUnknown, T("Неизвестная локальная команда: {0}", "Unknown local command: {0}") },
+                { TextId.LocalLangUsage, T("Использование: \\lang ru или \\lang en", "Usage: \\lang ru or \\lang en") },
+                { TextId.HubParticipantLimit, T("Лимит участников (включая владельца): {0}", "Participant limit (including owner): {0}") },
+                { TextId.HubFull, T("В Hub нет свободных мест.", "The Hub has no free participant slots.") },
+                { TextId.SnakeCustomWarning, T("... грязный хакер ...", "... dirty hacker ...") },
+                { TextId.SnakeChanged, T("@{0} изменил настройки змейки.", "@{0} changed their snake settings.") },
+                { TextId.NicknameSnakeUnavailable, T("Для змейки из ника требуется поддержка новой версии Hub.", "Nickname snake requires support from an updated Hub.") },
+                { TextId.LanSearch, T("Найти Hub в локальной сети", "Find a Hub on the LAN") },
+                { TextId.NicknameUsage, T("Использование: /nickname", "Usage: /nickname") },
+                { TextId.NicknameChanged, T("@{0} теперь известен как @{1}", "@{0} is now known as @{1}") },
+                { TextId.NicknameChangeUnavailable, T("Этот Hub не поддерживает смену ника.", "This Hub does not support nickname changes.") },
+                { TextId.NicknameChangeFailed, T("Не удалось сменить ник: {0}", "Could not change nickname: {0}") },
+                { TextId.NicknameSaveFailed, T("Ник изменён, но профиль не сохранён: {0}. Ключ сохранён в прежнем профиле.", "Nickname changed, but the profile could not be saved: {0}. Your key remains in the previous profile.") },
+                { TextId.StatusLanDiscovery, T("Поиск в LAN: {0}", "LAN discovery: {0}") },
+                { TextId.ConnectManual, T("Адрес или приглашение", "Address or invitation") },
+                { TextId.LanSearching, T("Поиск LAN-хабов…", "Searching for LAN hubs…") },
+                { TextId.LanSearchHint, T("Выбери Hub и нажми Enter. Esc — назад. Список обновляется автоматически.", "Choose a Hub and press Enter. Esc goes back. The list refreshes automatically.") },
+                { TextId.LanNoHubs, T("Хабы пока не найдены. Проверь локальную сеть и брандмауэр.", "No hubs found yet. Check your LAN and firewall.") },
+                { TextId.LanDiscoveryUnavailable, T("LAN-поиск недоступен: {0}. Можно подключиться по адресу.", "LAN discovery is unavailable: {0}. You can connect by address.") },
                 { TextId.GraphicsDisabled, T("ConsoleGraphics: выключена", "ConsoleGraphics: disabled") },
                 { TextId.Customization, T("Кастомизация", "Customization") },
                 { TextId.Back, T("Назад", "Back") },
@@ -425,10 +477,11 @@ namespace TCPTunnel
             if (!catalog.TryGetValue(id, out value))
                 return "[" + id + "]";
 
-            string text = current == AppLanguage.Russian ? value.Russian : value.English;
+            AppLanguage language = current;
+            string text = language == AppLanguage.Russian ? value.Russian : value.English;
             return arguments == null || arguments.Length == 0
                 ? text
-                : String.Format(CurrentCulture, text, arguments);
+                : String.Format(language == AppLanguage.Russian ? CultureInfo.GetCultureInfo("ru-RU") : CultureInfo.GetCultureInfo("en-US"), text, arguments);
         }
 
         public static void Toggle()

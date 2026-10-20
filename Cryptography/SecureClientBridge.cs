@@ -22,6 +22,7 @@ internal sealed class SecureClientBridge : IDisposable
     private readonly SemaphoreSlim write = new(1, 1);
     private readonly SecureBoot boot;
     private readonly Dictionary<string, string> roster = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> originalNames = new(StringComparer.Ordinal);
     private string[] snakeRoster = Array.Empty<string>();
     private readonly object state = new();
     private TaskCompletionSource<bool>? receipt;
@@ -29,6 +30,7 @@ internal sealed class SecureClientBridge : IDisposable
     private long revision;
     private int disposed;
     internal Stream Stream => ui;
+    internal int ProtocolVersion => boot.ProtocolVersion == 0 ? 2 : boot.ProtocolVersion;
     private SecureClientBridge(Stream network, NativeMlsSession mls, SecureBoot boot)
     {
         this.network = network; this.mls = mls; this.boot = boot;
@@ -36,12 +38,15 @@ internal sealed class SecureClientBridge : IDisposable
     }
 
     internal static async Task<SecureClientBridge> ConnectAsync(Stream stream, string greeting, string nickname,
-        NativeMlsSession identity, Func<SecureBoot, bool> trust, CancellationToken token, Action<string>? progress = null)
+        NativeMlsSession identity, Func<SecureBoot, bool> trust, CancellationToken token, Action<string>? progress = null, string? invitationToken = null)
     {
         SslStream? tls = null;
         try
         {
             var boot = SecureWire.Parse<SecureBoot>(Convert.FromBase64String(greeting.Substring("E2E2:".Length)));
+            int protocol = boot.ProtocolVersion == 0 ? 2 : boot.ProtocolVersion;
+            if ((protocol != 2 && protocol != 3) || !greeting.StartsWith("E2E" + protocol + ":", StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Encrypted chat version does not match the signed Hub announcement.");
             if (!identity.VerifyIdentityProof(boot.OwnerKey, SecureWire.BootProof(boot), boot.Signature)) throw new UnauthorizedAccessException("Hub identity is not verified.");
             tls = new SslStream(stream, false, (_, certificate, _, _) => certificate != null && CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.GetRawCertData()), boot.CertificateHash));
             using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token); handshake.CancelAfter(TimeSpan.FromSeconds(30));
@@ -49,15 +54,20 @@ internal sealed class SecureClientBridge : IDisposable
             if (!trust(boot)) throw new UnauthorizedAccessException("Hub identity is not verified.");
             byte[] package = identity.CreateKeyPackage(); byte[] binding = RandomNumberGenerator.GetBytes(32);
             progress?.Invoke("Identity: " + identity.Fingerprint);
-            progress?.Invoke(Lang.Current == AppLanguage.Russian ? "Ожидание подтверждения владельцем Hub…" : "Waiting for the Hub owner to approve your identity…");
-            await SecureWire.WriteAsync(tls, 2, SecureWire.Json(new SecureHello(nickname, package, binding)), token).ConfigureAwait(false);
+            progress?.Invoke(invitationToken != null
+                ? Lang.Current == AppLanguage.Russian ? "Проверка одноразового приглашения…" : "Verifying one-time invitation…"
+                : Lang.Current == AppLanguage.Russian ? "Ожидание подтверждения владельцем Hub…" : "Waiting for the Hub owner to approve your identity…");
+            if (invitationToken != null && (protocol != 3 || !OneTimeInvitations.Valid(invitationToken))) throw new UnauthorizedAccessException("This invitation requires a current E2E Hub.");
+            await SecureWire.WriteAsync(tls, 2, SecureWire.Json(new SecureHello(nickname, package, binding, protocol == 3 ? 3 : 0, invitationToken)), token).ConfigureAwait(false);
             using var admission = CancellationTokenSource.CreateLinkedTokenSource(token); admission.CancelAfter(TimeSpan.FromMinutes(3));
             SecurePacket challengePacket = await SecureWire.ReadAsync(tls, admission.Token, 256 * 1024).ConfigureAwait(false);
+            CheckAdmissionRejection(challengePacket);
             if (challengePacket.Kind != 3) throw new UnauthorizedAccessException("Room access was refused.");
             var challenge = SecureWire.Parse<IdentityChallenge>(challengePacket.Payload);
             byte[] signature = RoomIdentityGate.Respond(identity, challenge, boot.Room, NativeMlsSession.FingerprintOf(boot.OwnerKey), nickname, binding, package);
             await SecureWire.WriteAsync(tls, 3, signature, admission.Token).ConfigureAwait(false);
             SecurePacket welcome = await SecureWire.ReadAsync(tls, admission.Token, 256 * 1024).ConfigureAwait(false);
+            CheckAdmissionRejection(welcome);
             if (welcome.Kind != 4) throw new UnauthorizedAccessException("Room access was refused.");
             identity.Join(welcome.Payload);
             var bridge = new SecureClientBridge(tls, identity, boot);
@@ -73,6 +83,13 @@ internal sealed class SecureClientBridge : IDisposable
         byte[] group = mls.GroupIdentities();
         if (group.Length < 96 || !group.AsSpan(0, 32).SequenceEqual(boot.Room) || !group.AsSpan(32, 32).SequenceEqual(Convert.FromHexString(NativeMlsSession.FingerprintOf(boot.OwnerKey)))) throw new UnauthorizedAccessException("The MLS room owner does not match the verified invitation.");
     }
+
+    private static void CheckAdmissionRejection(SecurePacket packet)
+    {
+        if (packet.Kind == 1 && packet.Payload.Length <= 1024 && SystemMessageProtocol.TryLocalize(
+            new UTF8Encoding(false, true).GetString(packet.Payload), out string text, out var kind, out _) && kind == SystemMessageKind.HubFull)
+            throw new UnauthorizedAccessException(text);
+    }
     private void AcceptRoster(SecurePacket packet)
     {
         if (packet.Kind != 7) throw new InvalidDataException("Missing signed room roster.");
@@ -86,11 +103,12 @@ internal sealed class SecureClientBridge : IDisposable
         if (fingerprints.Count != next.Members.Length) throw new UnauthorizedAccessException("Roster does not match MLS membership.");
         foreach (var member in next.Members)
         {
-            if (!NetWorker.IsNicknameValid(member.Nickname) || !names.Add(member.Nickname) || !fingerprints.Remove(member.Fingerprint)) throw new UnauthorizedAccessException("Invalid roster identity binding.");
+            if (!NetWorker.IsNicknameValid(member.Nickname) || member.OriginalNickname != null && !NetWorker.IsNicknameValid(member.OriginalNickname) || !names.Add(member.Nickname) || !fingerprints.Remove(member.Fingerprint)) throw new UnauthorizedAccessException("Invalid roster identity binding.");
             if (member.Snake != null && (member.Snake.Length > 256 || !SnakeProtocol.TryParseServerUpdate(member.Snake, out _, out string snakeName, out _) || snakeName != member.Nickname)) throw new InvalidDataException("Invalid signed snake metadata.");
         }
         snakeRoster = next.Members.Where(member => member.Fingerprint != mls.Fingerprint && member.Snake != null).Select(member => member.Snake!).ToArray();
         roster.Clear(); foreach (var member in next.Members) roster.Add(member.Fingerprint, member.Nickname); revision = next.Revision;
+        originalNames.Clear(); foreach (var member in next.Members) originalNames.Add(member.Fingerprint, member.OriginalNickname ?? member.Nickname);
     }
     private async Task RunAsync()
     {
@@ -108,7 +126,7 @@ internal sealed class SecureClientBridge : IDisposable
             while (!stop.IsCancellationRequested)
             {
                 string message = await assembler.ReadNextAsync(pump, stop.Token, () => animation.Clear()).ConfigureAwait(false);
-                if (WhoisProtocol.IsControl(message) || HubStatusProtocol.IsControl(message))
+                if (WhoisProtocol.IsControl(message) || HubStatusProtocol.IsControl(message) || ProtocolVersion >= 3 && NicknameProtocol.IsControl(message))
                 { await SendAsync(1, Encoding.UTF8.GetBytes(message), stop.Token).ConfigureAwait(false); continue; }
                 if (ImageAnimationProtocol.IsAnimationControlMessage(message))
                 {
@@ -171,19 +189,27 @@ internal sealed class SecureClientBridge : IDisposable
                 if (packet.Kind == 1)
                 {
                     string control = new UTF8Encoding(false, true).GetString(packet.Payload);
-                    if (packet.Payload.Length > MessageProtocol.MaxFrameBytes || (!WhoisProtocol.IsControl(control) && !HubStatusProtocol.IsControl(control) && !SystemMessageProtocol.IsControlMessage(control))) throw new InvalidDataException("Unexpected Hub control message.");
+                    if (packet.Payload.Length > MessageProtocol.MaxFrameBytes || (!WhoisProtocol.IsControl(control) && !HubStatusProtocol.IsControl(control) && !SystemMessageProtocol.IsControlMessage(control) && !(ProtocolVersion >= 3 && NicknameProtocol.IsControl(control)))) throw new InvalidDataException("Unexpected Hub control message.");
                     await MessageProtocol.WriteStringAsync(pump, control, stop.Token).ConfigureAwait(false); continue;
                 }
                 if (packet.Kind == 7)
                 {
-                    string[] left; string[] joined;
+                    string[] left; string[] joined; NicknameChange[] renamed;
                     lock (state)
                     {
-                        var before = roster.Values.ToHashSet(StringComparer.OrdinalIgnoreCase); AcceptRoster(packet);
-                        left = before.Except(roster.Values, StringComparer.OrdinalIgnoreCase).ToArray(); joined = roster.Values.Except(before, StringComparer.OrdinalIgnoreCase).ToArray();
+                        var before = new Dictionary<string, string>(roster, StringComparer.Ordinal); AcceptRoster(packet);
+                        left = before.Where(pair => !roster.ContainsKey(pair.Key)).Select(pair => pair.Value).ToArray();
+                        joined = roster.Where(pair => !before.ContainsKey(pair.Key)).Select(pair => pair.Value).ToArray();
+                        renamed = roster.Where(pair => before.TryGetValue(pair.Key, out var previous) && previous != pair.Value)
+                            .Select(pair => new NicknameChange(before[pair.Key], pair.Value, originalNames[pair.Key])).ToArray();
                     }
                     foreach (string name in left) { await MessageProtocol.WriteStringAsync(pump, SnakeProtocol.CreateRemove(name), stop.Token).ConfigureAwait(false); await MessageProtocol.WriteStringAsync(pump, SystemMessageProtocol.Create(SystemMessageKind.UserLeft, name), stop.Token).ConfigureAwait(false); }
                     foreach (string name in joined) await MessageProtocol.WriteStringAsync(pump, SystemMessageProtocol.Create(SystemMessageKind.UserJoined, name), stop.Token).ConfigureAwait(false);
+                    foreach (var change in renamed)
+                    {
+                        await MessageProtocol.WriteStringAsync(pump, NicknameProtocol.Changed(change), stop.Token).ConfigureAwait(false);
+                        await MessageProtocol.WriteStringAsync(pump, SnakeProtocol.CreateRemove(change.Previous), stop.Token).ConfigureAwait(false);
+                    }
                     foreach (string snake in snakeRoster) await MessageProtocol.WriteStringAsync(pump, snake, stop.Token).ConfigureAwait(false);
                     continue;
                 }
@@ -228,7 +254,7 @@ internal sealed class SecureClientBridge : IDisposable
         if (supplied != null && supplied.Substring(12).Equals(owner, StringComparison.OrdinalIgnoreCase))
         { store.Save(boot.Room, owner, new[] { new RoomIdentityBinding(boot.OwnerName, owner, true) }); if (endpoint != null) endpoints.Save(endpoint, owner); return true; }
         ConsoleGraphic.WriteContentLine(Lang.Get(TextId.CryptoOwnerFingerprintPrompt));
-        if (!String.Equals(Console.ReadLine()?.Trim(), owner, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!String.Equals(ConsoleInput.ReadLine()?.Trim(), owner, StringComparison.OrdinalIgnoreCase)) return false;
         store.Save(boot.Room, owner, new[] { new RoomIdentityBinding(boot.OwnerName, owner, true) }); if (endpoint != null) endpoints.Save(endpoint, owner); return true;
     }
     public void Dispose()

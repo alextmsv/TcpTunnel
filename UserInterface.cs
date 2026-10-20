@@ -44,11 +44,15 @@ namespace TCPTunnel
             }
 
             private readonly string textValue;
+            public MatrixTextEffect Matrix { get; set; }
+            public long MatrixStarted { get; set; }
+            public List<TextCellFragment> MatrixFragments { get; } = new();
+            public int MatrixLayoutVersion = -1;
             public StatusCard Card { get; }
             public ChatHistoryEntry(StatusCard card) : this("", null, null, true) { Card = card; }
             public ChatHistoryEntry(Func<string> dynamicText) : this("", null, null, true) { DynamicText = dynamicText; }
             public Func<string> DynamicText { get; }
-            public string Text => Card?.Render(GetContentWidth()) ?? DynamicText?.Invoke() ?? textValue;
+            public string Text => Card?.Render(GetContentWidth()) ?? DynamicText?.Invoke() ?? Matrix?.Display ?? textValue;
             public ConsoleColor? ForcedColor { get; }
             public List<MentionSpan> Mentions { get; }
             public bool UseSystemTheme { get; }
@@ -134,12 +138,15 @@ namespace TCPTunnel
         private static string[] mentionSuggestions = Array.Empty<string>();
         private static int mentionSuggestionIndex;
         private static int mentionTokenStart = -1;
+        private static char suggestionMarker = '@';
+        private static int commandTokenEnd;
         private static List<MentionFragment> activeMentionBlinkFragments;
         private static long mentionBlinkStartTimestamp;
         private static int mentionBlinkLastPaintedPhase = -1;
         private static ConsoleGraphic.ConsoleGeometry knownConsoleGeometry;
         private static ConsoleGraphic.ConsoleGeometry pendingConsoleGeometry;
         private static bool hasKnownConsoleGeometry;
+        private static int knownVisualThemeRevision;
         private static bool consoleResizePending;
         private static bool isLocalHubSession;
         private static bool showServerCard;
@@ -170,8 +177,13 @@ namespace TCPTunnel
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await animationAssembler.ReadNextAsync(stream, cancellationToken, expireDownload).ConfigureAwait(false);
+                    if (message == FileTransferProtocol.Capabilities) { fileTransfers?.SetAvailable(true); continue; }
+                    if (message == FileTransferProtocol.Unavailable) { fileTransfers?.SetAvailable(false); continue; }
+                    if (fileTransfers != null && await fileTransfers.HandleAsync(message).ConfigureAwait(false)) continue;
                     if (await status.Whois.ReceiveAsync(message, sendControl, ReceiveWhoisNotice, cancellationToken).ConfigureAwait(false)) continue;
                     if (status.Receive(message)) continue;
+                    if (NicknameProtocol.TryChanged(message, out var nicknameChange)) { ApplyParticipantNickname(nicknameChange); continue; }
+                    if (status.Nicknames.Receive(message)) continue;
                     if (ImageAnimationProtocol.IsAnimationControlMessage(message))
                     {
                         ImageAnimationControlFrame animationControl;
@@ -216,6 +228,10 @@ namespace TCPTunnel
                     {
                         WriteSystemChatLine(Lang.Get(TextId.InvalidImagePacket));
                         continue;
+                    }
+                    if (message == SnakeProtocol.Capabilities)
+                    {
+                        status.Modern = true; nicknameSnakeSupported = true; nicknameCapabilityUpdatePending = true; continue;
                     }
                     if (TryApplySnakeUpdate(message) || SnakeProtocol.IsSnakeControlMessage(message))
                         continue;
@@ -293,22 +309,29 @@ namespace TCPTunnel
             if (!EnsureNickname())
                 return false;
 
-            BluetoothConnectOutcome bluetooth = TryConnectBluetooth();
-            if (bluetooth == BluetoothConnectOutcome.Handled)
-                return true;
-            if (bluetooth == BluetoothConnectOutcome.Cancelled)
-                return false;
+            var connectionMenu = new Menu();
+            int mode = connectionMenu.ChooseConnectionMode(BluetoothSupport.Check(false) == BluetoothAvailability.Available);
+            ConnectionSecurityMode securityMode = connectionMenu.ConnectionSecurity;
+            if (mode < 0) return false;
+            if (mode == 0) return TryConnectLan(securityMode);
+            if (mode == 1)
+            {
+                var outcome = TryConnectBluetooth(true, securityMode);
+                if (outcome == BluetoothConnectOutcome.Handled) return true;
+                if (outcome == BluetoothConnectOutcome.Cancelled) return false;
+            }
 
+            graphic.Clear(0, 0);
             string defaultHost = ApplicationSettings.LastHost;
             int defaultPort = ApplicationSettings.LastPort;
             Program.matrix(Lang.Get(TextId.EnterServerAddressSaved, defaultHost));
-            string ip = Console.ReadLine();
+            string ip = ConsoleInput.ReadLine();
             if (String.IsNullOrWhiteSpace(ip))
                 ip = defaultHost;
-            if (ip.StartsWith("tct2:", StringComparison.Ordinal)) return ConnectInvitation(ip);
+            if (ip.StartsWith("tct2:", StringComparison.Ordinal) || ip.StartsWith("tct3:", StringComparison.Ordinal)) return ConnectInvitation(ip);
 
             Program.matrix(Lang.Get(TextId.EnterServerPortSaved, defaultPort));
-            string rawPort = Console.ReadLine();
+            string rawPort = ConsoleInput.ReadLine();
             int serverPort;
             if (String.IsNullOrWhiteSpace(rawPort))
                 serverPort = defaultPort;
@@ -318,10 +341,12 @@ namespace TCPTunnel
                 return false;
             }
 
-            return DoConnect(ip, serverPort, DefaultConnectionAttempts);
+            return DoConnectWithSecurity(ip, serverPort, securityMode, DefaultConnectionAttempts);
         }
 
-        public static bool DoConnect(string address, int port, int attempts = DefaultConnectionAttempts)
+        public static bool DoConnect(string address, int port, int attempts = DefaultConnectionAttempts) => DoConnectWithSecurity(address, port, ConnectionSecurityPolicy.CommandLineDefault, attempts);
+
+        internal static bool DoConnectWithSecurity(string address, int port, ConnectionSecurityMode securityMode, int attempts = DefaultConnectionAttempts)
         {
             if (String.IsNullOrWhiteSpace(address))
             {
@@ -344,6 +369,7 @@ namespace TCPTunnel
                 return false;
             }
 
+            PlaintextConsent plaintextConsent = null;
             attempts = Math.Max(1, attempts);
             try
             {
@@ -368,16 +394,18 @@ namespace TCPTunnel
                         ApplicationSettings.RememberEndpoint(address, port);
                         try
                         {
-                            RunClient(client, address);
+                            RunClientWithSecurity(client, address, securityMode, plaintextConsent);
                             return true;
                         }
                         catch (Exception ex)
                         {
                             client.Close();
-                            if (ConsoleGraphic.Enabled)
-                                ConsoleGraphic.WriteBottomStatus(Lang.Get(TextId.SessionStartFailed, ex.Message), ConsoleTheme.SystemText);
-                            else
-                                ConsoleGraphic.WriteContentLine(Lang.Get(TextId.SessionStartFailed, ex.Message));
+                            if (ex is PlaintextConsentRequiredException request && plaintextConsent == null && securityMode == ConnectionSecurityMode.AllowPlaintext)
+                            {
+                                if (!ConfirmPlaintextOnce()) return false;
+                                plaintextConsent = request.Proposal; attempt--; continue;
+                            }
+                            ShowConnectionFailure(Lang.Get(TextId.SessionStartFailed, ex.Message));
                             return false;
                         }
                     }
@@ -391,16 +419,7 @@ namespace TCPTunnel
                         Thread.Sleep(RetryDelayMilliseconds);
                 }
 
-                if (ConsoleGraphic.Enabled)
-                {
-                    ConsoleGraphic.WriteBottomStatus(
-                        Lang.Get(TextId.HubUnavailableCompact, address, port),
-                        ConsoleTheme.SystemText);
-                }
-                else
-                {
-                    ConsoleGraphic.WriteContentLine(Lang.Get(TextId.HubUnavailableAttempts, address, port, attempts));
-                }
+                ShowConnectionFailure(Lang.Get(TextId.HubUnavailableAttempts, address, port, attempts));
                 return false;
             }
             finally
@@ -418,7 +437,7 @@ namespace TCPTunnel
             if (NicknamePolicy.IsLegacyProfileName(ApplicationSettings.Current.Nickname))
                 Program.matrix(Lang.Get(TextId.NicknameRules));
             Program.matrix(Lang.Get(TextId.EnterYourNickname));
-            nickname = filterNick(Console.ReadLine());
+            nickname = filterNick(ConsoleInput.ReadLine());
             return IsNicknameValid(nickname);
         }
 
@@ -448,37 +467,51 @@ namespace TCPTunnel
             }
         }
 
-        private static void RunClient(TcpClient client, string host)
+        private static void RunClient(TcpClient client, string host) => RunClientWithSecurity(client, host, ConnectionSecurityPolicy.CommandLineDefault);
+
+        private static void RunClientWithSecurity(TcpClient client, string host, ConnectionSecurityMode securityMode, PlaintextConsent plaintextConsent = null)
         {
             using var connection = new TcpChatConnection(client);
-            RunClientSession(connection, client.Client.RemoteEndPoint as IPEndPoint, host);
+            RunClientSession(connection, client.Client.RemoteEndPoint as IPEndPoint, host, false, securityMode, plaintextConsent);
         }
 
-        private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host, bool localHub = false)
+        private static void RunClientSession(IChatConnection connection, IPEndPoint remoteEndPoint, string host, bool localHub = false, ConnectionSecurityMode securityMode = ConnectionSecurityMode.RequireE2E, PlaintextConsent plaintextConsent = null)
         {
             Stream stream = connection.Stream;
             string greeting = ReadWithTimeoutAsync(connection, stream, CancellationToken.None).GetAwaiter().GetResult();
             TCPTunnel.Cryptography.SecureClientBridge secure = null;
-            string secureEndpoint = connection is BluetoothChatConnection bluetooth ? "bt:" + bluetooth.RemoteAddress.ToString("X12") : "tcp:" + host.Trim('[', ']').ToLowerInvariant() + ":" + (remoteEndPoint?.Port ?? ServerInterface.ListeningPort);
+            int endpointPort = remoteEndPoint?.Port ?? ServerInterface.ListeningPort;
+            string[] secureEndpoints = connection is BluetoothChatConnection bluetooth ? new[] { "bt:" + bluetooth.RemoteAddress.ToString("X12") } :
+                remoteEndPoint == null ? new[] { ConnectionSecurityPolicy.TcpEndpoint(host, endpointPort) } :
+                new[] { ConnectionSecurityPolicy.TcpEndpoint(host, endpointPort), "tcp:" + host.Trim('[', ']').ToLowerInvariant() + ":" + endpointPort, ConnectionSecurityPolicy.TcpEndpoint(remoteEndPoint.Address.ToString(), endpointPort) };
             try
             {
-                if (greeting.StartsWith("E2E2:", StringComparison.Ordinal))
+                if (greeting.StartsWith("E2E2:", StringComparison.Ordinal) || greeting.StartsWith("E2E3:", StringComparison.Ordinal))
                 {
                     secure = TCPTunnel.Cryptography.SecureClientBridge.ConnectAsync(stream, greeting, nickname,
-                        ApplicationSettings.OpenIdentity(), boot => expectedInvitation == null ? TCPTunnel.Cryptography.SecureClientBridge.VerifyTrust(boot, secureEndpoint) : TCPTunnel.Cryptography.SecureClientBridge.TrustVerifiedInvitation(boot, expectedInvitation, secureEndpoint), CancellationToken.None, ConsoleGraphic.WriteContentLine).GetAwaiter().GetResult();
+                        ApplicationSettings.OpenIdentity(), boot => VerifySecureHubTrust(boot, secureEndpoints), CancellationToken.None, ConsoleGraphic.WriteContentLine, invitationToken: expectedInvitation?.Token).GetAwaiter().GetResult();
                     stream = secure.Stream;
                     greeting = MessageProtocol.ReadStringAsync(stream, CancellationToken.None).GetAwaiter().GetResult();
                 }
-                else if (expectedInvitation != null || (!localHub && !(ServerInterface.IsRunning && remoteEndPoint != null && remoteEndPoint.Port == ServerInterface.ListeningPort && NetworkAddressResolver.IsLoopback(remoteEndPoint.Address)) &&
-                    !Array.Exists(Environment.GetCommandLineArgs(), argument => argument == "--allow-unencrypted")))
-                    throw new IOException(Lang.Current == AppLanguage.Russian ? "Hub не поддерживает E2E. Для явно разрешённого открытого чата запусти TCPTunnel с --allow-unencrypted." : "Hub does not support E2E. Explicitly allow plaintext chat with --allow-unencrypted.");
+                else
+                {
+                    if (greeting != DO_AUTH_MESSAGE) throw new IOException(Lang.Get(TextId.UnknownAuthProtocol));
+                    ConnectionSecurityPolicy.ValidatePlaintextWithConsent(expectedInvitation != null, localHub && connection.Transport == ChatTransport.Local, securityMode, plaintextConsent,
+                    secureEndpoints);
+                }
                 currentE2E = secure != null || (localHub && ServerInterface.SecureHub != null);
+                nicknameCapabilityUpdatePending = false;
+                nicknameSnakeSupported = secure?.ProtocolVersion == 3 || (localHub && ServerInterface.SecureHub != null);
                 RunClientSessionCore(connection, stream, greeting, remoteEndPoint, host, localHub);
             }
-            finally { currentE2E = false; secure?.Dispose(); }
+            finally { currentE2E = false; nicknameSnakeSupported = false; nicknameCapabilityUpdatePending = false; secure?.Dispose(); }
         }
 
         private static bool currentE2E;
+        private static volatile bool nicknameSnakeSupported;
+        private static volatile bool nicknameCapabilityUpdatePending;
+        internal static bool NicknameSnakeAvailable => !connected || nicknameSnakeSupported;
+        internal static bool NicknameSnakeEffective => ApplicationSettings.Current.NicknameSnake && NicknameSnakeAvailable;
         private static void RunClientSessionCore(IChatConnection connection, Stream stream, string greeting, IPEndPoint remoteEndPoint, string host, bool localHub)
         {
             using (var authCancellation = new CancellationTokenSource())
@@ -500,6 +533,7 @@ namespace TCPTunnel
                     Color = ConsoleGraphic.BorderSnakeColor,
                     Step = ConsoleGraphic.CurrentBorderSnakeReferenceStep,
                     Glyph = ConsoleGraphic.BorderSnakeGlyph
+                    , Nickname = nicknameSnakeSupported && ApplicationSettings.Current.NicknameSnake
                 };
                 MessageProtocol.WriteStringAsync(
                     stream,
@@ -545,8 +579,10 @@ namespace TCPTunnel
 
             var sessionCancellation = new CancellationTokenSource();
             var end = new SessionEndState();
-            var status = new HubStatusSession();
+            var status = new HubStatusSession { Modern = nicknameSnakeSupported };
+            StartFileTransfers(stream, sessionCancellation.Token);
             Task receiverTask = ReceiveConnectionMessagesAsync(connection, stream, sessionCancellation.Token, end, status);
+            if (!currentE2E) MessageProtocol.WriteStringAsync(stream, SnakeProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
             CommandContext commandContext = CreateCommandContext(stream, sessionCancellation.Token, end, status, remoteEndPoint, host);
             localStatusMonitor = new LocalHubStatusMonitor();
             nextLocalStatusCheck = 0;
@@ -560,12 +596,16 @@ namespace TCPTunnel
             {
                 MessageProtocol.WriteStringAsync(stream, HubStatusProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
                 MessageProtocol.WriteStringAsync(stream, WhoisProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
+                if (!ConfirmRemotePrivacy(status, stream, sessionCancellation.Token, isLocalHubSession)) { end.Leave(); return; }
+                MessageProtocol.WriteStringAsync(stream, FileTransferProtocol.Probe, sessionCancellation.Token).GetAwaiter().GetResult();
                 while (connected)
                 {
                     string message = ReadChatMessage();
                     if (message == null)
                         break;
+                    if (LocalCommands.Handle(message, ChangeChatLanguage, WriteSystemChatLine, () => RunChatCustomization(false, stream, sessionCancellation.Token))) continue;
                     if (HandleEncryptionCommand(message)) continue;
+                    if (fileTransfers?.HandleCommand(message) == true) continue;
                     CommandDisposition commandResult = Commands.InitCommand(message, commandContext);
                     if (commandResult == CommandDisposition.EndSession)
                     {
@@ -619,6 +659,7 @@ namespace TCPTunnel
                 sessionCancellation.Cancel();
                 connection.Dispose();
                 try { receiverTask.GetAwaiter().GetResult(); } catch { }
+                StopFileTransfers();
                 sessionCancellation.Dispose();
                 ConsoleGraphic.ClearRemoteSnakes();
                 if (showServerCard && ConsoleGraphic.Enabled)
@@ -652,6 +693,8 @@ namespace TCPTunnel
                 WriteLine = (text, color) => WriteSystemChatLine(text),
                 ShowStatus = () => ShowHubStatus(stream, status, endpoint, host, cancellationToken),
                 Whois = target => ShowWhois(target, stream, status.Whois, cancellationToken),
+                CustomizeSnake = () => RunChatCustomization(true, stream, cancellationToken),
+                ChangeNickname = () => ChangeSessionNickname(stream, status, cancellationToken),
                 GetStatus = () => ServerInterface.IsRunning
                     ? Lang.Get(
                         TextId.HubStatusWithClients,
@@ -804,6 +847,7 @@ namespace TCPTunnel
                 Color = ConsoleGraphic.BorderSnakeColor,
                 Step = ConsoleGraphic.CurrentBorderSnakeReferenceStep,
                 Glyph = ConsoleGraphic.BorderSnakeGlyph
+                , Nickname = nicknameSnakeSupported && ApplicationSettings.Current.NicknameSnake
             };
             MessageProtocol.WriteStringAsync(
                 stream,
@@ -820,6 +864,8 @@ namespace TCPTunnel
                 return Lang.Get(TextId.AuthInvalidNickname);
             if (String.Equals(response, AUTH_ERROR_MESSAGE + ":NICKNAME_TAKEN", StringComparison.Ordinal))
                 return Lang.Get(TextId.AuthNicknameTaken);
+            if (String.Equals(response, AUTH_ERROR_MESSAGE + ":HUB_FULL", StringComparison.Ordinal))
+                return Lang.Get(TextId.HubFull);
 
             if (response != null && response.StartsWith(AUTH_ERROR_MESSAGE + ":", StringComparison.Ordinal))
                 return Lang.Get(TextId.NicknameRejected);
@@ -856,7 +902,7 @@ namespace TCPTunnel
                     profile.Color,
                     profile.Step,
                     profile.Paused,
-                    profile.Glyph);
+                    profile.Glyph, profile.Nickname);
             }
             else
             {
@@ -872,6 +918,7 @@ namespace TCPTunnel
             if (!IsNicknameValid(participant))
                 return;
 
+            if (kind == SystemMessageKind.UserLeft) fileTransfers?.RemovePeer(participant);
             SnakeProfile? pending = null;
             lock (participantsLock)
             {
@@ -891,7 +938,7 @@ namespace TCPTunnel
             }
             if (kind == SystemMessageKind.UserLeft) ConsoleGraphic.RemoveRemoteSnake(participant);
             if (pending is SnakeProfile saved)
-                ConsoleGraphic.SetRemoteSnake(participant, saved.DelayMilliseconds, saved.Color, saved.Step, saved.Paused, saved.Glyph);
+                ConsoleGraphic.SetRemoteSnake(participant, saved.DelayMilliseconds, saved.Color, saved.Step, saved.Paused, saved.Glyph, saved.Nickname);
         }
 
         private static List<MentionSpan> FindMentionSpans(string message)
@@ -1140,6 +1187,7 @@ namespace TCPTunnel
         {
             lock (consoleLock)
             {
+                ResetScrollbackLocked();
                 chatHistory.Clear();
                 imageHistoryBytes = 0;
                 lastLargeImagePacket = null;
@@ -1174,6 +1222,7 @@ namespace TCPTunnel
         {
             lock (consoleLock)
             {
+                ShowScrollbackHintLocked();
                 MoveCursorToContentColumn();
                 inputActive = true;
                 inputBuffer.Clear();
@@ -1182,7 +1231,7 @@ namespace TCPTunnel
                 renderedInputRows = 0;
                 inputPrompt = $"<<< [{nickname}]: ";
                 ClearMentionState();
-                if (ConsoleGraphic.Enabled)
+                if (ConsoleGraphic.Enabled || ScrollbackActive)
                 {
                     if (!RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
@@ -1205,19 +1254,34 @@ namespace TCPTunnel
                     }
                 }
                 CheckForConsoleResize();
+                if (nicknameCapabilityUpdatePending && diagnosticsStream != null)
+                {
+                    nicknameCapabilityUpdatePending = false;
+                    if (ApplicationSettings.Current.NicknameSnake)
+                    {
+                        lock (consoleLock)
+                        {
+                            ConsoleGraphic.InvalidateVisualTheme();
+                            if (!RedrawChatLayoutLocked()) MarkConsoleResizePendingLocked();
+                        }
+                        MessageProtocol.WriteStringAsync(diagnosticsStream, SnakeProtocol.CreateClientProfile(OwnSnakeProfile()), diagnosticsToken).GetAwaiter().GetResult();
+                    }
+                }
                 CheckLocalHubStatus();
                 UpdateWhoisUi();
                 ConsoleGraphic.EnsureBorderAnimationRunning();
-                if (!Console.KeyAvailable)
+                if (!ConsoleInput.TryRead(out ConsoleInputEvent inputEvent))
                 {
                     Thread.Sleep(20);
                     continue;
                 }
 
-                ConsoleKeyInfo key = Console.ReadKey(true);
-                Interlocked.Increment(ref chatInputGeneration);
+                if (inputEvent.Kind == ConsoleInputKind.Key) Interlocked.Increment(ref chatInputGeneration);
                 lock (consoleLock)
                 {
+                    if (HandleScrollbackInputLocked(inputEvent)) continue;
+                    if (inputEvent.Kind != ConsoleInputKind.Key) continue;
+                    ConsoleKeyInfo key = inputEvent.Key;
                     if (mentionActive && key.Key == ConsoleKey.Escape)
                     {
                         ClearMentionState();
@@ -1281,9 +1345,9 @@ namespace TCPTunnel
             if (!EnsureConsoleGeometryLocked())
                 return;
 
-            if (ConsoleGraphic.Enabled)
+            if (ConsoleGraphic.Enabled || ScrollbackActive || ApplicationSettings.Current.InputPinnedBottom || chatHistory.Exists(entry => entry.Matrix?.Active == true || entry.IsAnimation))
             {
-                int availableRows = Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1);
+                int availableRows = ConsoleGraphic.Enabled ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop + 1) : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight));
                 int requiredRows = GetRequiredInputRows(GetContentWidth(), availableRows);
                 int requiredPopupRows = GetRequiredMentionPopupRows(Math.Max(0, availableRows - requiredRows));
                 if (requiredRows + requiredPopupRows == renderedInputRows)
@@ -1303,7 +1367,22 @@ namespace TCPTunnel
 
         private static void UpdateMentionSuggestionsLocked()
         {
-            if (InlineSuggestions.TryGetToken(inputBuffer.ToString(), inputCursorIndex, '@', out int tokenStart, out string prefix))
+            string text = inputBuffer.ToString();
+            if (InlineSuggestions.TryGetCommandToken(text, inputCursorIndex, out int tokenEnd, out string commandPrefix))
+            {
+                char marker = text[0];
+                string[] matches = InlineSuggestions.MatchPrefix(marker == '\\' ? CommandCatalog.LocalNames : CommandCatalog.Names, commandPrefix, MaxMentionSuggestionRows);
+                if (matches.Length > 0)
+                {
+                    string selected = mentionActive && suggestionMarker == marker && mentionSuggestionIndex < mentionSuggestions.Length ? mentionSuggestions[mentionSuggestionIndex] : null;
+                    mentionSuggestions = matches;
+                    int preserved = selected == null ? -1 : Array.FindIndex(matches, match => match.Equals(selected, StringComparison.OrdinalIgnoreCase));
+                    mentionSuggestionIndex = Math.Max(0, preserved); mentionTokenStart = 0; commandTokenEnd = tokenEnd;
+                    suggestionMarker = marker; mentionActive = true; return;
+                }
+                ClearMentionState(); return;
+            }
+            if (InlineSuggestions.TryGetToken(text, inputCursorIndex, '@', out int tokenStart, out string prefix))
             {
                 List<string> candidates;
                 lock (participantsLock)
@@ -1326,6 +1405,7 @@ namespace TCPTunnel
                         : Array.FindIndex(matches, match => String.Equals(match, previouslySelected, StringComparison.OrdinalIgnoreCase));
                     mentionSuggestionIndex = preserved >= 0 ? preserved : 0;
                     mentionTokenStart = tokenStart;
+                    suggestionMarker = '@';
                     mentionActive = true;
                     return;
                 }
@@ -1339,11 +1419,15 @@ namespace TCPTunnel
             if (!mentionActive || mentionSuggestions.Length == 0 || mentionTokenStart < 0)
                 return;
 
-            string replacement = "@" + mentionSuggestions[mentionSuggestionIndex] + " ";
-            int removeLength = Math.Max(0, Math.Min(inputBuffer.Length, inputCursorIndex) - mentionTokenStart);
+            bool command = suggestionMarker != '@';
+            int end = command ? commandTokenEnd : inputCursorIndex;
+            bool existingSeparator = end < inputBuffer.Length && Char.IsWhiteSpace(inputBuffer[end]);
+            string replacement = suggestionMarker + mentionSuggestions[mentionSuggestionIndex] + (command && existingSeparator ? String.Empty : " ");
+            int removeLength = Math.Max(0, Math.Min(inputBuffer.Length, end) - mentionTokenStart);
             inputBuffer.Remove(mentionTokenStart, removeLength);
             inputBuffer.Insert(mentionTokenStart, replacement);
             inputCursorIndex = mentionTokenStart + replacement.Length;
+            if (command && existingSeparator) inputCursorIndex++;
             ClearMentionState();
         }
 
@@ -1353,6 +1437,7 @@ namespace TCPTunnel
             mentionSuggestions = Array.Empty<string>();
             mentionSuggestionIndex = 0;
             mentionTokenStart = -1;
+            suggestionMarker = '@'; commandTokenEnd = 0;
         }
 
         private static int GetRequiredMentionPopupRows(int maxAvailable)
@@ -1379,7 +1464,8 @@ namespace TCPTunnel
                 bool selected = row == mentionSuggestionIndex;
                 string marker = selected ? "> " : "  ";
                 int labelWidth = Math.Max(0, width - marker.Length);
-                string label = "@" + mentionSuggestions[row];
+                string label = suggestionMarker + mentionSuggestions[row];
+                if (suggestionMarker != '@') label += " — " + CommandCatalog.Summary(mentionSuggestions[row]);
                 if (label.Length > labelWidth)
                     label = label.Substring(0, labelWidth);
 
@@ -1399,6 +1485,8 @@ namespace TCPTunnel
             string[] savedSuggestions = mentionSuggestions;
             int savedIndex = mentionSuggestionIndex;
             int savedTokenStart = mentionTokenStart;
+            char savedMarker = suggestionMarker;
+            int savedCommandEnd = commandTokenEnd;
             try
             {
                 nickname = "me";
@@ -1468,6 +1556,7 @@ namespace TCPTunnel
                 mentionSuggestions = savedSuggestions;
                 mentionSuggestionIndex = savedIndex;
                 mentionTokenStart = savedTokenStart;
+                suggestionMarker = savedMarker; commandTokenEnd = savedCommandEnd;
             }
         }
 
@@ -1579,6 +1668,8 @@ namespace TCPTunnel
             {
                 inputStartRow = ConsoleGraphic.EnsureContentSpace(inputStartRow, totalRows);
             }
+            if (!ConsoleGraphic.Enabled && ApplicationSettings.Current.InputPinnedBottom)
+                inputStartRow = Math.Max(0, Math.Min(Console.WindowTop + Console.WindowHeight - totalRows, Console.BufferHeight - totalRows));
             renderedInputLeft = left;
             renderedInputWidth = width;
             renderedInputRows = totalRows;
@@ -1664,6 +1755,12 @@ namespace TCPTunnel
                     forcedColor,
                     mentions,
                     useSystemTheme);
+                if (ApplicationSettings.Current.MatrixText && consoleReady && detectMentions && !useSystemTheme && !IsSystemDisplayLine(safeMessage) && MatrixTextEffect.CanAnimate(safeMessage) && !WindowAttention.IsMinimized && chatHistory.FindAll(item => item.Matrix?.Active == true).Count < 32)
+                {
+                    entry.Matrix = new MatrixTextEffect(safeMessage, ApplicationSettings.Current.MatrixCharacterDelay); entry.MatrixStarted = Stopwatch.GetTimestamp();
+                    if (!RedrawChatLayoutLocked()) MarkConsoleResizePendingLocked();
+                    ScheduleAnimationMonitor(); return;
+                }
                 if (whoisRequesters != null)
                 {
                     entry.WhoisAttention = new WhoisUnreadState(Volatile.Read(ref chatInputGeneration));
@@ -1677,7 +1774,7 @@ namespace TCPTunnel
                     return;
 
                 // WARNING: MoveBufferArea races with editable-input redraws and corrupts the graphical chat layout.
-                if (ConsoleGraphic.Enabled)
+                if (ConsoleGraphic.Enabled || ScrollbackActive)
                 {
                     ISet<ChatHistoryEntry> animatedEntries = null;
                     if (localMention && !deferAnimation)
@@ -1688,7 +1785,13 @@ namespace TCPTunnel
                     return;
                 }
 
-                if (HasAnimationHistoryLocked())
+                if (ApplicationSettings.Current.InputPinnedBottom)
+                {
+                    if (!RedrawChatLayoutLocked()) MarkConsoleResizePendingLocked();
+                    return;
+                }
+
+                if (HasAnimationHistoryLocked() || chatHistory.Exists(item => item.Matrix?.Active == true))
                 {
                     if (!RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
@@ -1752,14 +1855,14 @@ namespace TCPTunnel
                 if (!consoleReady)
                     return;
 
-                if (ConsoleGraphic.Enabled)
+                if (ConsoleGraphic.Enabled || ScrollbackActive || ApplicationSettings.Current.InputPinnedBottom || chatHistory.Exists(entry => entry.Matrix?.Active == true || entry.IsAnimation))
                 {
                     if (!RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
                     return;
                 }
 
-                if (HasAnimationHistoryLocked())
+                if (HasAnimationHistoryLocked() || chatHistory.Exists(item => item.Matrix?.Active == true))
                 {
                     if (!RedrawChatLayoutLocked())
                         MarkConsoleResizePendingLocked();
@@ -1859,6 +1962,7 @@ namespace TCPTunnel
                     startTop,
                     plainWidth,
                     localMentionFragments);
+                RegisterPlainMatrixFragments(entry, startLeft, startTop, plainWidth);
                 WriteStyledChatText(message, 0, message.Length, entry);
                 Console.WriteLine();
                 return;
@@ -2160,6 +2264,7 @@ namespace TCPTunnel
 
             lock (consoleLock)
             {
+                ResetScrollbackLocked(true);
                 chatHistory.Clear();
                 imageHistoryBytes = 0;
                 lastLargeImagePacket = null;
@@ -2191,6 +2296,7 @@ namespace TCPTunnel
                 mentions,
                 useSystemTheme);
             chatHistory.Add(entry);
+            CountScrollbackAppendLocked();
             TrimChatHistoryLocked();
             return entry;
         }
@@ -2199,6 +2305,7 @@ namespace TCPTunnel
         {
             var entry = new ChatHistoryEntry(image);
             chatHistory.Add(entry);
+            CountScrollbackAppendLocked();
             imageHistoryBytes += image.PackedPixels.Length;
             TrimChatHistoryLocked();
             return entry;
@@ -2208,6 +2315,7 @@ namespace TCPTunnel
         {
             var entry = new ChatHistoryEntry(animation);
             chatHistory.Add(entry);
+            CountScrollbackAppendLocked();
             imageHistoryBytes += animation.PackedByteCount;
             TrimChatHistoryLocked();
             return entry;
@@ -2230,6 +2338,7 @@ namespace TCPTunnel
             }
             if (removeCount > 0)
                 chatHistory.RemoveRange(0, removeCount);
+            ReconcileScrollbackTrimLocked();
         }
 
         private static void CheckForConsoleResize()
@@ -2246,6 +2355,7 @@ namespace TCPTunnel
 
         private static bool EnsureConsoleGeometryLocked()
         {
+            if (chatUiSuspended) return false;
             ConsoleGraphic.ConsoleGeometry currentGeometry;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out currentGeometry))
                 return false;
@@ -2254,12 +2364,13 @@ namespace TCPTunnel
             {
                 knownConsoleGeometry = currentGeometry;
                 hasKnownConsoleGeometry = true;
+                knownVisualThemeRevision = ConsoleGraphic.VisualThemeRevision;
                 consoleResizePending = false;
                 return true;
             }
 
             if (currentGeometry.IsSameAs(knownConsoleGeometry) && !consoleResizePending)
-                return true;
+                return !ConsoleGraphic.Enabled || knownVisualThemeRevision == ConsoleGraphic.VisualThemeRevision || RedrawChatLayoutLocked();
 
             long now = Stopwatch.GetTimestamp();
             if (!consoleResizePending || !currentGeometry.IsSameAs(pendingConsoleGeometry))
@@ -2285,6 +2396,7 @@ namespace TCPTunnel
 
             knownConsoleGeometry = geometry;
             hasKnownConsoleGeometry = true;
+            knownVisualThemeRevision = ConsoleGraphic.VisualThemeRevision;
         }
 
         private static void MarkConsoleResizePendingLocked()
@@ -2299,17 +2411,24 @@ namespace TCPTunnel
 
         private static bool RedrawChatLayoutLocked(ISet<ChatHistoryEntry> animateEntries = null)
         {
+            if (chatUiSuspended) return true;
+            EraseRenderedInput();
             InvalidateAnimationTargetsLocked();
+            InvalidateMatrixTargetsLocked();
+            FinishMentionBlinkLocked();
             ConsoleGraphic.ConsoleGeometry targetGeometry;
             if (!ConsoleGraphic.TryCaptureConsoleGeometry(out targetGeometry))
                 return false;
 
             try
             {
-                if (ConsoleGraphic.Enabled)
+                if (ConsoleGraphic.Enabled || ScrollbackActive)
                     return RedrawGraphicalChatLayoutLocked(targetGeometry, animateEntries);
 
-                int inputRowsToReserve = inputActive ? Math.Max(1, renderedInputRows) : 0;
+                int contentWidth = GetContentWidth();
+                int screenRows = Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight));
+                int inputRowsToReserve = inputActive ? GetRequiredInputRows(contentWidth, screenRows) : 0;
+                if (inputActive) inputRowsToReserve += GetRequiredMentionPopupRows(Math.Max(0, screenRows - inputRowsToReserve));
                 renderedInputRows = 0;
                 renderedInputWidth = 0;
                 if (!graphic.TryClear(0, 0))
@@ -2321,7 +2440,6 @@ namespace TCPTunnel
                 if (showServerCard && ConsoleGraphic.Enabled)
                     ConsoleGraphic.DrawServerEndpointCard(serverCardAddress, serverCardPort);
 
-                int contentWidth = GetContentWidth();
                 int availableRows = ConsoleGraphic.Enabled
                     ? Math.Max(1, ConsoleGraphic.ContentBottom - ConsoleGraphic.ContentTop - inputRowsToReserve)
                     : Math.Max(1, Math.Min(Console.WindowHeight, Console.BufferHeight) - 1 - inputRowsToReserve);
@@ -2357,7 +2475,9 @@ namespace TCPTunnel
 
                 knownConsoleGeometry = renderedGeometry;
                 hasKnownConsoleGeometry = true;
+                knownVisualThemeRevision = ConsoleGraphic.VisualThemeRevision;
                 consoleResizePending = false;
+                PublishMatrixTargetsLocked();
                 if (HasAnimationHistoryLocked())
                     ScheduleAnimationMonitor();
                 return true;
@@ -2382,7 +2502,7 @@ namespace TCPTunnel
             ConsoleGraphic.ConsoleGeometry targetGeometry,
             ISet<ChatHistoryEntry> animateEntries)
         {
-            bool geometryChanged = !hasKnownConsoleGeometry ||
+            bool geometryChanged = knownVisualThemeRevision != ConsoleGraphic.VisualThemeRevision || !hasKnownConsoleGeometry ||
                                    !targetGeometry.IsSameAs(knownConsoleGeometry) ||
                                    consoleResizePending;
             if (geometryChanged)
@@ -2399,17 +2519,20 @@ namespace TCPTunnel
 
             int width = GetContentWidth();
             int top = ConsoleGraphic.ContentTop;
-            int bottom = ConsoleGraphic.ContentBottom;
+            int bottom = ScrollbackBottom;
             int totalRows = Math.Max(1, bottom - top + 1);
             int inputRows = inputActive ? GetRequiredInputRows(width, totalRows) : 0;
             int popupRows = inputActive ? GetRequiredMentionPopupRows(Math.Max(0, totalRows - inputRows)) : 0;
             int chatRows = Math.Max(0, totalRows - inputRows - popupRows);
+            bool scrollStatus = ScrollbackActive && chatRows >= 2;
+            if (scrollStatus) chatRows--;
 
             int firstEntry;
             int rowsToSkip;
-            FindVisibleHistoryStart(width, chatRows, out firstEntry, out rowsToSkip);
+            FindViewportHistoryStart(width, chatRows, out firstEntry, out rowsToSkip);
             int targetRow = top;
             int chatBottomExclusive = top + chatRows;
+            scrollViewportTop = top; scrollViewportBottomExclusive = chatBottomExclusive;
             var mentionFragments = new List<MentionFragment>();
             for (int index = firstEntry;
                  index < chatHistory.Count && targetRow < chatBottomExclusive;
@@ -2430,13 +2553,15 @@ namespace TCPTunnel
             Console.ResetColor();
             for (int row = targetRow; row < chatBottomExclusive; row++)
                 ConsoleGraphic.ClearContentRow(row);
+            if (scrollStatus) DrawScrollbackStatus(chatBottomExclusive, width);
 
             renderedInputRows = 0;
             renderedInputWidth = 0;
             if (inputActive)
             {
-                inputStartRow = top + chatRows;
+                inputStartRow = ScrollbackActive ? top + chatRows + (scrollStatus ? 1 : 0) : ApplicationSettings.Current.InputPinnedBottom ? top + chatRows : targetRow;
                 RenderInputLineCoreAt(inputStartRow);
+                scrollViewportBottomExclusive = Math.Min(chatBottomExclusive, inputStartRow);
             }
             else
             {
@@ -2457,8 +2582,10 @@ namespace TCPTunnel
 
             knownConsoleGeometry = renderedGeometry;
             hasKnownConsoleGeometry = true;
+            knownVisualThemeRevision = ConsoleGraphic.VisualThemeRevision;
             consoleResizePending = false;
-            if (HasAnimationHistoryLocked())
+            PublishMatrixTargetsLocked();
+                if (HasAnimationHistoryLocked())
                 ScheduleAnimationMonitor();
             return true;
         }
@@ -2524,6 +2651,7 @@ namespace TCPTunnel
                 int count = Math.Min(width, Math.Max(0, renderedText.Length - offset));
                 ConsoleGraphic.ClearContentRow(targetRow);
                 Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                RegisterMatrixFragment(entry, offset, count, ConsoleGraphic.ContentLeft, targetRow);
                 if (count <= 0)
                     continue;
 

@@ -29,12 +29,29 @@ namespace TCPTunnel
         private long snakeProfileTimestamp;
         private bool hasSnakeProfile;
         private int closed;
+        internal volatile bool SupportsFileTransfer;
+        private double availableFileTokens = 256;
+        private long lastFileRefill = Stopwatch.GetTimestamp();
+        internal bool TryConsumeFileToken()
+        {
+            lock (rateLock)
+            {
+                long now = Stopwatch.GetTimestamp();
+                availableFileTokens = Math.Min(256, availableFileTokens + (double)(now - lastFileRefill) / Stopwatch.Frequency * 512);
+                lastFileRefill = now;
+                if (availableFileTokens < 1) return false;
+                availableFileTokens--; return true;
+            }
+        }
+        private int ipDisclosureAllowed;
+        internal bool IpDisclosureAllowed { get => Volatile.Read(ref ipDisclosureAllowed) != 0; set => Volatile.Write(ref ipDisclosureAllowed, value ? 1 : 0); }
 
         public Client(TcpClient tcpClient) : this(new TcpChatConnection(tcpClient)) { }
 
         internal Client(IChatConnection connection)
         {
             this.connection = connection ?? throw new ArgumentNullException(nameof(connection));
+            ipDisclosureAllowed = connection.Transport == ChatTransport.Local ? 1 : 0;
             Stream = connection.Stream;
             sendQueue = new SerialSendQueue(
                 async (frame, token) =>
@@ -52,9 +69,12 @@ namespace TCPTunnel
         internal ChatTransport Transport => connection.Transport;
         public string IpAddress { get; set; }
         public string Nickname { get; set; }
+        internal string OriginalNickname { get; set; }
         public bool IsAuthenticated { get; set; }
         public bool IsReady { get; internal set; }
         internal bool SupportsHubStatus { get; set; }
+        internal bool SupportsNicknameSnake { get; set; }
+        internal bool InitialNicknameSnakeSync { get; set; }
         internal ConnectionAdmission.Lease Admission { get; set; }
         internal bool PromoteAdmission() => Admission?.Promote() ?? true;
         internal string AdmissionOrigin => connection.Transport == ChatTransport.Tcp ? "tcp:" + (connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown") :

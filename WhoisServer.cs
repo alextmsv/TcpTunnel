@@ -39,7 +39,7 @@ namespace TCPTunnel
                 .FirstOrDefault(client => String.Equals(client.Nickname, nick, StringComparison.OrdinalIgnoreCase));
             string reply;
             // WARNING: The hidden path must not call Snapshot; it reads real network addresses.
-            if (target != null && (sender.HideClientIpAddresses || target.HideClientIpAddresses))
+            if (target != null && (sender.HideClientIpAddresses || target.HideClientIpAddresses || !target.IpDisclosureAllowed))
                 reply = WhoisProtocol.HiddenReply(id, SnapshotDiagnostics(target));
             else
                 reply = WhoisProtocol.Reply(id, target == null ? null : Snapshot(target));
@@ -66,7 +66,7 @@ namespace TCPTunnel
             return new WhoisInfo(diagnostics.Nickname, address, publicUnavailable, diagnostics.PingMilliseconds,
                 diagnostics.WindowWidth, diagnostics.WindowHeight, diagnostics.SnakeEnabled, diagnostics.Paused,
                 diagnostics.SnakeDelay, diagnostics.SnakeColor, diagnostics.SnakeGlyph, diagnostics.Messages,
-                diagnostics.Transport, diagnostics.SignalDbm);
+                diagnostics.Transport, diagnostics.SignalDbm, OriginalNickname: diagnostics.OriginalNickname);
         }
 
         private static WhoisDiagnosticsSnapshot SnapshotDiagnostics(Client target)
@@ -83,7 +83,7 @@ namespace TCPTunnel
                 size.Width, size.Height, hasSnake ? snake.Enabled : null, snake.Paused,
                 hasSnake ? snake.DelayMilliseconds : 75, hasSnake ? (int)snake.Color : 10,
                 hasSnake ? snake.Glyph : '-', target.Diagnostics.Messages,
-                transport, target.Transport == ChatTransport.Bluetooth ? target.Diagnostics.SignalDbm : null);
+                transport, target.Transport == ChatTransport.Bluetooth ? target.Diagnostics.SignalDbm : null, target.OriginalNickname);
         }
 
         internal static async Task HeartbeatAsync(Client client, CancellationToken token)
