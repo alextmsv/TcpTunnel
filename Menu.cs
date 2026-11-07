@@ -1107,14 +1107,18 @@ namespace TCPTunnel
                     Lang.Get(TextId.InputPinnedBottom) + (ApplicationSettings.Current.InputPinnedBottom ? " [ V ]" : " [   ]"),
                     Lang.Get(TextId.MatrixText) + (ApplicationSettings.Current.MatrixText ? " [ V ]" : " [   ]"),
                     Lang.Get(TextId.MatrixSpeed, ApplicationSettings.Current.MatrixCharacterDelay),
+                    (Lang.Current == AppLanguage.Russian ? "Эффекты дуэли" : "Duel effects") + (ApplicationSettings.Current.DuelEffects ? " [ V ]" : " [   ]"),
+                    (Lang.Current == AppLanguage.Russian ? "Звук дуэли" : "Duel sound") + (ApplicationSettings.Current.DuelSound ? " [ V ]" : " [   ]"),
                     Lang.Get(TextId.Back)
                 };
-                var choice = ReadOptionsChoice(Lang.Get(TextId.DialogueInterface), choices, selected, isValueOption: index => index < 3);
-                if (choice.Index < 0 || choice.Index == 3) return;
+                var choice = ReadOptionsChoice(Lang.Get(TextId.DialogueInterface), choices, selected, isValueOption: index => index < 5);
+                if (choice.Index < 0 || choice.Index == 5) return;
                 selected = choice.Index;
                 if (selected == 0) ApplicationSettings.Current.InputPinnedBottom = !ApplicationSettings.Current.InputPinnedBottom;
                 else if (selected == 1) ApplicationSettings.Current.MatrixText = !ApplicationSettings.Current.MatrixText;
-                else ApplicationSettings.Current.MatrixCharacterDelay = OptionNavigation.Next(matrixSpeeds, ApplicationSettings.Current.MatrixCharacterDelay, choice.Direction);
+                else if (selected == 2) ApplicationSettings.Current.MatrixCharacterDelay = OptionNavigation.Next(matrixSpeeds, ApplicationSettings.Current.MatrixCharacterDelay, choice.Direction);
+                else if (selected == 3) ApplicationSettings.Current.DuelEffects = !ApplicationSettings.Current.DuelEffects;
+                else ApplicationSettings.Current.DuelSound = !ApplicationSettings.Current.DuelSound;
                 ApplicationSettings.CaptureAndSave();
             }
         }

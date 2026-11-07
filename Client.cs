@@ -30,6 +30,8 @@ namespace TCPTunnel
         private bool hasSnakeProfile;
         private int closed;
         internal volatile bool SupportsFileTransfer;
+        internal volatile bool SupportsDuel;
+        internal volatile bool SupportsDuelOptions;
         private double availableFileTokens = 256;
         private long lastFileRefill = Stopwatch.GetTimestamp();
         internal bool TryConsumeFileToken()

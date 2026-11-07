@@ -8,6 +8,29 @@ namespace TCPTunnel
 
         private static readonly Entry[] entries =
         {
+            new Entry("duel", new LocalizedText("Вызвать участника на дуэль в тире.", "Challenge a participant to a target duel."), new LocalizedText(
+                """
+                /duel — дуэль в тире
+                /duel @ник — открыть окно выбора режима, размера, сложности, времени и Blitz.
+                Использование: /duel @ник easy|normal|hard 1m–15m [blitz]
+                Пример: /duel @pushkin hard 2m blitz. Соперник принимает вызов через /duel accept.
+                Без blitz у каждого свои мишени. В blitz хаб сравнивает близкие попадания с поправкой на задержку.
+                Для дуэлей из окна: в Blitz учитываются только попадания. Иначе PTS = попадания + бонусы серии − выстрелы мимо. Пропуск мишени обрывает серию без штрафа.
+                Стрельба левой кнопкой мыши. Esc или отключение — поражение. Равный счёт по таймеру — ничья.
+                /duel practice [easy|normal|hard 1m–15m] — локальная тренировка, по умолчанию normal 1m.
+                Рекорд полного раунда сохраняется в профиле отдельно для сложности и длительности. Esc закрывает тренировку.
+                """,
+                """
+                /duel — target duel
+                /duel @nickname — open settings for mode, size, difficulty, duration and Blitz.
+                Usage: /duel @nickname easy|normal|hard 1m–15m [blitz]
+                Example: /duel @pushkin hard 2m blitz. Your opponent joins with /duel accept.
+                Without blitz, players have separate targets. In blitz, the Hub compensates for latency when comparing close hits.
+                Configured Blitz uses hits only. Other configured duels use PTS = hits + streak bonus − missed shots. Letting a target expire breaks the streak without costing a point.
+                Shoot with the left mouse button. Esc or disconnect forfeits the match. Equal scores at the deadline are a draw.
+                /duel practice [easy|normal|hard 1m–15m] — local practice, default normal 1m.
+                Finished rounds can set a profile record for that difficulty and duration. Esc closes practice.
+                """)),
             new Entry("help", new LocalizedText("Показать справку по командам.", "Show command help."), new LocalizedText(
                 """
                 /help — справка по командам

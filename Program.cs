@@ -77,6 +77,18 @@ namespace TCPTunnel
                 return;
             }
 
+            int snakeDiagnostics = Array.IndexOf(args, "-snake-diagnostics");
+            ConsoleGraphic.UseBatchedBorderFrames = !Array.Exists(args, argument => argument == "-snake-native-border") && ConsoleGraphic.EnableVirtualTerminalOutput();
+            if (snakeDiagnostics >= 0)
+            {
+                try
+                {
+                    if (snakeDiagnostics + 1 >= args.Length) throw new ArgumentException("Usage: -snake-diagnostics <new-log.jsonl>");
+                    SnakeFrameDiagnostics.Start(args[snakeDiagnostics + 1]);
+                }
+                catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException or ArgumentException)
+                { Console.WriteLine(error.Message); Environment.ExitCode = 1; return; }
+            }
             ApplicationSettings.Initialize();
             Run(args);
         }

@@ -98,8 +98,11 @@ GIF frames are composed according to their disposal metadata and animate directl
 | `/look` | Open the most recent large image or GIF in a separate plain console window. |
 | `/stop` | Hub owner: stop the local Hub. Participant: pause or resume their synchronized border snake. |
 | `/kick nickname [reason]` | Local Hub owner: notify and disconnect one participant. The `@` prefix and quotes around a multiword reason are optional. |
+| `/duel @pushkin` | Open duel settings and challenge a participant to a target-shooting match. |
+| `/duel accept` | Accept a pending duel invitation. |
 | `/exit` | Leave the current chat and return to the menu. |
 
+**A literary disagreement?** Try `/duel @pushkin`, pick your settings, and send the challenge. Pushkin should join with `/duel accept`. The targets are circles, like Aimlabs.
 ## How it works
 
 ```mermaid

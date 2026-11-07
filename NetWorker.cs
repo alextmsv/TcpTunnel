@@ -364,6 +364,8 @@ namespace TCPTunnel
                     if (String.IsNullOrWhiteSpace(message))
                         continue;
 
+                    if (DuelHub.Handle(client, message)) continue;
+
                     if (FileTransferProtocol.IsControl(message))
                     {
                         await FileTransferRouter.RouteAsync(client, message, serverCancellationToken).ConfigureAwait(false);

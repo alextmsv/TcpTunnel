@@ -12,6 +12,18 @@ internal static class ScrollbackProbe
     private static void Set(string name, object value) => Ui.GetField(name, Flags)!.SetValue(null, value);
     private static string[] Capture() => ((ValueTuple<string[], ushort[]>)typeof(MenuRenderProbe).GetMethod("Capture", Flags)!.Invoke(null, null)!).Item1;
     private static bool Key(ConsoleKey key, bool control = false) => (bool)Call("HandleScrollbackInputLocked", new ConsoleInputEvent(ConsoleInputKind.Key, new ConsoleKeyInfo('\0', key, false, false, control)))!;
+    private static void ExpectNoRedraw(ConsoleKey key, bool control = false)
+    {
+        var original = Console.Out;
+        using var captured = new StringWriter();
+        try
+        {
+            Console.SetOut(captured);
+            if (!Key(key, control) || captured.GetStringBuilder().Length != 0)
+                throw new Exception("History boundary triggered a redraw");
+        }
+        finally { Console.SetOut(original); }
+    }
 
     internal static bool Run()
     {
@@ -28,13 +40,25 @@ internal static class ScrollbackProbe
             for (int i = 0; i < 80; i++) Call("AppendChatHistoryLocked", "history-message-" + i.ToString("D3"), null, null, false);
             Call("RedrawChatLayoutLocked", (object?)null);
             if (!Capture().Any(row => row.Contains("history-message-079"))) throw new Exception("Tail missing");
+            int bar = ConsoleGraphic.ContentLeft + (int)Call("GetContentWidth")!;
+            if (graphical && Capture()[(int)Get("scrollViewportBottomExclusive")! - 1][bar] != '#')
+                throw new Exception("Scrollbar thumb did not reach bottom");
+            ExpectNoRedraw(ConsoleKey.PageDown);
+            if (!Key(ConsoleKey.Home, true) || !Capture()[ConsoleGraphic.ContentTop].Contains("history-message-000"))
+                throw new Exception("Ctrl+Home did not reach oldest retained message");
+            if (graphical && Capture()[ConsoleGraphic.ContentTop][bar] != '#')
+                throw new Exception("Scrollbar thumb did not reach top");
+            ExpectNoRedraw(ConsoleKey.PageUp);
+            ExpectNoRedraw(ConsoleKey.Home, true);
+            Key(ConsoleKey.End, true);
             if (!Key(ConsoleKey.PageUp)) throw new Exception("PageUp unhandled");
             object anchor = Get("scrollAnchorEntry")!;
             if (anchor == null || Capture().Any(row => row.Contains("history-message-079"))) throw new Exception("PageUp stayed at tail");
             var before = Capture(); int viewportTop = (int)Get("scrollViewportTop")!;
-            string firstRow = before[viewportTop]; int left = Console.CursorLeft, top = Console.CursorTop;
+            int textEnd = ConsoleGraphic.ContentLeft + (int)Call("GetContentWidth")!;
+            string firstRow = before[viewportTop][..textEnd]; int left = Console.CursorLeft, top = Console.CursorTop;
             Call("WriteChatLine", "new-during-scroll", null, false, true, null);
-            if (!ReferenceEquals(anchor, Get("scrollAnchorEntry")) || Capture()[viewportTop] != firstRow || (int)Get("scrollUnreadCount")! != 1)
+            if (!ReferenceEquals(anchor, Get("scrollAnchorEntry")) || Capture()[viewportTop][..textEnd] != firstRow || (int)Get("scrollUnreadCount")! != 1)
                 throw new Exception("A new message moved the history viewport");
             if (buffer.ToString() != "DRAFT-STAYS" || Console.CursorLeft != left || Console.CursorTop != top || !Capture().Any(row => row.Contains("DRAFT-STAYS")))
                 throw new Exception("Scrolling modified the editable draft/cursor");
@@ -66,7 +90,7 @@ internal static class ScrollbackProbe
         Call("ResetChatSessionLayout"); Set("inputActive", true); Set("inputPrompt", "draft: ");
         var buffer = (StringBuilder)Get("inputBuffer")!; buffer.Append("KEEP"); Set("inputCursorIndex", buffer.Length);
         object entry = Call("AppendChatHistoryLocked", String.Concat(Enumerable.Range(0, 1000).Select(i => "line-" + i.ToString("D3") + " ")), null, null, false)!;
-        Set("scrollAnchorEntry", entry); Set("scrollAnchorRow", 3); Set("scrollAnchorWidth", ConsoleGraphic.ContentWidth * 2);
+        Set("scrollAnchorEntry", entry); Set("scrollAnchorRow", 3); Set("scrollAnchorWidth", (int)Call("GetContentWidth")! * 2);
         int expected = 6;
         Call("RedrawChatLayoutLocked", (object?)null);
         if ((int)Get("scrollAnchorRow")! != expected) throw new Exception("Anchor did not reflow");

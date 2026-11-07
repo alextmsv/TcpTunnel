@@ -295,6 +295,7 @@ internal sealed class SecureHubService : IDisposable
     }
     private async Task<bool> ControlAsync(Client client, string message, CancellationToken token)
     {
+        if (DuelHub.Handle(client, message)) return true;
         if (message == FileTransferProtocol.Probe)
         {
             if (!client.TryConsumeControlToken()) return true;

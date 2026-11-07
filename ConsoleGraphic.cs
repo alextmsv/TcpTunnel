@@ -66,23 +66,113 @@ namespace TCPTunnel
 
         private static readonly ConsoleCell[] borderCellBuffer = new ConsoleCell[1];
         private static ConsoleCell[] textCellBuffer = Array.Empty<ConsoleCell>();
-        internal static bool WriteTextRun(int left, int top, string text, int offset, int length, ConsoleColor foreground, ConsoleColor background, bool defaultBackground = true)
+
+        internal sealed class ContentFrame
+        {
+            private readonly ConsoleCell[] cells;
+            private readonly bool[] defaultBackground;
+            private readonly int left, top, width, height;
+            private bool complexText;
+            internal int CursorLeft, CursorTop;
+
+            internal ContentFrame(int left, int top, int width, int height)
+            {
+                this.left = left; this.top = top; this.width = width; this.height = height;
+                CursorLeft = left; CursorTop = top;
+                cells = new ConsoleCell[width * height];
+                Array.Fill(cells, new ConsoleCell { Character = ' ', Attributes = (ushort)ConsoleColor.Gray });
+                if (ConsoleTheme.HasContentBackground)
+                {
+                    defaultBackground = new bool[cells.Length];
+                    Array.Fill(defaultBackground, true);
+                }
+            }
+
+            internal void Put(int x, int y, ReadOnlySpan<char> text, ConsoleColor foreground, ConsoleColor background = ConsoleColor.Black, bool useDefaultBackground = true)
+            {
+                if (y < top || y >= top + height || x < left || x >= left + width) return;
+                int start = (y - top) * width + x - left;
+                int count = Math.Min(text.Length, left + width - x);
+                ushort style = (ushort)((int)foreground | ((int)background << 4));
+                for (int i = 0; i < count; i++)
+                {
+                    char ch = text[i];
+                    if (Char.IsControl(ch) || (ch > '\u052F' && ch is not (>= '\u2010' and <= '\u2027')) ||
+                        (ch >= '\u0080' && Char.GetUnicodeCategory(ch) is System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark or System.Globalization.UnicodeCategory.EnclosingMark or System.Globalization.UnicodeCategory.Format))
+                        complexText = true;
+                    cells[start + i] = new ConsoleCell { Character = ch, Attributes = style };
+                    if (defaultBackground != null) defaultBackground[start + i] = useDefaultBackground;
+                }
+            }
+
+            internal bool Present(ConsoleGeometry geometry)
+            {
+                if (complexText || !IsConsoleGeometryCurrent(geometry) || Console.IsOutputRedirected ||
+                    left + width > geometry.DrawableWidth || top + height > geometry.DrawableHeight)
+                    return false;
+
+                if (defaultBackground == null)
+                {
+                    var region = new SmallRectangle { Left = (short)left, Top = (short)top, Right = (short)(left + width - 1), Bottom = (short)(top + height - 1) };
+                    if (!WriteConsoleOutput(consoleOutputHandle, cells, new ConsoleCoordinate(width, height), new ConsoleCoordinate(0, 0), ref region))
+                        return false;
+                    Console.SetCursorPosition(CursorLeft, CursorTop);
+                    return true;
+                }
+
+                if (!EnableVirtualTerminalOutput()) return false;
+                bool cursorVisible = Console.CursorVisible;
+                var sequence = new System.Text.StringBuilder(cells.Length + 128);
+                if (cursorVisible) sequence.Append("\u001b[?25l");
+                for (int row = 0; row < height; row++)
+                {
+                    sequence.Append("\u001b[").Append(top + row + 1).Append(';').Append(left + 1).Append('H');
+                    int lastStyle = -1;
+                    for (int i = row * width; i < (row + 1) * width; i++)
+                    {
+                        int style = cells[i].Attributes | (defaultBackground[i] ? 256 : 0);
+                        if (style != lastStyle)
+                        {
+                            sequence.Append("\u001b[").Append(ConsoleTheme.ForegroundSgr((ConsoleColor)(style & 15))).Append(';')
+                                .Append(defaultBackground[i] ? 49 : ConsoleTheme.ForegroundSgr((ConsoleColor)((style >> 4) & 15)) + 10).Append('m');
+                            lastStyle = style;
+                        }
+                        sequence.Append(cells[i].Character);
+                    }
+                }
+                sequence.Append("\u001b[0m\u001b[").Append(CursorTop + 1).Append(';').Append(CursorLeft + 1).Append('H');
+                if (cursorVisible) sequence.Append("\u001b[?25h");
+                Console.Write(sequence.ToString());
+                return true;
+            }
+        }
+        internal static bool WriteTextRun(int left, int top, string text, int offset, int length, ConsoleColor foreground, ConsoleColor background, bool defaultBackground = true, bool vertical = false)
         {
             if (length <= 0) return true;
             lock (borderAnimationLock)
             {
-                if (!TryCaptureConsoleGeometry(out var geometry) || left < 0 || top < 0 || top >= geometry.DrawableHeight || left + length > geometry.DrawableWidth || Console.IsOutputRedirected) return false;
+                int width = vertical ? 1 : length, height = vertical ? length : 1;
+                if (!TryCaptureConsoleGeometry(out var geometry) || left < 0 || top < 0 ||
+                    left + width > geometry.DrawableWidth || top + height > geometry.DrawableHeight || Console.IsOutputRedirected) return false;
                 if (ConsoleTheme.HasContentBackground)
                 {
                     int backgroundSgr = ConsoleTheme.ForegroundSgr(background) + 10;
-                    Console.Write("\u001b7\u001b[" + (top + 1) + ";" + (left + 1) + "H\u001b[" + ConsoleTheme.ForegroundSgr(foreground) + ";" + (defaultBackground ? "49" : backgroundSgr.ToString()) + "m" + text.Substring(offset, length) + "\u001b8");
+                    string style = "\u001b[" + ConsoleTheme.ForegroundSgr(foreground) + ";" + (defaultBackground ? "49" : backgroundSgr.ToString()) + "m";
+                    if (vertical)
+                    {
+                        var frame = new System.Text.StringBuilder("\u001b7").Append(style);
+                        for (int i = 0; i < length; i++)
+                            frame.Append("\u001b[").Append(top + i + 1).Append(';').Append(left + 1).Append('H').Append(text[offset + i]);
+                        Console.Write(frame.Append("\u001b8").ToString());
+                    }
+                    else Console.Write("\u001b7\u001b[" + (top + 1) + ";" + (left + 1) + "H" + style + text.Substring(offset, length) + "\u001b8");
                     return true;
                 }
                 if (textCellBuffer.Length < length) textCellBuffer = new ConsoleCell[length];
                 ushort attributes = (ushort)((int)foreground | ((int)background << 4));
                 for (int i = 0; i < length; i++) textCellBuffer[i] = new ConsoleCell { Character = text[offset + i], Attributes = attributes };
-                var region = new SmallRectangle { Left = (short)left, Top = (short)top, Right = (short)(left + length - 1), Bottom = (short)top };
-                return WriteConsoleOutput(consoleOutputHandle, textCellBuffer, new ConsoleCoordinate(length, 1), new ConsoleCoordinate(0, 0), ref region);
+                var region = new SmallRectangle { Left = (short)left, Top = (short)top, Right = (short)(left + width - 1), Bottom = (short)(top + height - 1) };
+                return WriteConsoleOutput(consoleOutputHandle, textCellBuffer, new ConsoleCoordinate(width, height), new ConsoleCoordinate(0, 0), ref region);
             }
         }
 
@@ -1398,7 +1488,7 @@ namespace TCPTunnel
             if (changed)
                 TryRenderSnakeLayerLocked();
 
-            return GetNextAnimationDelayLocked(now);
+            return GetNextAnimationDelayLocked(Stopwatch.GetTimestamp());
         }
 
         private static int GetNextAnimationDelayLocked(long now)
@@ -1556,6 +1646,7 @@ namespace TCPTunnel
         }
 
         internal static int VisualThemeRevision => Volatile.Read(ref visualThemeRevision);
+        internal static bool UseBatchedBorderFrames { get; set; } = true;
 
         private static void ResetBorderAttributeCacheLocked(int width, int height)
         {
@@ -1702,11 +1793,15 @@ namespace TCPTunnel
                 { cachedSnakeNickname = NetWorker.nickname; cachedSnakeNicknameBody = SnakeProtocol.NicknameBody(NetWorker.nickname); }
                 ownBody = cachedSnakeNicknameBody;
             }
+            bool diagnosticSample = SnakeFrameDiagnostics.BeginSample();
+            if (diagnosticSample) SnakeFrameDiagnostics.Capture("before", width, height, borderAnimationStep, ownBody, desiredBorderCharacters, renderedBorderCharacters, desiredBorderAttributes);
             OverlaySnakeLocked(borderAnimationStep, borderSnakeColor, borderSnakeGlyph, perimeterLength, ownBody);
 
             bool resyncAll = forceFullBorderResync;
             bool terminalTheme = ConsoleTheme.HasContentBackground;
-            var frame = terminalTheme ? new System.Text.StringBuilder("\u001b7") : null;
+            bool batch = terminalTheme || (UseBatchedBorderFrames && EnableVirtualTerminalOutput());
+            var frame = batch ? new System.Text.StringBuilder("\u001b7") : null;
+            int previousForeground = -1;
             for (int index = 0; index < perimeterLength; index++)
             {
                 ushort desired = desiredBorderAttributes[index];
@@ -1717,12 +1812,18 @@ namespace TCPTunnel
                     continue;
 
                 BorderCell cell = GetBorderCell(index, width, height);
-                if (terminalTheme)
+                if (batch)
                 {
-                    frame.Append("\u001b[").Append(cell.Y + 1).Append(';').Append(cell.X + 1).Append('H')
-                        .Append("\u001b[").Append(ConsoleTheme.ForegroundSgr(ConsoleTheme.ContentColor(
-                            (ConsoleColor)(desired & 15), ConsoleTheme.BackgroundCustomRgb)))
-                        .Append(";49m").Append(desiredCharacter);
+                    frame.Append("\u001b[").Append(cell.Y + 1).Append(';').Append(cell.X + 1).Append('H');
+                    int foreground = desired & 15;
+                    if (foreground != previousForeground)
+                    {
+                        frame.Append("\u001b[").Append(ConsoleTheme.ForegroundSgr(terminalTheme ? ConsoleTheme.ContentColor(
+                            (ConsoleColor)foreground, ConsoleTheme.BackgroundCustomRgb) : (ConsoleColor)foreground))
+                            .Append(terminalTheme ? ";49m" : ";40m");
+                        previousForeground = foreground;
+                    }
+                    frame.Append(desiredCharacter);
                     continue;
                 }
                 if (!SetBorderCell(cell, desiredCharacter, desired))
@@ -1730,7 +1831,7 @@ namespace TCPTunnel
                 renderedBorderAttributes[index] = desired;
                 renderedBorderCharacters[index] = desiredCharacter;
             }
-            if (terminalTheme && frame.Length > 2)
+            if (batch && frame.Length > 2)
             {
                 frame.Append("\u001b8");
                 Console.Write(frame.ToString());
@@ -1738,6 +1839,7 @@ namespace TCPTunnel
                 Array.Copy(desiredBorderCharacters, renderedBorderCharacters, perimeterLength);
             }
             forceFullBorderResync = false;
+            if (diagnosticSample) SnakeFrameDiagnostics.Capture("after", width, height, borderAnimationStep, ownBody, desiredBorderCharacters, renderedBorderCharacters, desiredBorderAttributes);
         }
 
         private static void TryRenderSnakeLayerLocked()

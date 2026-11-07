@@ -79,6 +79,9 @@ static class Program
                 case "--menu-matrix-probe":
                     File.WriteAllText(resultPath, MenuMatrixProbe.Run() ? "PASS" : "FAIL");
                     break;
+                case "--nickname-snake-cells-probe":
+                    File.WriteAllText(resultPath, NicknameSnakeCellsProbe.Run(resultPath) ? "PASS" : "FAIL");
+                    break;
                 case "--scrollback-probe":
                     File.WriteAllText(resultPath, ScrollbackProbe.Run() ? "PASS" : "FAIL");
                     break;

@@ -31,6 +31,7 @@
   <ItemGroup>
     <EmbeddedResource Include="default.cfg"
                       LogicalName="TCPTunnel.default.cfg" />
+    <EmbeddedResource Include="DuelSetup.ps1" LogicalName="TCPTunnel.DuelSetup.ps1" />
     <EmbeddedResource Include="SecurityData/confusables.txt" LogicalName="TCPTunnel.Security.Confusables" />
     <EmbeddedResource Include="SecurityData/LICENSE.txt" LogicalName="TCPTunnel.NativeCrypto.Licenses.Unicode.txt" />
     <EmbeddedResource Include="NativeCrypto/THIRD_PARTY_NOTICES.md" LogicalName="TCPTunnel.NativeCrypto.Notices" />

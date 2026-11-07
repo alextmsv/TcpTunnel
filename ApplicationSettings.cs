@@ -20,6 +20,8 @@ namespace TCPTunnel
         public bool MatrixText;
         public int MatrixCharacterDelay = 20;
         public bool MenuMatrixText;
+        public bool DuelEffects = true;
+        public bool DuelSound = true;
         public bool NicknameSnake;
         public AppLanguage Language = Lang.Current;
         public int SnakeDelay = 75;
@@ -255,6 +257,8 @@ namespace TCPTunnel
                 Current.InputPinnedBottom = defaults.InputPinnedBottom;
                 Current.MatrixText = defaults.MatrixText;
                 Current.MatrixCharacterDelay = defaults.MatrixCharacterDelay;
+                Current.DuelEffects = defaults.DuelEffects;
+                Current.DuelSound = defaults.DuelSound;
                 Current.MenuMatrixText = defaults.MenuMatrixText;
                 ApplyCurrent();
                 SaveCurrentProfileLocked(NetWorker.nickname);
@@ -266,6 +270,120 @@ namespace TCPTunnel
             lock (sync)
                 SaveCurrentProfileLocked(NetWorker.nickname);
         }
+
+        internal sealed record PracticeProfile(string Path, Guid Identity);
+        internal sealed record PracticeStats(int? Points, int Hits, int Streak);
+
+        internal static PracticeProfile GetPracticeProfile()
+        {
+            lock (sync)
+            {
+                string name = Current.Nickname;
+                if (!NetWorker.IsNicknameValid(name)) return null;
+                string path = GetProfilePath(name);
+                if (!File.Exists(path))
+                {
+                    try { SaveCurrentProfileLocked(name); }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or TimeoutException) { return null; }
+                }
+                return new PracticeProfile(path, Current.IdentityId);
+            }
+        }
+
+        internal static int ReadPracticeRecord(PracticeProfile profile, string level, int minutes)
+        {
+            if (profile == null || PracticeRecordKey(level, minutes) is not { } key) return 0;
+            lock (sync)
+            {
+                var values = ReadFile(profile.Path);
+                return IsPracticeProfile(values, profile) ? ParsePracticeRecord(values, key, level, minutes) : 0;
+            }
+        }
+
+        internal static (int Record, bool Saved) SavePracticeRecord(PracticeProfile profile, string level, int minutes, int score)
+        {
+            if (profile == null || PracticeRecordKey(level, minutes) is not { } key ||
+                score < 0 || score > MaximumPracticeScore(level, minutes)) return (0, false);
+            lock (sync)
+            {
+                int record = 0;
+                try
+                {
+                    using var lease = new ProfileWriteLease(profile.Path);
+                    string[] lines = File.ReadAllLines(profile.Path, Utf8);
+                    var values = ParseLines(lines);
+                    if (!IsPracticeProfile(values, profile)) return (0, false);
+                    record = ParsePracticeRecord(values, key, level, minutes);
+                    if (score > record)
+                        WriteFileAtomic(profile.Path, MergeProfileLines(lines, new[] { key + "=" + score.ToString(CultureInfo.InvariantCulture) }, false));
+                    return (Math.Max(record, score), true);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or TimeoutException)
+                { return (record, false); }
+            }
+        }
+
+        internal static PracticeStats ReadPracticeStats(PracticeProfile profile, string level, int minutes)
+        {
+            if (profile == null || PracticeRecordKey(level, minutes) is not { } key) return new(null, 0, 0);
+            lock (sync)
+            {
+                var values = ReadFile(profile.Path);
+                return IsPracticeProfile(values, profile) ? ReadPracticeStats(values, key, level, minutes) : new(null, 0, 0);
+            }
+        }
+
+        private static PracticeStats ReadPracticeStats(Dictionary<string, string> values, string key, string level, int minutes)
+        {
+            int max = MaximumPracticeScore(level, minutes);
+            int? points = values.TryGetValue(key + ".pts", out var pts) && Int32.TryParse(pts, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int p) &&
+                p >= -(minutes * 60000 / 35 + 1) && p <= 2 * max ? p : null;
+            int streak = values.TryGetValue(key + ".streak", out var raw) && Int32.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out int s) && s <= max ? s : 0;
+            return new(points, ParsePracticeRecord(values, key, level, minutes), streak);
+        }
+
+        internal static (PracticeStats Record, bool Saved) SavePracticeStats(PracticeProfile profile, string level, int minutes, int points, int hits, int streak)
+        {
+            var record = new PracticeStats(null, 0, 0);
+            if (profile == null || PracticeRecordKey(level, minutes) is not { } key || hits < 0 || hits > MaximumPracticeScore(level, minutes) ||
+                streak < 0 || streak > hits || points > 2 * hits || points < -(minutes * 60000 / 35 + 1)) return (record, false);
+            lock (sync)
+            {
+                try
+                {
+                    using var lease = new ProfileWriteLease(profile.Path);
+                    var lines = File.ReadAllLines(profile.Path, Utf8);
+                    var values = ParseLines(lines);
+                    if (!IsPracticeProfile(values, profile)) return (record, false);
+                    record = ReadPracticeStats(values, key, level, minutes);
+                    var next = new PracticeStats(record.Points.HasValue ? Math.Max(record.Points.Value, points) : points,
+                        Math.Max(record.Hits, hits), Math.Max(record.Streak, streak));
+                    if (next != record)
+                        WriteFileAtomic(profile.Path, MergeProfileLines(lines,
+                            new[] { key + "=" + next.Hits.ToString(CultureInfo.InvariantCulture), key + ".pts=" + next.Points.Value.ToString(CultureInfo.InvariantCulture),
+                                key + ".streak=" + next.Streak.ToString(CultureInfo.InvariantCulture) }, false));
+                    return (next, true);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or TimeoutException)
+                { return (record, false); }
+            }
+        }
+
+        private static bool IsPracticeProfile(Dictionary<string, string> values, PracticeProfile profile)
+        {
+            if (values.Count == 0) return false;
+            if (!values.TryGetValue("identityId", out var value) || value.Length == 0) return profile.Identity == Guid.Empty;
+            return Guid.TryParse(value, out Guid identity) && identity == profile.Identity;
+        }
+
+        private static string PracticeRecordKey(string level, int minutes) => DuelProtocol.Rules(level).Radius > 0 && minutes is >= 1 and <= 15
+            ? $"duelPractice.{level}.{minutes.ToString(CultureInfo.InvariantCulture)}m" : null;
+
+        private static int MaximumPracticeScore(string level, int minutes) => (minutes * 60000 - 1) / DuelProtocol.Rules(level).Interval + 1;
+
+        private static int ParsePracticeRecord(Dictionary<string, string> values, string key, string level, int minutes) =>
+            values.TryGetValue(key, out string value) && Int32.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int score) &&
+            score <= MaximumPracticeScore(level, minutes) ? score : 0;
 
         public static bool RunSelfTest()
         {
@@ -581,6 +699,8 @@ namespace TCPTunnel
             profile.MatrixCharacterDelay = 20;
             profile.MenuMatrixText = false;
             if (values.TryGetValue("menuMatrixText", out var menuMatrix) && Boolean.TryParse(menuMatrix, out bool menuEnabled)) profile.MenuMatrixText = menuEnabled;
+            if (values.TryGetValue("duelEffects", out var duelFx) && Boolean.TryParse(duelFx, out bool effectsEnabled)) profile.DuelEffects = effectsEnabled;
+            if (values.TryGetValue("duelSound", out var duelAudio) && Boolean.TryParse(duelAudio, out bool audioEnabled)) profile.DuelSound = audioEnabled;
             if (values.TryGetValue("matrixCharacterDelay", out var matrixDelay) && Int32.TryParse(matrixDelay, out int matrixNumber)) profile.MatrixCharacterDelay = Math.Clamp(matrixNumber, 1, 500);
             profile.NicknameSnake = false;
             if (values.TryGetValue("nicknameSnake", out value) && Boolean.TryParse(value, out flag)) profile.NicknameSnake = flag;
@@ -660,6 +780,7 @@ namespace TCPTunnel
                 "inputPinnedBottom=" + profile.InputPinnedBottom, "matrixText=" + profile.MatrixText,
                 "matrixCharacterDelay=" + profile.MatrixCharacterDelay,
                 "menuMatrixText=" + profile.MenuMatrixText,
+                "duelEffects=" + profile.DuelEffects, "duelSound=" + profile.DuelSound,
                 "nicknameSnake=" + profile.NicknameSnake,
                 "language=" + (profile.Language == AppLanguage.English ? "en" : "ru"),
                 "snakeDelay=" + profile.SnakeDelay, "snakeColor=" + (int)profile.SnakeColor,
@@ -690,6 +811,7 @@ namespace TCPTunnel
                 InputPinnedBottom = value.InputPinnedBottom, MatrixText = value.MatrixText,
                 MatrixCharacterDelay = value.MatrixCharacterDelay,
                 MenuMatrixText = value.MenuMatrixText,
+                DuelEffects = value.DuelEffects, DuelSound = value.DuelSound,
                 NicknameSnake = value.NicknameSnake,
                 SnakeDelay = value.SnakeDelay, SnakeColor = value.SnakeColor, SnakeGlyph = value.SnakeGlyph,
                 BorderColor = value.BorderColor, CornerColor = value.CornerColor,

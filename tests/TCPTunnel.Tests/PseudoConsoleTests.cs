@@ -47,6 +47,7 @@ internal static class PseudoConsoleTests
     public static Task<bool> PseudoConsolePlaintextSnakeSessionSelfTest() => RunChild("--plaintext-snake-session-probe", "PASS");
     public static Task<bool> PseudoConsoleIndependentMatrixSelfTest() => RunChild("--independent-matrix-probe", "PASS");
     public static Task<bool> PseudoConsoleMenuMatrixSelfTest() => RunChild("--menu-matrix-probe", "PASS");
+    public static Task<bool> PseudoConsoleNicknameSnakeCellsSelfTest() => RunChild("--nickname-snake-cells-probe", "PASS");
     public static Task<bool> PseudoConsoleScrollbackSelfTest() => RunChild("--scrollback-probe", "PASS");
     public static Task<bool> PseudoConsoleMenuResizeSelfTest() => RunChild("--resize-menu-probe", "PASS");
     public static Task<bool> PseudoConsoleMainMenuResizeSelfTest() => RunChild("--resize-main-menu-probe", "PASS");

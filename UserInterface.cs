@@ -177,6 +177,7 @@ namespace TCPTunnel
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     string message = await animationAssembler.ReadNextAsync(stream, cancellationToken, expireDownload).ConfigureAwait(false);
+                    if (duelSession?.Receive(message) == true) continue;
                     if (message == FileTransferProtocol.Capabilities) { fileTransfers?.SetAvailable(true); continue; }
                     if (message == FileTransferProtocol.Unavailable) { fileTransfers?.SetAvailable(false); continue; }
                     if (fileTransfers != null && await fileTransfers.HandleAsync(message).ConfigureAwait(false)) continue;
@@ -581,6 +582,7 @@ namespace TCPTunnel
             var end = new SessionEndState();
             var status = new HubStatusSession { Modern = nicknameSnakeSupported };
             StartFileTransfers(stream, sessionCancellation.Token);
+            duelSession = new DuelSession(stream, sessionCancellation.Token, (text, color) => WriteChatLine(text, color, false, !color.HasValue));
             Task receiverTask = ReceiveConnectionMessagesAsync(connection, stream, sessionCancellation.Token, end, status);
             if (!currentE2E) MessageProtocol.WriteStringAsync(stream, SnakeProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
             CommandContext commandContext = CreateCommandContext(stream, sessionCancellation.Token, end, status, remoteEndPoint, host);
@@ -598,6 +600,7 @@ namespace TCPTunnel
                 MessageProtocol.WriteStringAsync(stream, WhoisProtocol.Hello, sessionCancellation.Token).GetAwaiter().GetResult();
                 if (!ConfirmRemotePrivacy(status, stream, sessionCancellation.Token, isLocalHubSession)) { end.Leave(); return; }
                 MessageProtocol.WriteStringAsync(stream, FileTransferProtocol.Probe, sessionCancellation.Token).GetAwaiter().GetResult();
+                duelSession.Hello();
                 while (connected)
                 {
                     string message = ReadChatMessage();
@@ -605,6 +608,7 @@ namespace TCPTunnel
                         break;
                     if (LocalCommands.Handle(message, ChangeChatLanguage, WriteSystemChatLine, () => RunChatCustomization(false, stream, sessionCancellation.Token))) continue;
                     if (HandleEncryptionCommand(message)) continue;
+                    if (duelSession.HandleCommand(message)) continue;
                     if (fileTransfers?.HandleCommand(message) == true) continue;
                     CommandDisposition commandResult = Commands.InitCommand(message, commandContext);
                     if (commandResult == CommandDisposition.EndSession)
@@ -659,7 +663,10 @@ namespace TCPTunnel
                 sessionCancellation.Cancel();
                 connection.Dispose();
                 try { receiverTask.GetAwaiter().GetResult(); } catch { }
+                duelSession.Close();
+                duelSession = null;
                 StopFileTransfers();
+                lock (consoleLock) chatCommandHistory.Clear();
                 sessionCancellation.Dispose();
                 ConsoleGraphic.ClearRemoteSnakes();
                 if (showServerCard && ConsoleGraphic.Enabled)
@@ -1218,6 +1225,8 @@ namespace TCPTunnel
             }
         }
 
+        private static readonly CommandHistory chatCommandHistory = new();
+
         private static string ReadChatMessage()
         {
             lock (consoleLock)
@@ -1226,6 +1235,7 @@ namespace TCPTunnel
                 MoveCursorToContentColumn();
                 inputActive = true;
                 inputBuffer.Clear();
+                chatCommandHistory.ResetNavigation();
                 inputCursorIndex = 0;
                 inputStartRow = Console.CursorTop;
                 renderedInputRows = 0;
@@ -1313,12 +1323,24 @@ namespace TCPTunnel
                     if (key.Key == ConsoleKey.Enter)
                     {
                         string message = inputBuffer.ToString();
-                        EraseRenderedInput();
+                        chatCommandHistory.Submit(message);
+                        if (!ConsoleGraphic.Enabled) EraseRenderedInput();
                         inputActive = false;
                         inputBuffer.Clear();
                         inputCursorIndex = 0;
                         ClearMentionState();
                         return message;
+                    }
+
+                    if (key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow && key.Modifiers == 0)
+                    {
+                        if (chatCommandHistory.Move(key.Key == ConsoleKey.UpArrow, inputBuffer.ToString(), inputCursorIndex, out string recalled, out int cursor))
+                        {
+                            inputBuffer.Clear().Append(recalled);
+                            inputCursorIndex = cursor;
+                            RedrawInputAreaLocked();
+                        }
+                        continue;
                     }
 
                     if (HandleInputKey(key))
@@ -1447,20 +1469,19 @@ namespace TCPTunnel
             return Math.Max(0, Math.Min(mentionSuggestions.Length, Math.Min(MaxMentionSuggestionRows, maxAvailable)));
         }
 
-        private static void RenderMentionSuggestionRows(int left, int width, int startRow, int popupRows)
+        private static void RenderMentionSuggestionRows(int left, int width, int startRow, int popupRows, ConsoleGraphic.ContentFrame frame = null)
         {
             for (int row = 0; row < popupRows; row++)
             {
                 int targetRow = startRow + row;
-                if (ConsoleGraphic.Enabled)
+                if (frame == null && ConsoleGraphic.Enabled)
                     ConsoleGraphic.ClearContentRow(targetRow);
-                else
+                else if (frame == null)
                 {
                     Console.SetCursorPosition(left, targetRow);
                     Console.Write(new string(' ', width));
                 }
 
-                Console.SetCursorPosition(left, targetRow);
                 bool selected = row == mentionSuggestionIndex;
                 string marker = selected ? "> " : "  ";
                 int labelWidth = Math.Max(0, width - marker.Length);
@@ -1469,7 +1490,10 @@ namespace TCPTunnel
                 if (label.Length > labelWidth)
                     label = label.Substring(0, labelWidth);
 
-                Console.ForegroundColor = selected ? ConsoleTheme.SelectionBackground : ConsoleTheme.MenuText;
+                ConsoleColor foreground = selected ? ConsoleTheme.SelectionBackground : ConsoleTheme.MenuText;
+                if (frame != null) { frame.Put(left, targetRow, marker + label, foreground); continue; }
+                Console.SetCursorPosition(left, targetRow);
+                Console.ForegroundColor = foreground;
                 Console.Write(marker + label);
                 Console.ResetColor();
             }
@@ -1613,6 +1637,18 @@ namespace TCPTunnel
         {
             try
             {
+                if (ConsoleGraphic.Enabled && renderedInputRows > 0 &&
+                    ConsoleGraphic.TryCaptureConsoleGeometry(out var geometry) &&
+                    TryCreateChatFrame(geometry, inputStartRow, renderedInputRows) is { } frame)
+                {
+                    int previousRow = inputStartRow;
+                    int previousRows = renderedInputRows, previousWidth = renderedInputWidth, previousLeft = renderedInputLeft;
+                    RenderInputLineCoreAt(previousRow, frame);
+                    if (inputStartRow == previousRow && renderedInputRows == previousRows && frame.Present(geometry))
+                        return;
+                    inputStartRow = previousRow;
+                    renderedInputRows = previousRows; renderedInputWidth = previousWidth; renderedInputLeft = previousLeft;
+                }
                 EraseRenderedInput();
                 RenderInputLineCore();
             }
@@ -1631,9 +1667,9 @@ namespace TCPTunnel
             RenderInputLineCoreAt(null);
         }
 
-        private static void RenderInputLineCoreAt(int? fixedStartRow)
+        private static void RenderInputLineCoreAt(int? fixedStartRow, ConsoleGraphic.ContentFrame frame = null)
         {
-            ConsoleGraphic.AlignViewport();
+            if (frame == null) ConsoleGraphic.AlignViewport();
 
             int left = GetContentLeft();
             int width = GetContentWidth();
@@ -1679,6 +1715,13 @@ namespace TCPTunnel
                 int sourceIndex = row * width;
                 int count = Math.Min(width, Math.Max(0, visibleText.Length - sourceIndex));
                 int targetRow = inputStartRow + row;
+                if (frame != null)
+                {
+                    int promptCount = Math.Clamp(inputPrompt.Length - visibleStart - sourceIndex, 0, count);
+                    if (promptCount > 0) frame.Put(left, targetRow, visibleText.AsSpan(sourceIndex, promptCount), ConsoleTheme.InputPrompt);
+                    if (count > promptCount) frame.Put(left + promptCount, targetRow, visibleText.AsSpan(sourceIndex + promptCount, count - promptCount), ConsoleTheme.InputText);
+                    continue;
+                }
                 if (ConsoleGraphic.Enabled)
                     ConsoleGraphic.ClearContentRow(targetRow);
                 else
@@ -1697,11 +1740,11 @@ namespace TCPTunnel
                 }
             }
 
-            RenderMentionSuggestionRows(left, width, inputStartRow + rows, popupRows);
-
-            Console.SetCursorPosition(
-                left + visibleCursorOffset % width,
-                inputStartRow + Math.Min(rows - 1, visibleCursorOffset / width));
+            RenderMentionSuggestionRows(left, width, inputStartRow + rows, popupRows, frame);
+            int cursorLeft = left + visibleCursorOffset % width;
+            int cursorTop = inputStartRow + Math.Min(rows - 1, visibleCursorOffset / width);
+            if (frame != null) { frame.CursorLeft = cursorLeft; frame.CursorTop = cursorTop; }
+            else Console.SetCursorPosition(cursorLeft, cursorTop);
         }
 
         private static void EraseRenderedInput()
@@ -2021,7 +2064,7 @@ namespace TCPTunnel
             Console.ResetColor();
         }
 
-        private static void WriteStyledChatText(string message, int offset, int count, ChatHistoryEntry entry)
+        private static void WriteStyledChatText(string message, int offset, int count, ChatHistoryEntry entry, ConsoleGraphic.ContentFrame frame = null, int left = 0, int row = 0)
         {
             int end = offset + count;
             int position = offset;
@@ -2033,6 +2076,12 @@ namespace TCPTunnel
                     runEnd++;
 
                 bool mention = entry.Mentions.Exists(span => position >= span.Start && position < span.Start + span.Length);
+                if (frame != null)
+                {
+                    frame.Put(left + position - offset, row, message.AsSpan(position, runEnd - position), style.Foreground, style.Background, !mention);
+                    position = runEnd;
+                    continue;
+                }
                 if (ConsoleTheme.HasContentBackground && !mention)
                     ConsoleGraphic.ApplyContentColors(style.Foreground);
                 else
@@ -2044,7 +2093,7 @@ namespace TCPTunnel
                 position = runEnd;
             }
 
-            Console.ResetColor();
+            if (frame == null) Console.ResetColor();
         }
 
         private static ChatTextStyle GetChatTextStyle(ChatHistoryEntry entry, int position)
@@ -2265,6 +2314,7 @@ namespace TCPTunnel
             lock (consoleLock)
             {
                 ResetScrollbackLocked(true);
+                chatCommandHistory.Clear();
                 chatHistory.Clear();
                 imageHistoryBytes = 0;
                 lastLargeImagePacket = null;
@@ -2412,7 +2462,7 @@ namespace TCPTunnel
         private static bool RedrawChatLayoutLocked(ISet<ChatHistoryEntry> animateEntries = null)
         {
             if (chatUiSuspended) return true;
-            EraseRenderedInput();
+            if (!ConsoleGraphic.Enabled) EraseRenderedInput();
             InvalidateAnimationTargetsLocked();
             InvalidateMatrixTargetsLocked();
             FinishMentionBlinkLocked();
@@ -2498,14 +2548,24 @@ namespace TCPTunnel
             }
         }
 
+        private static ConsoleGraphic.ContentFrame TryCreateChatFrame(ConsoleGraphic.ConsoleGeometry geometry, int top, int rows)
+        {
+            int width = Math.Min(geometry.DrawableWidth - 2, ConsoleGraphic.ContentWidth);
+            return ConsoleGraphic.Enabled && width > 0 && rows > 0 && top >= 1 &&
+                top + rows < geometry.DrawableHeight && (long)width * rows <= 262144
+                ? new ConsoleGraphic.ContentFrame(ConsoleGraphic.ContentLeft, top, width, rows)
+                : null;
+        }
+
         private static bool RedrawGraphicalChatLayoutLocked(
             ConsoleGraphic.ConsoleGeometry targetGeometry,
-            ISet<ChatHistoryEntry> animateEntries)
+            ISet<ChatHistoryEntry> animateEntries,
+            bool stage = true)
         {
             bool geometryChanged = knownVisualThemeRevision != ConsoleGraphic.VisualThemeRevision || !hasKnownConsoleGeometry ||
                                    !targetGeometry.IsSameAs(knownConsoleGeometry) ||
                                    consoleResizePending;
-            if (geometryChanged)
+            if (geometryChanged && stage)
             {
                 if (!graphic.TryClear(0, 0))
                 {
@@ -2521,9 +2581,11 @@ namespace TCPTunnel
             int top = ConsoleGraphic.ContentTop;
             int bottom = ScrollbackBottom;
             int totalRows = Math.Max(1, bottom - top + 1);
+            var frame = stage ? TryCreateChatFrame(targetGeometry, top, totalRows) : null;
             int inputRows = inputActive ? GetRequiredInputRows(width, totalRows) : 0;
             int popupRows = inputActive ? GetRequiredMentionPopupRows(Math.Max(0, totalRows - inputRows)) : 0;
             int chatRows = Math.Max(0, totalRows - inputRows - popupRows);
+            int liveRows = chatRows;
             bool scrollStatus = ScrollbackActive && chatRows >= 2;
             if (scrollStatus) chatRows--;
 
@@ -2547,26 +2609,43 @@ namespace TCPTunnel
                     chatBottomExclusive,
                     animateEntries != null && animateEntries.Contains(historyLine)
                         ? mentionFragments
-                        : null);
+                        : null, frame);
             }
 
-            Console.ResetColor();
-            for (int row = targetRow; row < chatBottomExclusive; row++)
-                ConsoleGraphic.ClearContentRow(row);
-            if (scrollStatus) DrawScrollbackStatus(chatBottomExclusive, width);
+            if (frame == null)
+            {
+                Console.ResetColor();
+                for (int row = targetRow; row < chatBottomExclusive; row++)
+                    ConsoleGraphic.ClearContentRow(row);
+            }
+            if (scrollStatus) DrawScrollbackStatus(chatBottomExclusive, width, frame);
 
             renderedInputRows = 0;
             renderedInputWidth = 0;
             if (inputActive)
             {
                 inputStartRow = ScrollbackActive ? top + chatRows + (scrollStatus ? 1 : 0) : ApplicationSettings.Current.InputPinnedBottom ? top + chatRows : targetRow;
-                RenderInputLineCoreAt(inputStartRow);
+                RenderInputLineCoreAt(inputStartRow, frame);
                 scrollViewportBottomExclusive = Math.Min(chatBottomExclusive, inputStartRow);
             }
             else
             {
                 int cursorRow = Math.Max(top, Math.Min(bottom, targetRow));
-                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, cursorRow);
+                if (frame != null) frame.CursorTop = cursorRow;
+                else Console.SetCursorPosition(ConsoleGraphic.ContentLeft, cursorRow);
+            }
+
+            DrawScrollbackBar(width, top, totalRows, chatRows, liveRows, firstEntry, rowsToSkip, frame);
+            if (frame != null && !frame.Present(targetGeometry))
+            {
+                if (!ConsoleGraphic.IsConsoleGeometryCurrent(targetGeometry))
+                {
+                    MarkConsoleResizePendingLocked();
+                    return false;
+                }
+                InvalidateAnimationTargetsLocked();
+                InvalidateMatrixTargetsLocked();
+                return RedrawGraphicalChatLayoutLocked(targetGeometry, animateEntries, false);
             }
 
             if (mentionFragments.Count > 0)
@@ -2633,12 +2712,12 @@ namespace TCPTunnel
             int wrappedRowsToSkip,
             ref int targetRow,
             int bottomExclusive,
-            List<MentionFragment> localMentionFragments)
+            List<MentionFragment> localMentionFragments, ConsoleGraphic.ContentFrame frame)
         {
             int width = GetContentWidth();
             if (entry.IsVisual)
             {
-                WriteGraphicalImageEntryAt(entry, wrappedRowsToSkip, ref targetRow, bottomExclusive, width);
+                WriteGraphicalImageEntryAt(entry, wrappedRowsToSkip, ref targetRow, bottomExclusive, width, frame);
                 return;
             }
             string renderedText = entry.Text;
@@ -2649,8 +2728,11 @@ namespace TCPTunnel
             {
                 int offset = wrappedRow * width;
                 int count = Math.Min(width, Math.Max(0, renderedText.Length - offset));
-                ConsoleGraphic.ClearContentRow(targetRow);
-                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                if (frame == null)
+                {
+                    ConsoleGraphic.ClearContentRow(targetRow);
+                    Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                }
                 RegisterMatrixFragment(entry, offset, count, ConsoleGraphic.ContentLeft, targetRow);
                 if (count <= 0)
                     continue;
@@ -2662,7 +2744,7 @@ namespace TCPTunnel
                     ConsoleGraphic.ContentLeft,
                     targetRow,
                     localMentionFragments);
-                WriteStyledChatText(renderedText, offset, count, entry);
+                WriteStyledChatText(renderedText, offset, count, entry, frame, ConsoleGraphic.ContentLeft, targetRow);
             }
         }
 
@@ -2671,7 +2753,7 @@ namespace TCPTunnel
             int rowsToSkip,
             ref int targetRow,
             int bottomExclusive,
-            int width)
+            int width, ConsoleGraphic.ContentFrame frame)
         {
             int captionRows = GetWrappedRowCount(entry.Text, width);
             List<string> promptBox = VisualShouldOfferLook(entry)
@@ -2688,14 +2770,17 @@ namespace TCPTunnel
                  logicalRow < totalRows && targetRow < bottomExclusive;
                  logicalRow++, targetRow++)
             {
-                ConsoleGraphic.ClearContentRow(targetRow);
-                Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                if (frame == null)
+                {
+                    ConsoleGraphic.ClearContentRow(targetRow);
+                    Console.SetCursorPosition(ConsoleGraphic.ContentLeft, targetRow);
+                }
                 if (logicalRow < captionRows)
                 {
                     int offset = logicalRow * width;
                     int count = Math.Min(width, Math.Max(0, entry.Text.Length - offset));
                     if (count > 0)
-                        WriteStyledChatText(entry.Text, offset, count, entry);
+                        WriteStyledChatText(entry.Text, offset, count, entry, frame, ConsoleGraphic.ContentLeft, targetRow);
                     continue;
                 }
 
@@ -2718,6 +2803,7 @@ namespace TCPTunnel
                             entry.AnimationVisibleRows++;
                         }
                         FillVisualAsciiRow(entry, animationFrame, imageRowIndex, imageRow);
+                        if (frame != null) { frame.Put(ConsoleGraphic.ContentLeft, targetRow, imageRow, ConsoleColor.Gray); continue; }
                         Console.ForegroundColor = ConsoleColor.Gray;
                         Console.Write(imageRow);
                         Console.ResetColor();
@@ -2728,6 +2814,7 @@ namespace TCPTunnel
                 int promptRow = imageRowIndex - visualHeight;
                 if (promptRow >= 0 && promptRow < promptRows)
                 {
+                    if (frame != null) { frame.Put(ConsoleGraphic.ContentLeft, targetRow, promptBox[promptRow], ConsoleColor.Yellow); continue; }
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.Write(promptBox[promptRow]);
                     Console.ResetColor();
@@ -2844,7 +2931,8 @@ namespace TCPTunnel
 
         private static int GetContentWidth()
         {
-            return ConsoleGraphic.ContentWidth;
+            int width = ConsoleGraphic.ContentWidth;
+            return ConsoleGraphic.Enabled ? Math.Max(1, width - 1) : width;
         }
 
         private static void MoveCursorToContentColumn()

@@ -147,6 +147,7 @@ namespace TCPTunnel
                 client.IsReady = false;
             }
 
+            if (removed) DuelHub.Disconnected(client);
             client.Close();
             return removed;
         }
@@ -306,10 +307,14 @@ namespace TCPTunnel
             {
                 snapshot = clients.ToArray();
                 clients.Clear();
+                foreach (Client client in snapshot) { client.IsReady = false; client.IsAuthenticated = false; }
             }
 
             foreach (Client client in snapshot)
+            {
+                DuelHub.Disconnected(client);
                 client.Close();
+            }
         }
 
         private async Task SendSafelyAsync(Client recipient, EncodedFrameBatch frames, CancellationToken cancellationToken)

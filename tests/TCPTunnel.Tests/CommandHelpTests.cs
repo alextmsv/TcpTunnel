@@ -5,7 +5,7 @@ internal static class CommandHelpTests
     public static bool LocalizedCommandHelpSelfTest()
     {
         AppLanguage original = Lang.Current;
-        string[] commands = { "help", "invite", "pending", "approve", "identity", "kick", "status", "whois", "ping", "clear", "look", "stop", "exit", "lang", "interface", "snake", "nickname", "send", "receive" };
+        string[] commands = { "help", "invite", "pending", "approve", "identity", "kick", "status", "whois", "ping", "clear", "look", "stop", "exit", "lang", "interface", "snake", "nickname", "send", "receive", "duel" };
         var lines = new List<string>();
         var context = new CommandContext
         {
