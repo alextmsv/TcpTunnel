@@ -89,3 +89,96 @@ function Resolve-WindowsBuildSdk([string]$ProjectRoot, [string]$ExplicitPath) {
     }
     throw 'Windows SDK build tools were not found. Install the Windows SDK, or pass -WindowsSdkPath "C:\path\to\Windows Kits\10".'
 }
+
+function Initialize-PayloadCompression {
+    if ('TCPTunnelPayloadCompression' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+
+public static class TCPTunnelPayloadCompression
+{
+    private const int InsufficientBuffer = 122;
+
+    [DllImport("cabinet.dll", SetLastError = true)]
+    private static extern bool CreateCompressor(uint algorithm, IntPtr allocation, out IntPtr compressor);
+
+    [DllImport("cabinet.dll", SetLastError = true)]
+    private static extern bool Compress(IntPtr compressor, byte[] input, UIntPtr length,
+        [Out] byte[] output, UIntPtr capacity, out UIntPtr written);
+
+    [DllImport("cabinet.dll")]
+    private static extern bool CloseCompressor(IntPtr compressor);
+
+    public static void Pack(string source, string destination, uint algorithm, int maximumBytes)
+    {
+        byte[] input = File.ReadAllBytes(source);
+        if (input.Length == 0 || input.Length > maximumBytes)
+            throw new InvalidDataException("Unsupported payload size: " + source);
+
+        IntPtr compressor;
+        if (!CreateCompressor(algorithm, IntPtr.Zero, out compressor))
+            throw new Win32Exception();
+        try
+        {
+            UIntPtr length = new UIntPtr((uint)input.Length);
+            UIntPtr capacity;
+            if (Compress(compressor, input, length, null, UIntPtr.Zero, out capacity) ||
+                Marshal.GetLastWin32Error() != InsufficientBuffer)
+                throw new Win32Exception();
+
+            byte[] output = new byte[checked((int)capacity.ToUInt64())];
+            UIntPtr written;
+            if (!Compress(compressor, input, length, output, capacity, out written))
+                throw new Win32Exception();
+
+            using (SHA256 sha = SHA256.Create())
+            using (BinaryWriter writer = new BinaryWriter(File.Create(destination)))
+            {
+                writer.Write(input.Length);
+                writer.Write(sha.ComputeHash(input));
+                writer.Write(output, 0, checked((int)written.ToUInt64()));
+            }
+        }
+        finally
+        {
+            CloseCompressor(compressor);
+        }
+    }
+}
+'@
+}
+
+function ConvertTo-RcPath([string]$Path) {
+    return ([System.IO.Path]::GetFullPath($Path)).Replace("\", "\\")
+}
+
+function Build-PayloadBootstrapper(
+    [string]$bootstrapperDirectory, [string]$bootstrapperSource, [string]$resourceFile,
+    [string]$stagedExecutable, [string]$vcvars, $windowsBuildSdk, [string]$defines
+) {
+    $resourceObject = Join-Path $bootstrapperDirectory "TCPTunnel.Resources.res"
+    $objectFile = Join-Path $bootstrapperDirectory "TCPTunnel.Bootstrapper.obj"
+    $nativeBuildScript = Join-Path $bootstrapperDirectory "BuildBootstrapper.cmd"
+    $nativeCommands = @"
+@echo off
+call "$vcvars" >nul
+if errorlevel 1 exit /b %errorlevel%
+set "PATH=$($windowsBuildSdk.Bin);%PATH%"
+set "INCLUDE=$($windowsBuildSdk.Include)\ucrt;$($windowsBuildSdk.Include)\shared;$($windowsBuildSdk.Include)\um;%INCLUDE%"
+set "LIB=$($windowsBuildSdk.UmLib);$($windowsBuildSdk.UcrtLib);%LIB%"
+rc.exe /nologo /fo"$resourceObject" "$resourceFile"
+if errorlevel 1 exit /b %errorlevel%
+cl.exe /nologo /O1 /MT /guard:cf /W4 /WX /utf-8 /DUNICODE /D_UNICODE $defines /Fo"$objectFile" /Fe"$stagedExecutable" "$bootstrapperSource" "$resourceObject" /link /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /guard:cf /CETCOMPAT shell32.lib advapi32.lib user32.lib cabinet.lib bcrypt.lib
+exit /b %errorlevel%
+"@
+    [System.IO.File]::WriteAllText($nativeBuildScript, $nativeCommands, [System.Text.Encoding]::ASCII)
+
+    & $nativeBuildScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native bootstrapper build failed with exit code $LASTEXITCODE."
+    }
+}

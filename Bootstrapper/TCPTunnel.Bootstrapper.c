@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
+#include <compressapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <stdint.h>
@@ -23,6 +25,7 @@
 #define DOWNLOAD_URL L"https://dotnet.microsoft.com/ru-ru/download/dotnet/thank-you/runtime-10.0.12-windows-x64-installer"
 #define MAX_RUNTIME_PATH 32768
 
+#ifndef TCPTUNNEL_SELF_CONTAINED
 typedef void* hostfxr_handle;
 
 struct hostfxr_initialize_parameters
@@ -47,6 +50,7 @@ typedef struct version_number
     unsigned int patch;
     unsigned int revision;
 } version_number;
+#endif
 
 static BOOL combine_path(
     wchar_t* destination,
@@ -75,6 +79,7 @@ static BOOL ensure_directory(const wchar_t* path)
     return GetLastError() == ERROR_ALREADY_EXISTS && directory_exists(path);
 }
 
+#ifndef TCPTUNNEL_SELF_CONTAINED
 static BOOL parse_version(const wchar_t* text, version_number* version)
 {
     int parsed;
@@ -217,6 +222,8 @@ static BOOL find_dotnet_root_and_hostfxr(
     return FALSE;
 }
 
+#endif
+
 static BOOL get_resource_bytes(int resource_id, const void** data, DWORD* size)
 {
     HRSRC resource;
@@ -256,47 +263,50 @@ static BOOL get_payload_id(wchar_t* payload_id, size_t payload_id_count)
     return TRUE;
 }
 
-static BOOL file_matches_bytes(const wchar_t* path, const void* data, DWORD size)
+static BOOL matches_digest(const void* data, DWORD size, const BYTE* expected)
+{
+    BYTE digest[32];
+    return BCryptHash(BCRYPT_SHA256_ALG_HANDLE, NULL, 0, (PUCHAR)data, size,
+        digest, sizeof(digest)) >= 0 && memcmp(digest, expected, sizeof(digest)) == 0;
+}
+
+static BOOL file_matches_payload(const wchar_t* path, const void* data, DWORD size, const BYTE* digest)
 {
     HANDLE file;
-    LARGE_INTEGER file_size;
-    BYTE* buffer;
-    DWORD read = 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    HANDLE mapping;
+    const void* view;
     BOOL matches = FALSE;
 
-    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (file == INVALID_HANDLE_VALUE)
         return FALSE;
-    if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart != size)
+    if (GetFileInformationByHandle(file, &info) &&
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
+        info.nFileSizeHigh == 0 && info.nFileSizeLow == size)
     {
-        CloseHandle(file);
-        return FALSE;
-    }
-
-    buffer = (BYTE*)HeapAlloc(GetProcessHeap(), 0, size);
-    if (buffer != NULL)
-    {
-        if (ReadFile(file, buffer, size, &read, NULL) && read == size)
-            matches = memcmp(buffer, data, size) == 0;
-        HeapFree(GetProcessHeap(), 0, buffer);
+        mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (mapping != NULL)
+        {
+            view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size);
+            if (view != NULL)
+            {
+                matches = digest != NULL ? matches_digest(view, size, digest) : memcmp(view, data, size) == 0;
+                UnmapViewOfFile(view);
+            }
+            CloseHandle(mapping);
+        }
     }
     CloseHandle(file);
     return matches;
 }
 
-static BOOL write_resource_file(int resource_id, const wchar_t* path)
+static BOOL write_payload_file(const wchar_t* path, const void* data, DWORD size)
 {
-    const void* data;
-    DWORD size;
     HANDLE file;
     DWORD written = 0;
     DWORD attributes;
     wchar_t temporary_path[MAX_RUNTIME_PATH];
-
-    if (!get_resource_bytes(resource_id, &data, &size))
-        return FALSE;
-    if (file_matches_bytes(path, data, size))
-        return TRUE;
 
     attributes = GetFileAttributesW(path);
     if (attributes != INVALID_FILE_ATTRIBUTES &&
@@ -340,19 +350,67 @@ static BOOL write_resource_file(int resource_id, const wchar_t* path)
         return TRUE;
 
     DeleteFileW(temporary_path);
-    return file_matches_bytes(path, data, size);
+    return file_matches_payload(path, data, size, NULL);
 }
 
-static BOOL extract_managed_payload(
-    wchar_t* assembly_path,
-    size_t assembly_path_count)
+#ifndef TCPTUNNEL_SELF_CONTAINED
+static BOOL write_resource_file(int resource_id, const wchar_t* path)
+{
+    const void* data;
+    DWORD size;
+    if (!get_resource_bytes(resource_id, &data, &size))
+        return FALSE;
+    return file_matches_payload(path, data, size, NULL) || write_payload_file(path, data, size);
+}
+#endif
+
+static BOOL write_compressed_resource_file(int resource_id, const wchar_t* path)
+{
+    const void* resource;
+    const BYTE* data;
+    DWORD packed_size;
+    DWORD size;
+    const size_t header_size = sizeof(size) + 32;
+    DECOMPRESSOR_HANDLE decompressor;
+    BYTE* decoded;
+    SIZE_T written;
+    BOOL success = FALSE;
+
+    if (!get_resource_bytes(resource_id, &resource, &packed_size) || packed_size <= header_size)
+        return FALSE;
+    data = (const BYTE*)resource;
+    memcpy(&size, data, sizeof(size));
+#ifdef TCPTUNNEL_SELF_CONTAINED
+    const DWORD maximum_size = 128 * 1024 * 1024;
+    const DWORD algorithm = COMPRESS_ALGORITHM_LZMS;
+#else
+    const DWORD maximum_size = 32 * 1024 * 1024;
+    const DWORD algorithm = COMPRESS_ALGORITHM_XPRESS_HUFF;
+#endif
+    if (size == 0 || size > maximum_size)
+        return FALSE;
+    if (file_matches_payload(path, NULL, size, data + sizeof(size)))
+        return TRUE;
+    if (!CreateDecompressor(algorithm, NULL, &decompressor))
+        return FALSE;
+    decoded = (BYTE*)HeapAlloc(GetProcessHeap(), 0, size);
+    if (decoded != NULL)
+    {
+        if (Decompress(decompressor, data + header_size, packed_size - header_size, decoded, size, &written) &&
+            written == size && matches_digest(decoded, size, data + sizeof(size)))
+            success = write_payload_file(path, decoded, size);
+        HeapFree(GetProcessHeap(), 0, decoded);
+    }
+    CloseDecompressor(decompressor);
+    return success;
+}
+
+static BOOL prepare_payload_directory(wchar_t* version_directory, size_t directory_count, const wchar_t* cache_name)
 {
     wchar_t local_app_data[MAX_RUNTIME_PATH];
     wchar_t tcptunnel_directory[MAX_RUNTIME_PATH];
     wchar_t runtime_directory[MAX_RUNTIME_PATH];
-    wchar_t version_directory[MAX_RUNTIME_PATH];
     wchar_t payload_id[65];
-    wchar_t file_path[MAX_RUNTIME_PATH];
 
     if (FAILED(SHGetFolderPathW(
             NULL,
@@ -363,30 +421,40 @@ static BOOL extract_managed_payload(
         !get_payload_id(payload_id, _countof(payload_id)) ||
         !combine_path(tcptunnel_directory, _countof(tcptunnel_directory), local_app_data, L"TCPTunnel") ||
         !ensure_directory(tcptunnel_directory) ||
-        !combine_path(runtime_directory, _countof(runtime_directory), tcptunnel_directory, L"runtime") ||
+        !combine_path(runtime_directory, _countof(runtime_directory), tcptunnel_directory, cache_name) ||
         !ensure_directory(runtime_directory) ||
-        !combine_path(version_directory, _countof(version_directory), runtime_directory, payload_id) ||
+        !combine_path(version_directory, directory_count, runtime_directory, payload_id) ||
         !ensure_directory(version_directory))
         return FALSE;
+    return TRUE;
+}
 
-    if (!combine_path(assembly_path, assembly_path_count, version_directory, L"TCPTunnel.dll") ||
-        !write_resource_file(RESOURCE_MAIN_ASSEMBLY, assembly_path) ||
+#ifndef TCPTUNNEL_SELF_CONTAINED
+static BOOL extract_managed_payload(wchar_t* assembly_path, size_t assembly_path_count)
+{
+    wchar_t version_directory[MAX_RUNTIME_PATH];
+    wchar_t file_path[MAX_RUNTIME_PATH];
+
+    if (!prepare_payload_directory(version_directory, _countof(version_directory), L"runtime") ||
+        !combine_path(assembly_path, assembly_path_count, version_directory, L"TCPTunnel.dll") ||
+        !write_compressed_resource_file(RESOURCE_MAIN_ASSEMBLY, assembly_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"TCPTunnel.deps.json") ||
         !write_resource_file(RESOURCE_DEPS_JSON, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"TCPTunnel.runtimeconfig.json") ||
         !write_resource_file(RESOURCE_RUNTIME_CONFIG, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"SharpOpenNat.dll") ||
-        !write_resource_file(RESOURCE_SHARP_OPEN_NAT, file_path) ||
+        !write_compressed_resource_file(RESOURCE_SHARP_OPEN_NAT, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"Microsoft.Windows.SDK.NET.dll") ||
-        !write_resource_file(RESOURCE_WINDOWS_SDK, file_path) ||
+        !write_compressed_resource_file(RESOURCE_WINDOWS_SDK, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"WinRT.Runtime.dll") ||
-        !write_resource_file(RESOURCE_WINRT_RUNTIME, file_path) ||
+        !write_compressed_resource_file(RESOURCE_WINRT_RUNTIME, file_path) ||
         !combine_path(file_path, _countof(file_path), version_directory, L"tcptunnel_crypto.dll") ||
-        !write_resource_file(RESOURCE_CRYPTO, file_path))
+        !write_compressed_resource_file(RESOURCE_CRYPTO, file_path))
         return FALSE;
 
     return TRUE;
 }
+#endif
 
 static void write_stderr_text(const wchar_t* text)
 {
@@ -434,6 +502,49 @@ static int exit_after_key(int exit_code)
     return exit_code;
 }
 
+#ifdef TCPTUNNEL_SELF_CONTAINED
+static BOOL WINAPI keep_launcher_alive(DWORD event)
+{
+    return event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT;
+}
+
+int wmain(void)
+{
+    wchar_t directory[MAX_RUNTIME_PATH];
+    wchar_t executable[MAX_RUNTIME_PATH];
+    wchar_t command_line[MAX_RUNTIME_PATH];
+    STARTUPINFOW startup = { 0 };
+    PROCESS_INFORMATION child = { 0 };
+    DWORD result = ERROR_GEN_FAILURE;
+
+    if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) ||
+        !prepare_payload_directory(directory, _countof(directory), L"self-contained") ||
+        !combine_path(executable, _countof(executable), directory, L"TCPTunnel.exe") ||
+        !write_compressed_resource_file(RESOURCE_MAIN_ASSEMBLY, executable))
+    {
+        write_stderr_text(L"TCPTunnel: could not extract the bundled application.\r\n");
+        return exit_after_key(ERROR_WRITE_FAULT);
+    }
+
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    if (wcscpy_s(command_line, _countof(command_line), GetCommandLineW()) != 0 ||
+        !SetConsoleCtrlHandler(keep_launcher_alive, TRUE) ||
+        !CreateProcessW(executable, command_line, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &child))
+    {
+        write_stderr_text(L"TCPTunnel: could not start the bundled application.\r\n");
+        return exit_after_key(ERROR_OPEN_FAILED);
+    }
+    CloseHandle(child.hThread);
+    if (WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0)
+        GetExitCodeProcess(child.hProcess, &result);
+    CloseHandle(child.hProcess);
+    return (int)result;
+}
+#else
 static void open_runtime_download_page(void)
 {
     HINSTANCE result;
@@ -558,3 +669,4 @@ int wmain(int argc, wchar_t** argv)
     FreeLibrary(hostfxr);
     return (int)result;
 }
+#endif

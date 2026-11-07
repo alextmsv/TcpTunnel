@@ -52,8 +52,8 @@ Each release has two executables:
 
 | File | Size | Requirements |
 |---|---|---|
-| `TCPTunnel.exe` | 29.78 MiB | [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64). If it is missing, the browser downloads the installer and the window waits for a key press. |
-| `TCPTunnel-selfcontained.exe` | 43.37 MiB | Nothing — .NET is built in. |
+| `TCPTunnel.exe` | 8.93 MiB | [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64). If it is missing, the browser downloads the installer and the window waits for a key press. |
+| `TCPTunnel-selfcontained.exe` | 33.23 MiB | Nothing — .NET is built in. |
 
 ### Host a chat
 
@@ -305,7 +305,7 @@ bin\Release\net10.0-windows\win-x64\publish\TCPTunnel-selfcontained.exe
 
 Each is a complete single file. `TCPTunnel.exe` extracts its managed payload under `%LocalAppData%\TCPTunnel\runtime` on first launch, then hosts it inside the original process. `TCPTunnel-selfcontained.exe` is a standard compressed .NET single-file build that runs its self-test during the build. Trimming and NativeAOT are intentionally disabled to preserve compatibility.
 
-The verified E2E release sizes are **29.78 MiB** for lite and **43.37 MiB** for self-contained (11 October 2026). The lite build has a hard **32 MiB** size gate and the self-contained build a **64 MiB** gate. Most of the lite size is the official Windows Runtime projection used for Bluetooth.
+The Lite executable is **8.93 MiB**. It extracts about 30 MiB under `%LOCALAPPDATA%\TCPTunnel\runtime`. The self-contained executable is **33.23 MiB**. On first launch it extracts its bundled EXE (about 100 MiB) under `%LOCALAPPDATA%\TCPTunnel\self-contained` and reuses it on subsequent launches. Building either launcher requires the Visual C++ tools and Windows SDK. The size gates are **32 MiB** for Lite and **64 MiB** for self-contained.
 
 The immutable `default.cfg` is embedded in that executable. Personal profiles are generated under `%LocalAppData%\TCPTunnel\profiles`; they are runtime data and do not need to be distributed with the program.
 

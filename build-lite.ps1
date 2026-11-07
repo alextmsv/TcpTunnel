@@ -87,46 +87,24 @@ $payloadId = ([BitConverter]::ToString($payloadDigest).Replace('-', '')).Substri
 $payloadIdFile = Join-Path $bootstrapperDirectory "payload.id"
 [System.IO.File]::WriteAllText($payloadIdFile, $payloadId, [System.Text.Encoding]::ASCII)
 
-function ConvertTo-RcPath([string]$Path) {
-    return ([System.IO.Path]::GetFullPath($Path)).Replace("\", "\\")
-}
+Initialize-PayloadCompression
 
 $resourceFile = Join-Path $bootstrapperDirectory "TCPTunnel.Resources.rc"
-$resourceText = @(
-    '101 RCDATA "' + (ConvertTo-RcPath $payloadFiles['101']) + '"',
-    '102 RCDATA "' + (ConvertTo-RcPath $payloadFiles['102']) + '"',
-    '103 RCDATA "' + (ConvertTo-RcPath $payloadFiles['103']) + '"',
-    '104 RCDATA "' + (ConvertTo-RcPath $payloadFiles['104']) + '"',
-    '105 RCDATA "' + (ConvertTo-RcPath $payloadIdFile) + '"',
-    '106 RCDATA "' + (ConvertTo-RcPath $payloadFiles['106']) + '"',
-    '107 RCDATA "' + (ConvertTo-RcPath $payloadFiles['107']) + '"',
-    '108 RCDATA "' + (ConvertTo-RcPath $payloadFiles['108']) + '"'
-) -join [Environment]::NewLine
+$resourceLines = foreach ($payload in $payloadFiles.GetEnumerator()) {
+    $resourcePath = $payload.Value
+    if ([IO.Path]::GetExtension($resourcePath) -eq '.dll') {
+        $resourcePath = Join-Path $bootstrapperDirectory ($payload.Key + '.bin')
+        [TCPTunnelPayloadCompression]::Pack($payload.Value, $resourcePath, 4, 32MB)
+    }
+    '{0} RCDATA "{1}"' -f $payload.Key, (ConvertTo-RcPath $resourcePath)
+}
+$resourceLines += '105 RCDATA "{0}"' -f (ConvertTo-RcPath $payloadIdFile)
+$resourceText = $resourceLines -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($resourceFile, $resourceText, [System.Text.Encoding]::Unicode)
 
-$resourceObject = Join-Path $bootstrapperDirectory "TCPTunnel.Resources.res"
-$objectFile = Join-Path $bootstrapperDirectory "TCPTunnel.Bootstrapper.obj"
 $outputExecutable = Join-Path $publishDirectory "TCPTunnel.exe"
 $stagedExecutable = Join-Path $bootstrapperDirectory "TCPTunnel.exe"
-$nativeBuildScript = Join-Path $bootstrapperDirectory "BuildBootstrapper.cmd"
-$nativeCommands = @"
-@echo off
-call "$vcvars" >nul
-if errorlevel 1 exit /b %errorlevel%
-set "PATH=$($windowsBuildSdk.Bin);%PATH%"
-set "INCLUDE=$($windowsBuildSdk.Include)\ucrt;$($windowsBuildSdk.Include)\shared;$($windowsBuildSdk.Include)\um;%INCLUDE%"
-set "LIB=$($windowsBuildSdk.UmLib);$($windowsBuildSdk.UcrtLib);%LIB%"
-rc.exe /nologo /fo"$resourceObject" "$resourceFile"
-if errorlevel 1 exit /b %errorlevel%
-cl.exe /nologo /O1 /MT /guard:cf /W4 /WX /utf-8 /DUNICODE /D_UNICODE /Fo"$objectFile" /Fe"$stagedExecutable" "$bootstrapperSource" "$resourceObject" /link /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /guard:cf /CETCOMPAT shell32.lib advapi32.lib user32.lib
-exit /b %errorlevel%
-"@
-[System.IO.File]::WriteAllText($nativeBuildScript, $nativeCommands, [System.Text.Encoding]::ASCII)
-
-& $nativeBuildScript
-if ($LASTEXITCODE -ne 0) {
-    throw "Native bootstrapper build failed with exit code $LASTEXITCODE."
-}
+Build-PayloadBootstrapper $bootstrapperDirectory $bootstrapperSource $resourceFile $stagedExecutable $vcvars $windowsBuildSdk
 
 $stagedResult = Get-Item -LiteralPath $stagedExecutable
 if ($stagedResult.Length -gt $maximumLiteBytes) {
